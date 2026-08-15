@@ -1,3 +1,6 @@
+from asyncio import transports
+from asyncio import transports
+from asyncio import transports
 import math
 from dataclasses import dataclass
 import torch
@@ -176,7 +179,7 @@ device = "cpu" #override
 # get a data batch
 import tiktoken
 enc = tiktoken.get_encoding('gpt2')
-with open('input.txt', 'r') as f:
+with open('material/input.txt', 'r') as f:
     text = f.read()
 text = text[:1000]
 tokens = enc.encode(text)
@@ -194,9 +197,13 @@ max_length = 30
 model = GPT(GPTConfig())
 model.eval()
 model.to(device)
-logits, loss = model(x, y  )
+#logits, loss = model(x, y  )
+
+optimizor = torch.optim.AdamW(model.parameters(), lr = 3e-4)
+for i in range(50):
+
+
 #print(logits.shape, loss)
-print(loss)
 import sys; sys.exit()
 
 
