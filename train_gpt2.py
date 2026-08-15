@@ -202,6 +202,14 @@ while x.size(1) < max_length:
         # append to the sequence
         x = torch.cat((x, xcol), dim=1)
 
+    # print the generated text
+    for i in range(num_return_sequences):
+        tokens = x[i, :max_length].tolist()
+        decoded = enc.decode(tokens)
+        print(">", decoded)
+
 
 #print("didn't crash yay!")
 #text = "Hello, how are you?"
+
+#41.42 https://www.youtube.com/watch?v=l8pRSuU81PU
