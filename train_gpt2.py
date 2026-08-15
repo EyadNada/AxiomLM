@@ -175,7 +175,6 @@ if torch.cuda.is_available():
 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = "mps"
 print(f"using device: {device}")
-device = "cpu" #override
 
 # get a data batch
 import tiktoken
@@ -186,6 +185,7 @@ text = text[:1000]
 tokens = enc.encode(text)
 B, T = 4, 32
 buf = torch.tensor(tokens[:B*T + 1])
+buf = buf.to(device)
 x = buf[:-1].view(B, T)
 y = buf[1:].view(B, T)
 
@@ -202,7 +202,7 @@ model.to(device)
 
 
 #optimzation
-optimizor = torch.optim.AdamW(model.parameters(), lr = 3e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr = 3e-4)
 for i in range(50):
     optimizer.zero_grad()
     logits, loss = model(x, y)
@@ -256,4 +256,4 @@ while x.size(1) < max_length:
 #print("didn't crash yay!")
 #text = "Hello, how are you?"
 
-#41.42 https://www.youtube.com/watch?v=l8pRSuU81PU
+#01:02:00 https://www.youtube.com/watch?v=l8pRSuU81PU
