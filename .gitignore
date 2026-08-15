@@ -1,0 +1,25 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+ENV/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Model checkpoints, weights and large datasets
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+checkpoints/
+
+# System and IDE files
+.DS_Store
+*.log
