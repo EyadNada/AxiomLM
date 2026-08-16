@@ -25,6 +25,9 @@ class CausalSelfAttention(nn.Module):
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        # In CausalSelfAttention.__init__:
+        setattr(self.c_proj, "NANOGPT_SCALE_INIT", 1)
+
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
