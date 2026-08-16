@@ -6,5 +6,11 @@
   "python.analysis.autoSearchPaths": true,
   "python.autoComplete.extraPaths": [
     "${workspaceFolder}/venv/lib/python3.12/site-packages"
-  ]
+  ],
+  "workbench.colorCustomizations": {
+    "statusBar.background": "#5B21B6",
+    "statusBar.foreground": "#FFFFFF",
+    "statusBar.noFolderBackground": "#4C1D95",
+    "statusBar.debuggingBackground": "#7C3AED"
+  }
 }
