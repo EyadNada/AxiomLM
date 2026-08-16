@@ -1,5 +1,6 @@
 import math
 from dataclasses import dataclass
+from typing import cast
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -123,7 +124,7 @@ class GPT(nn.Module):
         tok_emb = self.transformer['wte'](idx) # token embeddings of shape (B, T, n_embd)
         x = tok_emb + pos_emb
         # forward the blocks of the transformer
-        for block in self.transformer['h']:
+        for block in cast(nn.ModuleList, self.transformer['h']):
             x = block(x)
         # forward the final layernorm and the classifier
         x = self.transformer['ln_f'](x)
@@ -265,7 +266,7 @@ while x.size(1) < max_length:
         x = torch.cat((x, xcol), dim=1)
 
 # print the generated text
-for i in range(num_return_sequences):
-    tokens = x[i, :max_length].tolist()
-    decoded = enc.decode(tokens)
-    print(">", decoded)
+#for i in range(num_return_sequences):
+#    tokens = x[i, :max_length].tolist()
+#    decoded = enc.decode(tokens)
+#    print(">", decoded)
