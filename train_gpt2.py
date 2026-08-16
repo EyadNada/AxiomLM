@@ -1,3 +1,4 @@
+import os
 import math
 from dataclasses import dataclass
 from typing import cast
@@ -184,6 +185,40 @@ class GPT(nn.Module):
         return model
 
 # =============================================================================
+# Data Loader
+# =============================================================================
+
+class DataLoaderLite:
+    def __init__(self, B, T):
+        self.B = B
+        self.T = T
+
+        # at init load tokens from disk and store them in memory
+        input_path = 'material/input.txt' if os.path.exists('material/input.txt') else 'input.txt'
+        with open(input_path, 'r') as f:
+            text = f.read()
+        enc = tiktoken.get_encoding('gpt2')
+        tokens = enc.encode(text)
+        self.tokens = torch.tensor(tokens)
+        print(f"loaded {len(self.tokens)} tokens")
+        print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
+
+        # state
+        self.current_position = 0
+
+    def next_batch(self):
+        B, T = self.B, self.T
+        buf = self.tokens[self.current_position : self.current_position + B * T + 1]
+        x = (buf[:-1]).view(B, T) # inputs
+        y = (buf[1:]).view(B, T)  # targets
+        # advance the position in the tensor
+        self.current_position += B * T
+        # if loading the next batch would be out of bounds, reset
+        if self.current_position + (B * T + 1) > len(self.tokens):
+            self.current_position = 0
+        return x, y
+
+# =============================================================================
 # Automatic Device Selection
 # =============================================================================
 
@@ -195,23 +230,10 @@ elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
 print(f"using device: {device}")
 
 # =============================================================================
-# Get Data Batch
-# =============================================================================
-
-enc = tiktoken.get_encoding('gpt2')
-with open('material/input.txt', 'r') as f:
-    text = f.read()
-text = text[:1000]
-tokens = enc.encode(text)
-B, T = 4, 32
-buf = torch.tensor(tokens[:B * T + 1])
-buf = buf.to(device)
-x = buf[:-1].view(B, T)
-y = buf[1:].view(B, T)
-
-# =============================================================================
 # Model Initialization & Optimization
 # =============================================================================
+
+train_loader = DataLoaderLite(B=4, T=32)
 
 # model = GPT.from_pretrained("gpt2")
 model = GPT(GPTConfig())
@@ -219,6 +241,8 @@ model.to(device)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
+    x, y = train_loader.next_batch()
+    x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
     logits, loss = model(x, y)
     loss.backward()
