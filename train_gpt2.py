@@ -1,13 +1,16 @@
-from torch.optim import optimizer
-from asyncio import transports
-from asyncio import transports
-from asyncio import transports
 import math
 from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import tiktoken
 
+# =============================================================================
+# Model Architecture
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Causal Self-Attention
 # -----------------------------------------------------------------------------
 
 class CausalSelfAttention(nn.Module):
@@ -39,7 +42,7 @@ class CausalSelfAttention(nn.Module):
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         # attention (materializes the large (T,T) matrix for all the queries and keys)
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+        att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
         y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
@@ -47,19 +50,27 @@ class CausalSelfAttention(nn.Module):
         y = self.c_proj(y)
         return y
 
+# -----------------------------------------------------------------------------
+# Multi-Layer Perceptron (MLP)
+# -----------------------------------------------------------------------------
+
 class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd)
-        self.gelu    = nn.GELU(approximate='tanh')
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.c_fc   = nn.Linear(config.n_embd, 4 * config.n_embd)
+        self.gelu   = nn.GELU(approximate='tanh')
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
 
     def forward(self, x):
         x = self.c_fc(x)
         x = self.gelu(x)
         x = self.c_proj(x)
         return x
+
+# -----------------------------------------------------------------------------
+# Transformer Block
+# -----------------------------------------------------------------------------
 
 class Block(nn.Module):
 
@@ -68,12 +79,16 @@ class Block(nn.Module):
         self.ln_1 = nn.LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = nn.LayerNorm(config.n_embd)
-        self.mlp = MLP(config)
+        self.mlp  = MLP(config)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
+
+# -----------------------------------------------------------------------------
+# GPT Model Configuration & Main Class
+# -----------------------------------------------------------------------------
 
 @dataclass
 class GPTConfig:
@@ -104,19 +119,19 @@ class GPT(nn.Module):
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is {self.config.block_size}"
         # forward the token and position embeddings
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # shape (T)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (T, n_embd)
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (B, T, n_embd)
+        pos_emb = self.transformer['wpe'](pos) # position embeddings of shape (T, n_embd)
+        tok_emb = self.transformer['wte'](idx) # token embeddings of shape (B, T, n_embd)
         x = tok_emb + pos_emb
         # forward the blocks of the transformer
-        for block in self.transformer.h:
+        for block in self.transformer['h']:
             x = block(x)
         # forward the final layernorm and the classifier
-        x = self.transformer.ln_f(x)
+        x = self.transformer['ln_f'](x)
         logits = self.lm_head(x) # (B, T, vocab_size)
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
-            return logits, loss
+        return logits, loss
 
     @classmethod
     def from_pretrained(cls, model_type):
@@ -133,7 +148,7 @@ class GPT(nn.Module):
             'gpt2-xl':      dict(n_layer=48, n_head=25, n_embd=1600), # 1558M params
         }[model_type]
         config_args['vocab_size'] = 50257 # always 50257 for GPT model checkpoints
-        config_args['block_size'] = 1024 # always 1024 for GPT model checkpoints
+        config_args['block_size'] = 1024  # always 1024 for GPT model checkpoints
         # create a from-scratch initialized minGPT model
         config = GPTConfig(**config_args)
         model = GPT(config)
@@ -148,7 +163,7 @@ class GPT(nn.Module):
         # copy while ensuring all of the parameters are aligned and match in names and shapes
         sd_keys_hf = sd_hf.keys()
         sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.masked_bias')] # ignore these, just a buffer
-        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.bias')] # same, just the mask (buffer)
+        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.bias')]        # same, just the mask (buffer)
         transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
         # basically the openai checkpoints use a "Conv1D" module, but we only want to use a vanilla Linear
         # this means that we have to transpose these weights when we import them
@@ -167,8 +182,10 @@ class GPT(nn.Module):
 
         return model
 
-# ------------------------------------------------------------------------------------------------------------------------------
-#automatic device selection
+# =============================================================================
+# Automatic Device Selection
+# =============================================================================
+
 device = "cpu"
 if torch.cuda.is_available():
     device = "cuda"
@@ -176,33 +193,30 @@ elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = "mps"
 print(f"using device: {device}")
 
-# get a data batch
-import tiktoken
+# =============================================================================
+# Get Data Batch
+# =============================================================================
+
 enc = tiktoken.get_encoding('gpt2')
 with open('material/input.txt', 'r') as f:
     text = f.read()
 text = text[:1000]
 tokens = enc.encode(text)
 B, T = 4, 32
-buf = torch.tensor(tokens[:B*T + 1])
+buf = torch.tensor(tokens[:B * T + 1])
 buf = buf.to(device)
 x = buf[:-1].view(B, T)
 y = buf[1:].view(B, T)
 
-# sample from the model
-num_return_sequences = 5
-max_length = 30
+# =============================================================================
+# Model Initialization & Optimization
+# =============================================================================
 
-#model = GPT.from_pretrained("gpt2")
-#get logits
+# model = GPT.from_pretrained("gpt2")
 model = GPT(GPTConfig())
-model.eval()
 model.to(device)
-#logits, loss = model(x, y  )
 
-
-#optimzation
-optimizer = torch.optim.AdamW(model.parameters(), lr = 3e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
     optimizer.zero_grad()
     logits, loss = model(x, y)
@@ -210,28 +224,32 @@ for i in range(50):
     optimizer.step()
     print(f"step {i}, loss: {loss.item()}")
 
+# =============================================================================
+# Prefix Tokens & Text Generation
+# =============================================================================
 
-#print(logits.shape, loss)
-import sys; sys.exit()
+num_return_sequences = 5
+max_length = 30
 
+model.eval()
 
-# prefix tokens
-import tiktoken
 enc = tiktoken.get_encoding('gpt2')
 tokens = enc.encode("Hello, I'm a language model,")
 tokens = torch.tensor(tokens, dtype=torch.long) # (8,)
 tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # (5, 8)
-x = tokens.to('mps')
-
-# generate! right now x is (B, T) where B = 5, T = 8
+x = tokens.to(device)
 
 # set the seed to 42
 torch.manual_seed(42)
-torch.mps.manual_seed(42)
+if device == "cuda":
+    torch.cuda.manual_seed(42)
+elif device == "mps":
+    torch.mps.manual_seed(42)
+
 while x.size(1) < max_length:
     # forward the model to get the logits
     with torch.no_grad():
-        logits = model(x) # (B, T, vocab_size)
+        logits, _ = model(x) # (B, T, vocab_size)
         # take the logits at the last position
         logits = logits[:, -1, :] # (B, vocab_size)
         # get the probabilities
@@ -246,14 +264,8 @@ while x.size(1) < max_length:
         # append to the sequence
         x = torch.cat((x, xcol), dim=1)
 
-    # print the generated text
-    for i in range(num_return_sequences):
-        tokens = x[i, :max_length].tolist()
-        decoded = enc.decode(tokens)
-        print(">", decoded)
-
-
-#print("didn't crash yay!")
-#text = "Hello, how are you?"
-
-#01:02:00 https://www.youtube.com/watch?v=l8pRSuU81PU
+# print the generated text
+for i in range(num_return_sequences):
+    tokens = x[i, :max_length].tolist()
+    decoded = enc.decode(tokens)
+    print(">", decoded)
