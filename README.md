@@ -124,6 +124,7 @@ Every technique implemented in this codebase is backed by deep theoretical docum
 
 | Document / Paper | Topic | Description |
 |:---|:---:|:---|
+| 📑 [Float32 Matmul Precision (TF32)](material/torch_set_float32_matmul_precision_guide.md) | **Hardware & Speed** | `torch.set_float32_matmul_precision`: TF32 acceleration, precision levels, and GEMM benchmarks. |
 | 📑 [Tensor Cores & Mixed Precision](material/tensor_cores_and_mixed_precision_guide.md) | **Hardware & Speed** | NVIDIA Tensor Core architecture, FP16/BF16/TF32 formats, loss scaling & alignment. |
 | 📑 [AdamW Optimizer Guide](material/adamw_optimizer_guide.md) | **Optimization** | Decoupled Weight Decay math vs. L2 regularization (Loshchilov & Hutter). |
 | 📑 [Tiktokenizer & Tokenization Guide](material/tiktokenizer_guide.md) | **Data Pipeline** | Byte-Pair Encoding (BPE), byte-level fallbacks, and regex tokenizers. |
