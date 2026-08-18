@@ -4,6 +4,15 @@ A comprehensive technical breakdown of **Cross-Attention** (Encoder-Decoder Atte
 
 ---
 
+## 📺 Lecture Video & Official Resources
+
+* **Lecture Video:** [YouTube — Stanford CS25: V2 | Introduction to Transformers w/ Andrej Karpathy](https://www.youtube.com/watch?v=XfpMkf4rD6E)
+* **Course Site:** [Stanford CS25: Transformers United](https://web.stanford.edu/class/cs25/)
+* **Full Lecture Breakdown Document:** [stanford_cs25_v2_karpathy_transformers.md](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/stanford_cs25_v2_karpathy_transformers.md)
+* **Paper References:** [Attention Is All You Need (Vaswani et al.)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/attention_is_all_you_need.pdf) | [GPT-2 Paper](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/gpt2_paper.pdf)
+
+---
+
 ## 1. Overview & Conceptual Intuition
 
 In transformer models, the attention mechanism determines how tokens exchange information:
