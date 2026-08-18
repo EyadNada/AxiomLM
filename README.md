@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ GPT-2 (124M) FROM SCRATCH ⚡
+#  GPT-2 (124M) FROM SCRATCH 
 ### *From Raw Matrix Math to Shakespearean Hallucinations*
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white)](https://pytorch.org/)
