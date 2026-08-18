@@ -254,7 +254,7 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
-train_loader = DataLoaderLite(B=16, T=1024)
+train_loader = DataLoaderLite(B=32, T=1024)
 
 # =============================================================================
 # Model Initialization & Optimization
