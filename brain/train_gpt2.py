@@ -258,15 +258,20 @@ if torch.cuda.is_available():
 # Model Initialization & Optimization
 # =============================================================================
 
-# For quick debugging / local training: B=4, T=32 (or B=4, T=1024 for full context)
+# For MacBook Pro M3 Pro / local training: B=4, T=1024 (or B=4, T=32 for rapid testing)
+train_loader = DataLoaderLite(B=4, T=1024)
 
-train_loader = DataLoaderLite(B=4, T=32)
-
-torch.set_float32_matmul_precision('high')
+# Enable TF32 for NVIDIA CUDA devices
+if device == "cuda":
+    torch.set_float32_matmul_precision('high')
 
 # model = GPT.from_pretrained("gpt2")
 model = GPT(GPTConfig())
 model.to(device)
+
+# Autocast: use BF16 on CUDA (Tensor Cores); on MPS/CPU use nullcontext for max native throughput
+from contextlib import nullcontext
+autocast_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device == "cuda" else nullcontext()
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
@@ -274,7 +279,7 @@ for i in range(50):
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
-    with torch.autocast(device_type=device, dtype=torch.bfloat16):
+    with autocast_ctx:
         logits, loss = model(x, y)
     loss.backward()
     optimizer.step()
@@ -283,8 +288,9 @@ for i in range(50):
     elif device == "mps":
         torch.mps.synchronize()
     t1 = time.time()
-    dt = (t1 - t0)*1000 # time difference in milliseconds
-    print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms")
+    dt = (t1 - t0) * 1000 # time difference in milliseconds
+    tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)
+    print(f"step {i:2d}, loss: {loss.item():.6f}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
 
 import sys; sys.exit(0)
 
