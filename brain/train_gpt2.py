@@ -259,7 +259,7 @@ if torch.cuda.is_available():
 # =============================================================================
 
 # For quick debugging / local training: B=4, T=32 (or B=4, T=1024 for full context)
-train_loader = DataLoaderLite(B=4, T=32)
+train_loader = DataLoaderLite(B=16, T=1024)
 
 # model = GPT.from_pretrained("gpt2")
 model = GPT(GPTConfig())
