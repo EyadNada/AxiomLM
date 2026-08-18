@@ -254,12 +254,11 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
-train_loader = DataLoaderLite(B=32, T=1024)
-
 # =============================================================================
 # Model Initialization & Optimization
 # =============================================================================
 
+# For quick debugging / local training: B=4, T=32 (or B=4, T=1024 for full context)
 train_loader = DataLoaderLite(B=4, T=32)
 
 # model = GPT.from_pretrained("gpt2")
@@ -275,9 +274,12 @@ for i in range(50):
     logits, loss = model(x, y)
     loss.backward()
     optimizer.step()
-    torch.mps.synchronize()
+    if device == "cuda":
+        torch.cuda.synchronize()
+    elif device == "mps":
+        torch.mps.synchronize()
     t1 = time.time()
-    dt = (t1 - t0)*1000 # time difference in miliseconds
+    dt = (t1 - t0)*1000 # time difference in milliseconds
     print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms")
 
 import sys; sys.exit(0)
