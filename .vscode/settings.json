@@ -11,6 +11,17 @@
     "statusBar.background": "#5B21B6",
     "statusBar.foreground": "#FFFFFF",
     "statusBar.noFolderBackground": "#4C1D95",
-    "statusBar.debuggingBackground": "#7C3AED"
+    "statusBar.debuggingBackground": "#7C3AED",
+    "button.background": "#6D28D9",
+    "button.foreground": "#FFFFFF",
+    "button.hoverBackground": "#7C3AED",
+    "button.secondaryBackground": "#2A2B32",
+    "button.secondaryForeground": "#FFFFFF",
+    "button.secondaryHoverBackground": "#3A3B44",
+    "button.border": "#7C3AED",
+    "editorHoverWidget.background": "#141416",
+    "editorHoverWidget.foreground": "#E4E4E7",
+    "editorHoverWidget.border": "#2E2E34",
+    "editorHoverWidget.statusBarBackground": "#1C1C20"
   }
 }
