@@ -270,6 +270,7 @@ for i in range(50):
     x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
     logits, loss = model(x, y)
+    import code; code.interact(local=locals())
     loss.backward()
     optimizer.step()
     print(f"step {i}, loss: {loss.item()}")
