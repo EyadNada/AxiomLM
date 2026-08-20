@@ -132,8 +132,10 @@ Every technique implemented in this codebase is backed by deep theoretical docum
 | 📑 [AdamW Optimizer Guide](material/adamw_optimizer_guide.md) | **Optimization** | Decoupled Weight Decay math vs. L2 regularization (Loshchilov & Hutter). |
 | 📑 [Tiktokenizer & Tokenization Guide](material/tiktokenizer_guide.md) | **Data Pipeline** | Byte-Pair Encoding (BPE), byte-level fallbacks, and regex tokenizers. |
 | 📑 [Generation & Sampling Strategies](material/generation_and_sampling_strategies.md) | **Inference** | Greedy search, Temperature, Top-$k$, Top-$p$ (Nucleus), and Min-$p$ sampling math. |
+| 📑 [Online Softmax Normalizer Guide](material/online_normalizer_calculation_for_softmax_guide.md) | **Algorithms & Math** | Mathematical breakdown of online safe softmax recurrence and the foundation of FlashAttention. |
 | 📑 [OpenAI GPT-2 Repo Breakdown](material/openai_gpt2_repo_breakdown.md) | **Architecture** | Line-by-line breakdown comparing this repository to OpenAI's original release. |
 | 📑 [Unreasonable Effectiveness of RNNs](material/the_unreasonable_effectiveness_of_rnns.md) | **Foundations** | Andrej Karpathy's foundational manifesto on autoregressive language generation. |
+| 📄 [Online Softmax Normalizer Paper](material/online_normalizer_calculation_for_softmax_paper.pdf) | **Paper (Milakov & Gimelshein)** | *Online normalizer calculation for softmax* (NVIDIA, 2018). |
 | 📄 [Attention Is All You Need](material/attention_is_all_you_need.pdf) | **Paper (Vaswani et al.)** | The legendary Transformer paper introducing scaled dot-product attention. |
 | 📄 [GPT-2 Original Paper](material/gpt2_paper.pdf) | **Paper (Radford et al.)** | *Language Models are Unsupervised Multitask Learners* (OpenAI, 2019). |
 | 📄 [GELU Activation Paper](material/gelu_paper.pdf) | **Paper (Hendrycks et al.)** | *Gaussian Error Linear Units (GELUs)* mathematical motivation. |
