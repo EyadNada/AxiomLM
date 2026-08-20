@@ -19,9 +19,9 @@
     "button.secondaryForeground": "#FFFFFF",
     "button.secondaryHoverBackground": "#3A3B44",
     "button.border": "#7C3AED",
-    "editorHoverWidget.background": "#141416",
-    "editorHoverWidget.foreground": "#E4E4E7",
-    "editorHoverWidget.border": "#2E2E34",
-    "editorHoverWidget.statusBarBackground": "#1C1C20"
+    "editorHoverWidget.background": "#FFFFFF",
+    "editorHoverWidget.foreground": "#0F172A",
+    "editorHoverWidget.border": "#CBD5E1",
+    "editorHoverWidget.statusBarBackground": "#F1F5F9"
   }
 }

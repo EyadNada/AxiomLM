@@ -269,6 +269,9 @@ if device == "cuda":
 model = GPT(GPTConfig())
 model.to(device)
 
+#torch.compile!
+model = torch.compile(model)
+
 # Autocast: use BF16 on CUDA (Tensor Cores); on MPS/CPU use nullcontext for max native throughput
 from contextlib import nullcontext
 autocast_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device == "cuda" else nullcontext()
