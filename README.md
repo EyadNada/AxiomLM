@@ -1,6 +1,6 @@
 <div align="center">
 
-# GPT-2 (124M)
+# GPT-2 (124M) 2.0
 
 ### High-Performance Pure PyTorch Implementation from First Principles
 
