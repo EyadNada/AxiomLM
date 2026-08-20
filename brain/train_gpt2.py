@@ -277,7 +277,7 @@ if device == "cuda":
 
 
 # model = GPT.from_pretrained("gpt2")
-model = GPT(GPTConfig(vocab_size=50304))
+model = GPT(GPTConfig())
 model.to(device)
 
 #torch.compile!
