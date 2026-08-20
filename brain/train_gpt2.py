@@ -288,7 +288,7 @@ if device == "cuda":
 from contextlib import nullcontext
 autocast_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device == "cuda" else nullcontext()
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas = (0.9, 0.95), eps=1e-8)
 for i in range(50):
     t0 = time.time()
     x, y = train_loader.next_batch()
@@ -297,6 +297,7 @@ for i in range(50):
     with autocast_ctx:
         logits, loss = model(x, y)
     loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     if device == "cuda":
         torch.cuda.synchronize()
