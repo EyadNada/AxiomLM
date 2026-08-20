@@ -122,6 +122,9 @@ class GPT(nn.Module):
         #weight sharing scheme
         cast(nn.Embedding, self.transformer['wte']).weight = self.lm_head.weight
 
+        # init all weights
+        self.apply(self._init_weights)
+
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
             std = 0.02
@@ -265,12 +268,14 @@ train_loader = DataLoaderLite(B=4, T=1024)
 if device == "cuda":
     torch.set_float32_matmul_precision('high')
 
+
 # model = GPT.from_pretrained("gpt2")
 model = GPT(GPTConfig())
 model.to(device)
 
 #torch.compile!
-model = torch.compile(model)
+if device == "cuda":
+    model = torch.compile(model)
 
 # Autocast: use BF16 on CUDA (Tensor Cores); on MPS/CPU use nullcontext for max native throughput
 from contextlib import nullcontext
