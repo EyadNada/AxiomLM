@@ -235,12 +235,14 @@ The [`material/`](material/) directory provides detailed analytical guides and r
 | [Float32 Matmul Precision (TF32)](material/torch_set_float32_matmul_precision_guide.md) | Systems & Hardware | Precision levels, mantissa truncation, and GEMM benchmarks on Tensor Cores. |
 | [Tensor Cores & Mixed Precision](material/tensor_cores_and_mixed_precision_guide.md) | Systems & Hardware | NVIDIA Tensor Core architecture, FP16 vs BF16 dynamic ranges, and memory coalescing. |
 | [AdamW Optimizer Guide](material/adamw_optimizer_guide.md) | Optimization | Mathematical breakdown of decoupled weight decay vs L2 regularization. |
+| [GPT-3 Training & Hyperparameters Guide](material/gpt3_training_hyperparameters_guide.md) | Optimization & Scaling | Table 2.1 architecture scaling, AdamW $\beta$ parameters, cosine schedule, and token budgets. |
 | [Tiktokenizer & Tokenization Guide](material/tiktokenizer_guide.md) | Data Pipeline | Byte-Pair Encoding (BPE), byte-level fallback tokens, and regex token patterns. |
 | [Generation & Sampling Strategies](material/generation_and_sampling_strategies.md) | Inference | Mathematical formulations for Temperature, Top-k, Top-p (Nucleus), and Min-p sampling. |
 | [Online Softmax Normalizer Guide](material/online_normalizer_calculation_for_softmax_guide.md) | Algorithms & Math | Safe online softmax recurrence equations underlying FlashAttention. |
 | [OpenAI GPT-2 Repo Breakdown](material/openai_gpt2_repo_breakdown.md) | Architecture | Structural comparison against OpenAI's official TensorFlow release. |
 | [Attention Is All You Need (Paper)](material/attention_is_all_you_need.pdf) | Literature | Vaswani et al. (2017) transformer architecture foundation. |
-| [Language Models are Unsupervised Multitask Learners (Paper)](material/gpt2_paper.pdf) | Literature | Radford et al. (2019) GPT-2 architecture and empirical findings. |
+| [Language Models are Unsupervised Multitask Learners (GPT-2 Paper)](material/gpt2_paper.pdf) | Literature | Radford et al. (2019) GPT-2 architecture and empirical findings. |
+| [Language Models are Few-Shot Learners (GPT-3 Paper)](material/gpt3_paper.pdf) | Literature | Brown et al. (2020) GPT-3 scaling laws, Table 2.1 hyperparameter table, and training recipes. |
 | [Online Normalizer Calculation for Softmax (Paper)](material/online_normalizer_calculation_for_softmax_paper.pdf) | Literature | Milakov & Gimelshein (2018) online safe softmax derivation. |
 | [Gaussian Error Linear Units (GELUs) (Paper)](material/gelu_paper.pdf) | Literature | Hendrycks & Gimpel (2016) smooth activation function derivation. |
 
