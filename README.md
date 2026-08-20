@@ -125,6 +125,7 @@ Every technique implemented in this codebase is backed by deep theoretical docum
 | Document / Paper | Topic | Description |
 |:---|:---:|:---|
 | 📑 [Automatic Mixed Precision (AMP)](material/automatic_mixed_precision_amp_guide.md) | **Hardware & Speed** | PyTorch AMP recipe: `torch.autocast`, `GradScaler`, gradient clipping, and checkpointing. |
+| 📑 [FlashAttention & Fast SDPA](material/flash_attention_guide.md) | **Hardware & Speed** | Fused scaled dot-product attention, IO-awareness, online softmax, and $O(T)$ memory scaling. |
 | 📑 [PyTorch `torch.compile` Guide](material/torch_compile_guide.md) | **Hardware & Speed** | JIT compilation, TorchDynamo, TorchInductor, Triton kernel fusion, and modes. |
 | 📑 [Float32 Matmul Precision (TF32)](material/torch_set_float32_matmul_precision_guide.md) | **Hardware & Speed** | `torch.set_float32_matmul_precision`: TF32 acceleration, precision levels, and GEMM benchmarks. |
 | 📑 [Tensor Cores & Mixed Precision](material/tensor_cores_and_mixed_precision_guide.md) | **Hardware & Speed** | NVIDIA Tensor Core architecture, FP16/BF16/TF32 formats, loss scaling & alignment. |
