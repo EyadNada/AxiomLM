@@ -25,16 +25,55 @@ torch.optim.AdamW(
 )
 ```
 
-### Key Parameter Descriptions
+### Parameter Reference Table
 
 | Parameter | Type | Default | Description |
 |:---|:---:|:---:|:---|
 | **`params`** | `iterable` | *required* | Iterable of parameters to optimize or dicts defining parameter groups. |
-| **`lr`** | `float` | `1e-3` | Learning rate ($\gamma$ or $\alpha$). For GPT-2 (124M) pretraining, typically starts around `6e-4` (or `3e-4` for quick experiments/debugging). |
-| **`betas`** | `Tuple[float, float]` | `(0.9, 0.999)` | Coefficients $(\beta_1, \beta_2)$ for running averages of gradient and its square. For GPT-2: $\beta_1 = 0.9, \beta_2 = 0.95$. |
-| **`eps`** | `float` | `1e-8` | Small constant $\epsilon$ added to the denominator to improve numerical stability. |
-| **`weight_decay`** | `float` | `1e-2` | Decoupled weight decay coefficient ($\lambda$). In GPT-2: typically `0.1` (applied only to 2D weight tensors). |
-| **`fused`** | `bool / None` | `None` | If `True` (and supported on CUDA), uses a fast fused CUDA kernel for step updates. |
+| **`lr`** | `float` | `1e-3` | Learning rate ($\gamma$ or $\alpha$). In GPT-2 (124M): starts at `6e-4` with cosine decay. |
+| **`betas`** | `Tuple[float, float]` | `(0.9, 0.999)` | Coefficients $(\beta_1, \beta_2)$ for running averages of gradient and squared gradient. For GPT-2: `(0.9, 0.95)`. |
+| **`eps`** | `float` | `1e-8` | Term added to denominator to improve numerical stability ($\epsilon$). |
+| **`weight_decay`** | `float` | `1e-2` | Decoupled weight decay coefficient ($\lambda$). In GPT-2: `0.1` (applied only to 2D weight tensors). |
+| **`amsgrad`** | `bool` | `False` | Whether to use the AMSGrad variant from the paper *On the Convergence of Adam and Beyond*. |
+| **`maximize`** | `bool` | `False` | Maximize the objective with respect to params instead of minimizing. |
+| **`foreach`** | `bool / None` | `None` | Whether the multi-tensor "foreach" implementation is used. Significantly faster than for-loop on CUDA by batching kernel launches over tensor lists. Uses $\sim \text{sizeof(params)}$ more peak memory. |
+| **`capturable`** | `bool` | `False` | Whether this instance is safe to capture in a CUDA graph. Passing `True` can impair ungraphed performance. |
+| **`differentiable`** | `bool` | `False` | Whether autograd should track optimizer steps. If `False`, `step()` runs inside `torch.no_grad()`. |
+| **`fused`** | `bool / None` | `None` | Whether the fused implementation (CUDA only) is used. Supports `float64`, `float32`, `float16`, and `bfloat16`. Fuses math into a single CUDA kernel. |
+
+---
+
+## 2. Optimizer Implementations: Fused vs. Foreach vs. For-Loop
+
+PyTorch provides three underlying execution paths for AdamW on CUDA:
+
+```
+[Speed Ranking]:   Fused  >  Foreach  >  For-Loop (Single Tensor)
+```
+
+```mermaid
+flowchart TD
+    A["Optimizer Step Execution Mode"] --> B{"User flags set?"}
+    B -->|"fused=True"| C["1. Fused Implementation (CUDA Only)<br/>Single fused C++/CUDA kernel launch per parameter.<br/>Fastest: Zero memory round-trips to GPU HBM."]
+    B -->|"foreach=True or Default (None)"| D["2. Foreach Implementation (Multi-Tensor)<br/>Batches operations across lists of tensors.<br/>Fast: Fewer kernel launches, uses slightly more peak VRAM."]
+    B -->|"foreach=False, fused=False / CPU / MPS"| E["3. For-Loop Implementation (Single-Tensor)<br/>Iterates in Python over every tensor individually.<br/>Slowest: High kernel launch and Python loop overhead."]
+```
+
+### Key Differences & Behavior:
+
+1. **`fused` (Fastest — CUDA Only)**:
+   - Fuses momentum, variance, weight decay, and parameter update operations into **a single fused CUDA C++ kernel per parameter**.
+   - **Benefit**: Avoids writing intermediate tensors back and forth to GPU high-bandwidth memory (HBM/VRAM).
+   - **Supported Dtypes**: `torch.float32`, `torch.bfloat16`, `torch.float16`, and `torch.float64`.
+   - **Why not default?**: It is newer and has had less "bake-in" time in PyTorch, so PyTorch defaults to `foreach` unless `fused=True` is explicitly passed.
+
+2. **`foreach` (Multi-Tensor — Default on CUDA)**:
+   - Uses PyTorch's `_foreach_*` multi-tensor C++ APIs to apply vector math across entire lists of tensors in fewer kernel dispatches.
+   - Faster than standard for-loops, but allocates a small amount of extra peak memory ($\sim \text{sizeof(params)}$) for tensor lists.
+
+3. **`for-loop` (Fallback — Single Tensor / CPU / MPS)**:
+   - Standard Python loop iterating through each parameter tensor one-by-one.
+   - Used on CPU, Apple Silicon (MPS), or when `foreach=False` and `fused=False`.
 
 ---
 
