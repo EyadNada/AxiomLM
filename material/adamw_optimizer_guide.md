@@ -77,7 +77,7 @@ flowchart TD
 
 ---
 
-## 2. The Core Mathematical Algorithm
+## 3. The Core Mathematical Algorithm
 
 AdamW implements the algorithm from **Loshchilov & Hutter (2017/2019)**: *"Decoupled Weight Decay Regularization"*.
 
@@ -103,7 +103,7 @@ Given gradient $g_t = \nabla_\theta f_t(\theta_{t-1})$:
 
 ---
 
-## 3. Why AdamW instead of Standard Adam? (L2 Regularization vs. True Weight Decay)
+## 4. Why AdamW instead of Standard Adam? (L2 Regularization vs. True Weight Decay)
 
 In standard SGD, L2 regularization ($\frac{1}{2}\lambda \|\theta\|^2$) is mathematically identical to weight decay.
 
@@ -119,7 +119,7 @@ However, in adaptive optimizers like **Adam**:
 
 ---
 
-## 4. Usage in GPT-2 (124M)
+## 5. Usage in GPT-2 (124M)
 
 ### A. Simple Optimization Loop (Overfitting a Single Batch)
 
@@ -173,7 +173,7 @@ def configure_optimizers(model, weight_decay=0.1, learning_rate=6e-4, betas=(0.9
     print(f"Non-decayed parameter tensors: {len(nodecay_params)} ({num_nodecay_params:,} parameters)")
 
     # Use fused kernel if available on CUDA
-    fused_available = 'fused' in torch.optim.AdamW.__init__.__code__.co_varnames
+    fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
     use_fused = fused_available and device_type == 'cuda'
     extra_args = dict(fused=True) if use_fused else dict()
 
@@ -183,7 +183,7 @@ def configure_optimizers(model, weight_decay=0.1, learning_rate=6e-4, betas=(0.9
 
 ---
 
-## 5. Summary of Recommended GPT-2 (124M) Settings
+## 6. Summary of Recommended GPT-2 (124M) Settings
 
 | Setting | GPT-2 Value | Notes |
 |:---|:---:|:---|
