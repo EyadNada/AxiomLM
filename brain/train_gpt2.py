@@ -290,10 +290,7 @@ if torch.cuda.is_available():
 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     torch.mps.manual_seed(1337)
 
-# Batch size configuration:
-# In Andrej's video on 8x A100: total_batch_size = 524288 (~0.5M tokens for massive datasets like FineWeb).
-# For Shakespeare on a MacBook: total_batch_size = 4096 (or 16384) gives fast, lightweight iterations without heating up.
-total_batch_size = 4096 # 4 micro batch size * 1024 seq length = 4096 tokens per step
+total_batch_size = 524288 # 2**19, ~0.5M, in number of tokens
 B = 4 # micro batch size
 T = 1024 # sequence length
 assert total_batch_size % (B * T) == 0, "make sure total_batch_size is divisible by B * T"
