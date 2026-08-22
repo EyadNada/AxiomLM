@@ -1,6 +1,6 @@
 <div align="center">
 
-# The line-by-line PyTorch implementation of Open AI's original TensorFlow GPT-2 124 Million Parameters w/Optimization (EagerFP32/TF32/BF16/FusedSDPA/JIT/FusedAdamW/DDP)
+# The line-by-line PyTorch implementation of Open AI's original TensorFlow GPT-2 124 Million Parameters w/Apple Silicon Optimization (EagerFP32/TF32/BF16/FusedSDPA/JIT/FusedAdamW/DDP)
 
 ### High-Performance Pure PyTorch Implementation from First Principles
 
