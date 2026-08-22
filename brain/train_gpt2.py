@@ -291,10 +291,9 @@ elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     torch.mps.manual_seed(1337)
 
 # Batch size configuration:
-# In Andrej's video on 8x A100: total_batch_size = 524288 (~0.5M tokens, 128 micro-steps of 4096 tokens).
-# On a MacBook without A100s, processing 524k tokens per step takes significant CPU/GPU time.
-# You can adjust total_batch_size (e.g. 524288 for exact full reproduction, or 16384/4096 for fast local iterations)
-total_batch_size = 524288 # 2**19, ~0.5M, in number of tokens
+# In Andrej's video on 8x A100: total_batch_size = 524288 (~0.5M tokens for massive datasets like FineWeb).
+# For Shakespeare on a MacBook: total_batch_size = 4096 (or 16384) gives fast, lightweight iterations without heating up.
+total_batch_size = 4096 # 4 micro batch size * 1024 seq length = 4096 tokens per step
 B = 4 # micro batch size
 T = 1024 # sequence length
 assert total_batch_size % (B * T) == 0, "make sure total_batch_size is divisible by B * T"
@@ -359,8 +358,10 @@ for step in range(max_steps):
         loss = loss / grad_accum_steps
         loss_accum += loss.detach()
         loss.backward()
-        print(f"\r  [step {step:2d}/{max_steps}] micro-step {micro_step+1:3d}/{grad_accum_steps} | loss: {loss_accum.item() * (grad_accum_steps / (micro_step+1)):.4f}", end="", flush=True)
-    print() # newline after micro-steps finish
+        if grad_accum_steps > 1:
+            print(f"\r  [step {step:2d}/{max_steps}] micro-step {micro_step+1:3d}/{grad_accum_steps} | loss: {loss_accum.item() * (grad_accum_steps / (micro_step+1)):.4f}", end="", flush=True)
+    if grad_accum_steps > 1:
+        print() # newline after micro-steps finish
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     # determine and set the learning rate for this iteration
     lr = get_lr(step)
