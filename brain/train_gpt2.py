@@ -290,7 +290,9 @@ if torch.cuda.is_available():
 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     torch.mps.manual_seed(1337)
 
-total_batch_size = 524288 # 2**19, ~0.5M, in number of tokens
+# Option C: 16,384 tokens per step (4 micro-steps of 4096 tokens)
+# Total tokens: 16,384 * 1,600 = 26,214,400 (Exact 26.2M token training volume as Andrej's 50 * 524,288 run)
+total_batch_size = 16384 # 16k tokens per step
 B = 4 # micro batch size
 T = 1024 # sequence length
 assert total_batch_size % (B * T) == 0, "make sure total_batch_size is divisible by B * T"
@@ -322,8 +324,8 @@ autocast_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if devic
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
-warmup_steps = 10
-max_steps = 50
+warmup_steps = 320 # 20% warmup (same proportion as 10 / 50)
+max_steps = 1600   # total steps to match 26.2M tokens (same volume as 50 * 524,288)
 
 def get_lr(it):
     # 1) linear warmup for warmup_iters steps
@@ -356,7 +358,7 @@ for step in range(max_steps):
         loss_accum += loss.detach()
         loss.backward()
         if grad_accum_steps > 1:
-            print(f"\r  [step {step:2d}/{max_steps}] micro-step {micro_step+1:3d}/{grad_accum_steps} | loss: {loss_accum.item() * (grad_accum_steps / (micro_step+1)):.4f}", end="", flush=True)
+            print(f"\r  [step {step:4d}/{max_steps}] micro-step {micro_step+1:2d}/{grad_accum_steps} | loss: {loss_accum.item() * (grad_accum_steps / (micro_step+1)):.4f}", end="", flush=True)
     if grad_accum_steps > 1:
         print() # newline after micro-steps finish
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
