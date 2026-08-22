@@ -359,6 +359,8 @@ for step in range(max_steps):
         loss = loss / grad_accum_steps
         loss_accum += loss.detach()
         loss.backward()
+        print(f"\r  [step {step:2d}/{max_steps}] micro-step {micro_step+1:3d}/{grad_accum_steps} | loss: {loss_accum.item() * (grad_accum_steps / (micro_step+1)):.4f}", end="", flush=True)
+    print() # newline after micro-steps finish
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     # determine and set the learning rate for this iteration
     lr = get_lr(step)
@@ -373,7 +375,7 @@ for step in range(max_steps):
     dt = t1 - t0 # time difference in seconds
     tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
     tokens_per_sec = tokens_processed / dt
-    print(f"step {step:4d} | loss: {loss.accum.item():.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}", flush=True)
+    print(f"step {step:4d} | loss: {loss_accum.item():.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}", flush=True)
 
 # =============================================================================
 # Prefix Tokens & Text Generation
