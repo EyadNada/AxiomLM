@@ -228,12 +228,12 @@ class GPT(nn.Module):
         ]
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
-        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters", flush=True)
+        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters", flush=True)
         # Create AdamW optimizer and use the fused version if it is available
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and 'cuda' in device
-        print(f"using fused AdamW: {use_fused}")
+        print(f"using fused AdamW: {use_fused}", flush=True)
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
         return optimizer
 
@@ -253,8 +253,8 @@ class DataLoaderLite:
         enc = tiktoken.get_encoding('gpt2')
         tokens = enc.encode(text)
         self.tokens = torch.tensor(tokens)
-        print(f"loaded {len(self.tokens)} tokens")
-        print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
+        print(f"loaded {len(self.tokens)} tokens", flush=True)
+        print(f"1 epoch = {len(self.tokens) // (B * T)} batches", flush=True)
 
         # state
         self.current_position = 0
@@ -282,19 +282,25 @@ if torch.cuda.is_available():
     device = "cuda"
 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = "mps"
-print(f"using device: {device}")
+print(f"using device: {device}", flush=True)
 
 torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    torch.mps.manual_seed(1337)
 
+# Batch size configuration:
+# In Andrej's video on 8x A100: total_batch_size = 524288 (~0.5M tokens, 128 micro-steps of 4096 tokens).
+# On a MacBook without A100s, processing 524k tokens per step takes significant CPU/GPU time.
+# You can adjust total_batch_size (e.g. 524288 for exact full reproduction, or 16384/4096 for fast local iterations)
 total_batch_size = 524288 # 2**19, ~0.5M, in number of tokens
 B = 4 # micro batch size
 T = 1024 # sequence length
 assert total_batch_size % (B * T) == 0, "make sure total_batch_size is divisible by B * T"
 grad_accum_steps = total_batch_size // (B * T)
-print(f"total desired batch size: {total_batch_size}")
-print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
+print(f"total desired batch size: {total_batch_size}", flush=True)
+print(f"=> calculated gradient accumulation steps: {grad_accum_steps}", flush=True)
 
 # =============================================================================
 # Model Initialization & Optimization
@@ -310,7 +316,7 @@ if device == "cuda":
 model = GPT(GPTConfig())
 model.to(device)
 
-#torch.compile
+# torch.compile
 if device == "cuda":
     model = cast(GPT, torch.compile(model))
 
@@ -337,7 +343,7 @@ def get_lr(it):
     return min_lr + coeff * (max_lr - min_lr)
 
 # optimize!
-#optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
+# optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
 optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 
 for step in range(max_steps):
@@ -349,10 +355,7 @@ for step in range(max_steps):
         x, y = x.to(device), y.to(device)
         with autocast_ctx:
             logits, loss = model(x, y)
-        # we have to scale the loss to account for gradient accumulation,
-        # because the gradients just add on each successive backward().
-        # addition of gradients corresponds to a SUM in the objective, but
-        # instead of a SUM we want MEAN. Scale the loss here so it comes out right
+        # scale the loss to account for gradient accumulation
         loss = loss / grad_accum_steps
         loss_accum += loss.detach()
         loss.backward()
@@ -370,9 +373,7 @@ for step in range(max_steps):
     dt = t1 - t0 # time difference in seconds
     tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
     tokens_per_sec = tokens_processed / dt
-    print(f"step {step:4d} | loss: {loss_accum.item():.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
-
-import sys; sys.exit(0)
+    print(f"step {step:4d} | loss: {loss_accum.item():.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}", flush=True)
 
 # =============================================================================
 # Prefix Tokens & Text Generation
@@ -415,9 +416,8 @@ while x.size(1) < max_length:
         x = torch.cat((x, xcol), dim=1)
 
 # print the generated text
-#for i in range(num_return_sequences):
-#    tokens = x[i, :max_length].tolist()
-#    decoded = enc.decode(tokens)
-#    print(">", decoded)
-
-#02:26:21
+print("\n--- Generated Samples ---", flush=True)
+for i in range(num_return_sequences):
+    tokens = x[i, :max_length].tolist()
+    decoded = enc.decode(tokens)
+    print(">", decoded, flush=True)
