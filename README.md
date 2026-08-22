@@ -1,6 +1,6 @@
 <div align="center">
 
-# GPT-2 (124M) 2.0
+# The PyTorch implementation of Open AI's original TensorFLow GPT-2 124 Million Parameters (with optimization- Baseline up to 13x)
 
 ### High-Performance Pure PyTorch Implementation from First Principles
 
