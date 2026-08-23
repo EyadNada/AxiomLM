@@ -275,6 +275,11 @@ class DataLoaderLite:
 # Automatic Device Selection
 # =============================================================================
 
+# Note: This implementation is intentionally optimized and streamlined for a
+# single MPS GPU (Apple Silicon Mac) or single CUDA GPU.
+# For multi-GPU scaling (e.g. 8x A100/H100 cloud clusters with torchrun and DDP),
+# see material/distributed_data_parallel_ddp_guide.md and material/pytorch_distributed_ddp_paper.pdf.
+
 import time
 
 device = "cpu"
