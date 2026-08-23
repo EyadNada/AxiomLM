@@ -447,9 +447,9 @@ for i in range(num_return_sequences):
     decoded = enc.decode(tokens)
     print(">", decoded, flush=True)
 
-    #02:53:32
-    #1:27
-    #34:09
-    #01:09:19
-    #6:09:7
-    #32:11
+    #03:25:32
+    #2:17
+    #43:23
+    #02:01:19
+    #7:00:02
+    #39:50
