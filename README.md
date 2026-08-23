@@ -241,6 +241,7 @@ The [`material/`](material/) directory provides detailed analytical guides and r
 | [Tensor Cores & Mixed Precision](material/tensor_cores_and_mixed_precision_guide.md) | Systems & Hardware | NVIDIA Tensor Core architecture, FP16 vs BF16 dynamic ranges, and memory coalescing. |
 | [AdamW Optimizer Guide](material/adamw_optimizer_guide.md) | Optimization | Mathematical breakdown of decoupled weight decay vs L2 regularization. |
 | [GPT-3 Training & Hyperparameters Guide](material/gpt3_training_hyperparameters_guide.md) | Optimization & Scaling | Table 2.1 architecture scaling, AdamW $\beta$ parameters, cosine schedule, and token budgets. |
+| [Pretraining Datasets (WebText vs GPT-3 & FineWeb)](material/datasets_webtext_gpt2_vs_gpt3_guide.md) | Data Pipeline | WebText curation (Reddit karma filter), GPT-3 5-source blend, quality classifiers, MinHash deduplication, and FineWeb-Edu. |
 | [Tiktokenizer & Tokenization Guide](material/tiktokenizer_guide.md) | Data Pipeline | Byte-Pair Encoding (BPE), byte-level fallback tokens, and regex token patterns. |
 | [Generation & Sampling Strategies](material/generation_and_sampling_strategies.md) | Inference | Mathematical formulations for Temperature, Top-k, Top-p (Nucleus), and Min-p sampling. |
 | [Online Softmax Normalizer Guide](material/online_normalizer_calculation_for_softmax_guide.md) | Algorithms & Math | Safe online softmax recurrence equations underlying FlashAttention. |
