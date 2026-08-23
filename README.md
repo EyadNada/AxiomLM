@@ -182,10 +182,13 @@ This reduces parameter memory by $38.6\text{M}$ weights ($50,257 \times 768$), s
     ├── tiktokenizer_guide.md
     ├── torch_compile_guide.md
     ├── torch_set_float32_matmul_precision_guide.md
+    ├── distributed_data_parallel_ddp_guide.md
     ├── attention_is_all_you_need.pdf
     ├── gelu_paper.pdf
     ├── gpt2_paper.pdf
-    └── online_normalizer_calculation_for_softmax_paper.pdf
+    ├── gpt3_paper.pdf
+    ├── online_normalizer_calculation_for_softmax_paper.pdf
+    └── pytorch_distributed_ddp_paper.pdf
 ```
 
 ---
@@ -209,7 +212,8 @@ pip install -r requirements.txt
 
 ### 2. Training Execution
 
-The training pipeline automatically detects available hardware acceleration (`cuda`, `mps`, or `cpu`) and activates appropriate optimization contexts:
+> **Note on Hardware Optimization:**
+> The primary training script [`brain/train_gpt2.py`](brain/train_gpt2.py) is tailored and optimized out-of-the-box for **a single MPS GPU** (Apple Silicon) or single CUDA GPU. For multi-GPU cloud clusters (AWS, Lambda Labs, RunPod, GCP), see the [Distributed Data Parallel (DDP) Guide](material/distributed_data_parallel_ddp_guide.md).
 
 ```bash
 python brain/train_gpt2.py
@@ -229,6 +233,7 @@ The [`material/`](material/) directory provides detailed analytical guides and r
 
 | Document / Reference | Subject Area | Description |
 |:---|:---:|:---|
+| [Distributed Data Parallel (DDP) Guide](material/distributed_data_parallel_ddp_guide.md) | Distributed & Multi-GPU | Multi-GPU scaling, Ring All-Reduce, gradient bucketing, and `model.no_sync()` gradient accumulation. |
 | [Automatic Mixed Precision (AMP)](material/automatic_mixed_precision_amp_guide.md) | Systems & Hardware | `torch.autocast`, `GradScaler`, dynamic range behavior, and precision formats. |
 | [FlashAttention & Fast SDPA](material/flash_attention_guide.md) | Systems & Hardware | Fused scaled dot-product attention, IO-awareness, and online softmax scaling. |
 | [PyTorch `torch.compile` Guide](material/torch_compile_guide.md) | Systems & Hardware | JIT compilation, TorchDynamo, TorchInductor, and OpenAI Triton kernel generation. |
@@ -240,6 +245,7 @@ The [`material/`](material/) directory provides detailed analytical guides and r
 | [Generation & Sampling Strategies](material/generation_and_sampling_strategies.md) | Inference | Mathematical formulations for Temperature, Top-k, Top-p (Nucleus), and Min-p sampling. |
 | [Online Softmax Normalizer Guide](material/online_normalizer_calculation_for_softmax_guide.md) | Algorithms & Math | Safe online softmax recurrence equations underlying FlashAttention. |
 | [OpenAI GPT-2 Repo Breakdown](material/openai_gpt2_repo_breakdown.md) | Architecture | Structural comparison against OpenAI's official TensorFlow release. |
+| [PyTorch Distributed: Accelerating Data Parallel Training (DDP Paper)](material/pytorch_distributed_ddp_paper.pdf) | Literature | Li et al. (VLDB 2020) DistributedDataParallel architecture and gradient bucketing design. |
 | [Attention Is All You Need (Paper)](material/attention_is_all_you_need.pdf) | Literature | Vaswani et al. (2017) transformer architecture foundation. |
 | [Language Models are Unsupervised Multitask Learners (GPT-2 Paper)](material/gpt2_paper.pdf) | Literature | Radford et al. (2019) GPT-2 architecture and empirical findings. |
 | [Language Models are Few-Shot Learners (GPT-3 Paper)](material/gpt3_paper.pdf) | Literature | Brown et al. (2020) GPT-3 scaling laws, Table 2.1 hyperparameter table, and training recipes. |
