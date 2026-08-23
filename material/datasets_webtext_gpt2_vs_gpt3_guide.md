@@ -1,19 +1,28 @@
-# Pretraining Datasets Guide: WebText (GPT-2) vs. GPT-3 Data Mixture
+# Pretraining Datasets Guide: WebText (GPT-2), GPT-3, RedPajama, SlimPajama & FineWeb
 
-A comprehensive architectural and engineering guide on the pretraining datasets used in **GPT-2 (WebText)** and **GPT-3 (Common Crawl Mixture & WebText2)**, their curation pipelines, filtering mechanisms, deduplication techniques, and modern successors (e.g., **FineWeb-Edu**).
+A comprehensive architectural and engineering guide on the pretraining datasets used across the major generations of Large Language Models:
+* **GPT-2 (WebText)**: Social-curation heuristics (Reddit karma).
+* **GPT-3 (300B Mixture)**: Classifier-filtered Common Crawl + high-quality source oversampling.
+* **RedPajama-1T (Together AI)**: Open-source reproduction of Meta's LLaMA dataset recipe.
+* **SlimPajama-627B (Cerebras)**: Large-scale MinHashLSH deduplicated and cleaned distillation of RedPajama.
+* **RedPajama-V2 (30T Tokens)**: Trillion-scale open corpus with 40+ computable quality annotations.
+* **FineWeb & FineWeb-Edu (Hugging Face)**: Modern synthetic LLM-as-a-judge quality scoring.
 
 ---
 
-## 1. Overview & Evolution of Pretraining Corpora
+## 1. Overview & Evolutionary Timeline of Pretraining Corpora
 
-Language modeling transitioned from small, human-annotated academic benchmarks (e.g., Penn Treebank, WikiText-103) to web-scale uncurated and heuristically filtered corpora. 
+Language modeling transitioned from small, human-annotated academic benchmarks to web-scale uncurated corpora, and finally to heavily deduplicated, classifier-filtered datasets.
 
-| Model | Dataset | Raw Volume | Training Tokens | Key Philosophy |
-|:---|:---|:---:|:---:|:---|
-| **GPT-1 (2018)** | BookCorpus | ~4.5 GB | ~1 Billion | Long contiguous spans of structured narrative text. |
-| **GPT-2 (2019)** | **WebText** | ~40 GB (8M docs) | ~10 Billion | Human-curated web links via Reddit karma thresholding. |
-| **GPT-3 (2020)** | **Filtered Common Crawl + WebText2 + Books + Wiki** | ~570 GB (post-filter) | ~300 Billion | Multi-source weighted blend, classifier-based quality filtering, MinHash deduplication. |
-| **Modern (2024+)** | **FineWeb / FineWeb-Edu / RedPajama-V2** | 15+ Trillion tokens | 1T – 15T+ | Advanced heuristic classifiers + LLM-as-a-judge quality scoring. |
+| Model / Dataset | Year | Raw Volume | Training Tokens | Key Philosophy & Filtering Mechanism |
+|:---|:---:|:---|:---:|:---|
+| **GPT-1 (BookCorpus)** | 2018 | ~4.5 GB | ~1 Billion | Long contiguous spans of structured narrative text. |
+| **GPT-2 (WebText)** | 2019 | ~40 GB (8M docs) | ~10 Billion | Human-curated web links via Reddit karma threshold ($\ge 3$). |
+| **GPT-3 (Mixture)** | 2020 | ~570 GB (post-filter) | ~300 Billion | 5-source blend, logistic regression quality classifier, MinHash deduplication. |
+| **RedPajama-1T** | 2023 | ~5 TB | ~1.21 Trillion | Open reproduction of Meta LLaMA recipe across 7 data slices. |
+| **SlimPajama (Cerebras)** | 2023 | ~2.5 TB | ~627 Billion | Extensively deduplicated RedPajama (removed 49.6% duplicated bytes via distributed MinHashLSH). |
+| **RedPajama-V2** | 2023 | ~100 TB | ~30 Trillion | 84 Common Crawl dumps pre-computed with 40+ quality signals. |
+| **FineWeb-Edu** | 2024 | ~44 TB | 1.3+ Trillion | Scored & filtered with Llama-3-70B-Instruct educational quality classifier. |
 
 ---
 
@@ -54,7 +63,7 @@ To obtain high-quality human-curated content without manual annotation, OpenAI u
    - All **Wikipedia pages were explicitly removed** from WebText. OpenAI did this because Wikipedia articles are heavily used in downstream evaluation benchmarks; removing Wikipedia prevented trivial evaluation memorization.
 3. **Open-Source Reproductions:**
    - OpenAI never publicly released the raw WebText corpus due to copyright and licensing constraints.
-   - The community created open-source reproductions:
+   - Open reproductions:
      - **OpenWebText (2019):** Scrapes Reddit submissions through 2018 with $\ge 3$ karma (~38 GB text, ~9B tokens).
      - **OpenWebText2 (EleutherAI, 2020):** Extended Reddit scraping to 2020, added cleaner deduplication and content filters for The Pile.
 
@@ -63,7 +72,7 @@ To obtain high-quality human-curated content without manual annotation, OpenAI u
 ## 3. GPT-3 Training Dataset: The 300B-Token Mixture
 
 ### Why WebText Was Insufficient for GPT-3
-For the 175B-parameter GPT-3 model, training for 300 billion tokens on the 10B-token WebText would have meant repeating the same data 30 times, causing catastrophic overfitting and performance plateaus. OpenAI therefore expanded to web-scale **Common Crawl**, but introduced an extensive 3-stage cleaning pipeline.
+For the 175B-parameter GPT-3 model, training for 300 billion tokens on the 10B-token WebText would have meant repeating the same data 30 times, causing catastrophic overfitting and performance plateaus. OpenAI therefore expanded to web-scale **Common Crawl**, introducing an extensive 3-stage cleaning pipeline.
 
 ### The 5 Datasets in the GPT-3 Mixture
 
@@ -99,8 +108,6 @@ For the 175B-parameter GPT-3 model, training for 300 billion tokens on the 10B-t
 
 ## 4. GPT-3 Data Processing & Filtering Pipeline
 
-To make Common Crawl usable, OpenAI developed a 3-part filtering and curation pipeline:
-
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    GPT-3 COMMON CRAWL FILTERING PIPELINE                    │
@@ -128,39 +135,78 @@ To make Common Crawl usable, OpenAI developed a 3-part filtering and curation pi
   Result: 410 Billion Clean Tokens from >45 Terabytes of Raw Crawl
 ```
 
-### 1. Classifier-Based Quality Filtering
-* Trained a **fast Logistic Regression text classifier** using word-level and sentence-level features.
-* **Positive Training Set:** High-quality trusted text (WebText, Books, Wikipedia).
-* **Negative Training Set:** Raw, unfiltered Common Crawl web pages.
-* Each document was scored; documents with low quality scores were probabilistically discarded.
+---
 
-### 2. MinHash Deduplication
-* High levels of duplicate text harm generalization and increase memorization.
-* Document-level deduplication used **MinHashLSH with 13-grams** to detect and remove near-duplicate documents within and across crawl dumps.
+## 5. RedPajama & SlimPajama: The Open Foundation Era
 
-### 3. Contamination Filtering
-* For zero-shot and few-shot evaluation integrity, OpenAI ran n-gram overlap checks against test sets of downstream benchmarks (LAMBADA, Winograd, PIQA, ARC, OpenBookQA).
-* When test overlap was identified, contaminated benchmark samples were flagged and reported.
+### A. RedPajama-1T (Together AI, April 2023)
+When Meta released LLaMA 1 in early 2023, its high quality derived from a curated 1.4T token recipe across 7 distinct domains. However, Meta did not release the underlying dataset. 
+
+**Together AI** (along with Ontocord.ai, ETH DS3Lab, Stanford CRFM, and Hazy Research) launched the **RedPajama project** to create a 100% open-source reproduction of the LLaMA pretraining dataset (~1.21 Trillion tokens).
+
+```
+                      REDPAJAMA-1T COMPOSITION (1.21T Tokens)
+┌───────────────────────────┬──────────────┬──────────────────────────────────┐
+│ Slice                     │ Token Volume │ Source / Description             │
+├───────────────────────────┼──────────────┼──────────────────────────────────┤
+│ Common Crawl              │ 878 Billion  │ 5 CC dumps filtered via CCNet    │
+│ C4                        │ 175 Billion  │ Cleaned English web text         │
+│ GitHub                    │ 30 Billion   │ Open-source repos (MIT, Apache)  │
+│ Books                     │ 26 Billion   │ Gutenberg + Book3 corpus         │
+│ ArXiv                     │ 28 Billion   │ Scientific papers in LaTeX       │
+│ Wikipedia                 │ 24 Billion   │ 20 languages                     │
+│ StackExchange             │ 20 Billion   │ Question & Answer coding pairs   │
+└───────────────────────────┴──────────────┴──────────────────────────────────┘
+```
 
 ---
 
-## 5. Direct Comparison: WebText (GPT-2) vs. WebText2 vs. GPT-3 Mixture
+### B. SlimPajama: 627B Token Deduplicated Distillation (Cerebras, June 2023)
 
-| Dimension | GPT-2 (WebText) | GPT-3 (WebText2) | GPT-3 Full Mixture |
-|:---|:---|:---|:---|
-| **Release Year** | 2019 | 2020 | 2020 |
-| **Data Sources** | Outbound Reddit links ($\ge 3$ karma) | Outbound Reddit links ($\ge 3$ karma) from newer time period | 5 distinct sources (Filtered CC, WebText2, Books1, Books2, Wikipedia) |
-| **Raw Text Volume** | 40 GB | ~90 GB | > 1 TB raw before filtering |
-| **Token Count** | ~8–10 Billion | ~19 Billion | ~300 Billion sampled (from ~500B pool) |
-| **Quality Filter Mechanism** | Implicit (human Reddit karma threshold $\ge 3$) | Implicit (Reddit karma threshold) + updated text extraction | Supervised Logistic Regression Classifier + MinHashLSH |
-| **Deduplication** | Exact / heuristic doc deduplication | Exact & MinHash deduplication | Document-level MinHashLSH across 45TB crawl |
-| **Wikipedia Inclusion** | ❌ **Excluded** (avoid benchmark contamination) | ❌ **Excluded** | ✅ **Included** (3% mixture weight, ~3.4 epochs) |
-| **Books Inclusion** | ❌ **No dedicated books corpus** | ❌ **No dedicated books corpus** | ✅ **Included** (Books1: 8%, Books2: 8%) |
-| **Multi-Source Sampling** | Uniform single-source | Uniform single-source | Temperature-weighted multinomial sampling per source |
+Although RedPajama-1T was a major milestone, it suffered from significant cross-source duplicate text, boilerplate repetition, and low-quality web snippets.
+
+**Cerebras Systems** released **SlimPajama** (June 9, 2023):
+* Developed a high-throughput, distributed **MinHashLSH (Locality-Sensitive Hashing)** pipeline.
+* Extensively cleaned and deduplicated the entire 1.21T RedPajama corpus.
+* **Removed 49.6% of raw bytes**, reducing the volume from **1,210B tokens down to 627B tokens**.
+
+```
+                REDUCING REDPAJAMA (1.21T) TO SLIMPAJAMA (627B)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  RedPajama-1T Raw Pool (1,210B Tokens / ~5.0 TB)                            │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼ Distributed MinHashLSH Deduplication
+                                       │ (13-gram shingles, 128 hash functions)
+                                       │ Filters: Cross-slice duplicates,
+                                       │ boilerplate lines, dead text
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  SlimPajama (627B Tokens / ~2.5 TB)  ───► 49.6% Bytes Removed               │
+│  • Common Crawl: 367B  • C4: 161B   • GitHub: 30B   • Books: 26B            │
+│  • ArXiv: 28B          • Wiki: 24B  • StackExchange: 20B                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Why SlimPajama Outperforms RedPajama:
+1. **Higher Sample Efficiency:** Training on SlimPajama yields the same or better zero-shot downstream accuracy in half the training steps (and half the GPU compute budget).
+2. **Reduced Memorization:** Repetitive sequences that cause catastrophic language generation loops are pruned.
+3. **Better Upsampling Stability:** High-quality domains (Wikipedia, Books, ArXiv) are preserved intact while noisy web duplicates in Common Crawl are eliminated.
 
 ---
 
-## 6. Modern Datasets & Andrej Karpathy's Implementation (FineWeb-Edu)
+### C. RedPajama-V2 (Together AI, Late 2023)
+Together AI expanded the vision with **RedPajama-V2**:
+* **30+ Trillion tokens** across 84 Common Crawl dumps (2014–2023) covering English, German, French, Spanish, and Italian.
+* Instead of releasing a single opinionated filtered cut, RedPajama-V2 computed **40+ quality signals per document**:
+  * Statistical signals (line length, character entropy, punctuation density).
+  * Model-based perplexity scores (Kneser-Ney, FastText, CCNet).
+  * Toxicity, profanity, and duplication counts.
+* Enables researchers to construct customized data mixtures tailored to specific compute and quality constraints.
+
+---
+
+## 6. FineWeb & FineWeb-Edu (Hugging Face, 2024)
 
 In modern GPT-2 reproductions (such as Andrej Karpathy's *build-nanogpt* video):
 * Instead of scraping Reddit or filtering raw Common Crawl from scratch, researchers use modern pre-curated open datasets like **Hugging Face FineWeb-Edu**.
@@ -183,8 +229,25 @@ To train high-throughput models without Python string/tokenization bottleneck du
 
 ---
 
-## 7. Summary & Takeaways
+## 7. Master Comparison Matrix
 
-1. **GPT-2's WebText** proved that high-quality human curation (Reddit karma filter) alone could train a coherent language model on 40 GB of text without task-specific labels.
-2. **GPT-3's Data Recipe** demonstrated that scaling to 300B+ tokens requires combining **massive filtered web crawls (Common Crawl)** with **oversampled high-quality sources (WebText2, Wikipedia, Books)** using machine-learning-based quality classifiers and MinHash deduplication.
-3. Modern open-source pretraining leverages **FineWeb-Edu**, yielding higher sample efficiency and zero-shot performance for reproduction workflows.
+| Feature / Metric | GPT-2 (WebText) | GPT-3 Mixture | RedPajama-1T | SlimPajama (Cerebras) | FineWeb-Edu |
+|:---|:---:|:---:|:---:|:---:|:---:|
+| **Release Year** | 2019 | 2020 | 2023 | 2023 | 2024 |
+| **Organization** | OpenAI | OpenAI | Together AI | Cerebras | Hugging Face |
+| **Token Count** | ~10 Billion | ~300 Billion | ~1,210 Billion | ~627 Billion | 1.3+ Trillion |
+| **Primary Base** | Reddit Outbound Links | Common Crawl (Filtered) + 4 sources | LLaMA Recipe (7 domains) | Deduplicated RedPajama | Common Crawl (96 dumps) |
+| **Quality Filter** | Reddit Karma ($\ge 3$) | Logistic Regression | FastText / CCNet | MinHashLSH + CCNet | Llama-3-70B-Instruct |
+| **Deduplication** | Exact Match | MinHash (13-gram) | Per-slice Deduplication | Global Distributed MinHashLSH | Global MinHashLSH |
+| **License / Openness** | Closed | Closed | 100% Open Apache-2.0 | 100% Open Apache-2.0 | 100% Open OpenRAIL-M |
+| **Ideal Use Case** | Small reproductions | Historical milestone | Multi-domain LLM training | High-efficiency 600B+ runs | State-of-the-art pretraining |
+
+---
+
+## 8. Summary & Takeaways
+
+1. **GPT-2's WebText (2019)** showed that human social curation (Reddit upvotes) could curate a clean 10B-token corpus.
+2. **GPT-3 (2020)** proved that scaling beyond 100B tokens requires multi-source blends and machine-learned quality filtering over Common Crawl.
+3. **RedPajama-1T (2023)** brought the closed LLaMA recipe into the open-source community across 7 key domains.
+4. **SlimPajama (2023)** proved that **deduplication is a superpower**: removing ~50% of redundant data produced a faster, higher-quality 627B token dataset.
+5. **FineWeb-Edu (2024)** represents the modern standard, using synthetic LLM judges to filter educational text at trillion-token scale.
