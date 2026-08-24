@@ -1,19 +1,63 @@
-# 🧭 Master LLM Pretraining & Modernization TO-DO Roadmap
+# 🧭 Master LLM Pretraining, Modernization & 0.01% Research Roadmap
 
-> **Local Private Document**: This file is added to `.gitignore` so it stays completely private to your local machine and will never be pushed to GitHub.
+> **Local Private Document**: This file is ignored by git (`.gitignore`) so it stays completely private to your local machine and will never be pushed to GitHub.
 
 ---
 
-## 📋 High-Level Progress Tracker
+## 📊 Current Project Scorecard & Realistic Completion: ~42%
+
+| Domain / Pillar | Progress | What is Implemented | What Remains for "Top 0.01%" Tier |
+| :--- | :---: | :--- | :--- |
+| **1. Classic GPT-2 Architecture** | **95%** | Full model from scratch, Pre-LN, weight tying, Hugging Face weight loading verification. | Padded vocab to `50,304` for Tensor Core tile alignment. |
+| **2. Low-Level System Optimizations** | **90%** | TF32, BF16 Autocast, FlashAttention-2 / SDPA, `torch.compile`, parameter splitting. | MPS/CUDA kernel profiling & MFU calculations. |
+| **3. Pretraining Data Pipeline** | **30%** | Baseline character/token loader from single `.txt`. | Token sharder (`data/tinystories.py`), memory-mapped binary `train.bin` / `val.bin`. |
+| **4. Training Loop & Validation** | **35%** | Step loop, lr schedule, grad accum, throughput timer (`tok/s`). | Holdout validation loss loop, periodic checkpointing (`.pt`), live sampling inside loop. |
+| **5. Modern LLM Architecture (LLaMA-3 Spec)** | **15%** | Math & architecture documented in roadmap. | Coding modular **RMSNorm**, **RoPE (Rotary Embeddings)**, **SwiGLU**, and **GQA**. |
+| **6. Next-Gen Optimizer (Muon)** | **20%** | Newton-Schulz algorithm defined. | Active integration into training loop + empirical speedup comparison against AdamW. |
+| **7. Inference Engine (KV-Cache)** | **20%** | Basic eager generation ($O(T^2)$ naive re-computation). | Paged Key-Value cache ($O(1)$ constant-time generation) and latency benchmark. |
+| **8. Systems Profiling & MFU Roofline** | **10%** | Basic `dt` and `tok/s` measurement. | PyTorch Profiler (`trace.json`), MFU % calculation, memory bandwidth analysis. |
+| **9. Custom Low-Level Kernel** | **5%** | Standard PyTorch ops. | Custom Triton / Metal kernel for RMSNorm or Fused Attention. |
+| **10. Research Artifacts & Tutorial** | **25%** | 20+ theoretical research guides & clean repo docs. | Published Technical Paper / Blog, interactive Hugging Face Space, Video Tutorial. |
+
+---
+
+## 🏆 The 0.01% Elite Research & Systems Tier (Lab-Admission Standard)
+
+To transform this repository from a standard tutorial project into a **world-class AI research & systems engineering portfolio**:
+
+1. **Empirical Scientific Ablation Study**:
+   * Controlled comparison: Train two identical 124M models on 20M tokens of TinyStories:
+     * Model A: Standard AdamW + LayerNorm + GELU
+     * Model B: Muon Optimizer + RMSNorm + SwiGLU + RoPE
+   * Publish loss curves, perplexity, and wall-clock convergence times proving Muon reaches target perplexity in **~40% fewer steps**.
+2. **Model FLOPs Utilization (MFU) & Roofline Profiling**:
+   * Compute hardware theoretical peak TFLOPs (Apple Silicon MPS / NVIDIA CUDA).
+   * Measure actual MFU %: $\text{MFU} = \frac{6 \times P \times \text{tokens\_per\_sec}}{\text{Peak FLOPs}}$.
+   * Export and analyze Chrome traces using `torch.profiler.profile()`.
+3. **Custom Hardware Kernel**:
+   * Implement a custom **RMSNorm** or **Tiled Attention** kernel using **OpenAI Triton** (CUDA) or **Metal Shading Language** (Apple Silicon).
+4. **Interactive Demo & Public Weights**:
+   * Deploy an interactive Hugging Face Space / Streamlit app with live story generation, temperature/top-p sliders, and KV-cache speed metrics.
+   * Host trained `.pt` / `.safetensors` model weights publicly on Hugging Face Hub.
+5. **Video Lecture / Tutorial Series**:
+   * Record a first-principles deep dive explaining the math, architecture transitions (GPT-2 $\rightarrow$ LLaMA-3), and live code implementation.
+
+---
+
+## 📋 Comprehensive Master Checklist
 
 - [ ] **Phase 1: Lightweight Dataset Pipeline (`data/tinystories.py`)**
 - [ ] **Phase 2: Train/Val Sharded `DataLoaderLite` with Dynamic Splitting**
 - [ ] **Phase 3: Periodic Validation Loss & Holdout Evaluation Loop**
 - [ ] **Phase 4: Live Generation & Visual Sampling Inside Training Loop**
-- [ ] **Phase 5: Checkpointing (`torch.save` & Resuming States)**
+- [ ] **Phase 5: Model Checkpointing (`torch.save` & Resuming States)**
 - [ ] **Phase 6: Key-Value (KV) Cache Accelerated Inference Engine**
 - [ ] **Phase 7: Modern Architecture Upgrades (RoPE + RMSNorm + SwiGLU + GQA)**
 - [ ] **Phase 8: Next-Gen Muon Matrix Optimizer Integration**
+- [ ] **Phase 9: Systems Profiling, PyTorch Profiler & MFU Roofline Analysis**
+- [ ] **Phase 10: Custom Low-Level Kernel (Triton / Metal MSL)**
+- [ ] **Phase 11: Interactive Streamlit / Hugging Face Demo**
+- [ ] **Phase 12: Technical Research Paper / Blog Post & Video Tutorial**
 
 ---
 
@@ -33,14 +77,13 @@ from tqdm import tqdm
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# 1. Stream or load TinyStories
 print("Loading TinyStories dataset from Hugging Face...")
 dataset = load_dataset("roneneldan/TinyStories", split="train", streaming=True)
 
 enc = tiktoken.get_encoding("gpt2")
 eot = enc._special_tokens['<|endoftext|>']
 
-target_tokens = 20_000_000 # 20M tokens (~35 mins training on Mac)
+target_tokens = 20_000_000   # 20M tokens (~35 mins training on Mac)
 val_token_budget = 1_000_000 # 1M tokens for holdout validation
 
 all_tokens = []
@@ -76,10 +119,6 @@ print(f"Saved: {val_path} ({len(val_tokens):,} tokens)")
 
 ## 🛠️ Phase 2: Train/Val Sharded `DataLoaderLite`
 
-### Goal
-Upgrade `DataLoaderLite` in `train_gpt2.py` to seamlessly read binary token files with zero memory copies using numpy `memmap` or contiguous `fromfile`.
-
-### Implementation Template
 ```python
 class DataLoaderLite:
     def __init__(self, B, T, split="train", data_dir="data"):
@@ -89,7 +128,6 @@ class DataLoaderLite:
         filename = os.path.join(data_dir, f"{split}.bin")
         assert os.path.exists(filename), f"Binary dataset file {filename} not found. Run data/tinystories.py first."
         
-        # Memory map or load uint16 tokens
         self.tokens = np.memmap(filename, dtype=np.uint16, mode='r')
         print(f"[{split}] Loaded {len(self.tokens):,} tokens ({len(self.tokens) // (B * T)} batches per epoch)")
         self.current_position = 0
@@ -113,12 +151,6 @@ class DataLoaderLite:
 
 ## 🛠️ Phase 3 & 4: Validation Loop, Live Sampling & Checkpointing
 
-### Goal
-1. Every $N$ steps (e.g. every 100 steps), evaluate validation loss over 20 batches without gradients (`torch.no_grad()`).
-2. Generate text samples from a prompt (*"Once upon a time,"*) to watch text quality improve in real-time.
-3. Save checkpoint weights and optimizer state to disk.
-
-### Implementation Snippet
 ```python
 val_loader = DataLoaderLite(B=B, T=T, split="val")
 
@@ -137,12 +169,11 @@ def evaluate_val_loss(model, val_loader, eval_steps=20, device="cpu"):
     model.train()
     return val_loss_accum
 
-# Inside the main training loop:
+# In training loop every 100 steps:
 if step > 0 and step % 100 == 0:
     val_loss = evaluate_val_loss(model, val_loader, eval_steps=20, device=device)
     print(f"\n>>> [STEP {step}] Validation Loss: {val_loss:.4f} <<<")
     
-    # Save checkpoint
     os.makedirs("checkpoints", exist_ok=True)
     torch.save({
         'step': step,
@@ -172,10 +203,6 @@ if step > 0 and step % 100 == 0:
 
 ## 🛠️ Phase 5 & 6: KV-Cache Accelerated Inference Engine
 
-### Goal
-Implement Key-Value caching in `CausalSelfAttention` so that generating tokens takes $O(1)$ time per step instead of quadratic $O(T^2)$ re-computation.
-
-### Attention Layer with KV-Cache
 ```python
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
@@ -205,10 +232,8 @@ class CausalSelfAttention(nn.Module):
             new_kv_cache = None
 
         if kv_cache is None:
-            # Training / prefill: fast fused flash attention
             y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         else:
-            # Single-token decoding step
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             att = F.softmax(att, dim=-1)
             y = att @ v
@@ -220,10 +245,10 @@ class CausalSelfAttention(nn.Module):
 
 ---
 
-## 🛠️ Phase 7: Modern Architecture Upgrades (RoPE + RMSNorm + SwiGLU)
+## 🛠️ Phase 7: Modern Architecture Upgrades (RoPE + RMSNorm + SwiGLU + GQA)
 
-### 1. RMSNorm (Root Mean Square Normalization)
 ```python
+# 1. RMSNorm
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
@@ -232,31 +257,26 @@ class RMSNorm(nn.Module):
 
     def forward(self, x):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
-```
 
-### 2. Rotary Position Embeddings (RoPE)
-```python
+# 2. RoPE
 def precompute_rope_frequencies(dim: int, max_seq_len: int = 2048, theta: float = 10000.0):
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
     t = torch.arange(max_seq_len, dtype=torch.float32)
     freqs = torch.outer(t, freqs)
-    freqs_cis = torch.polar(torch.ones_like(freqs), freqs) # complex form (cos + i*sin)
+    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
     return freqs_cis
 
 def apply_rope(x, freqs_cis):
-    # x is (B, nh, T, hs)
     x_complex = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
     freqs_cis = freqs_cis[:x.shape[2], :].unsqueeze(0).unsqueeze(0)
     x_rotated = torch.view_as_real(x_complex * freqs_cis).flatten(-2)
     return x_rotated.type_as(x)
-```
 
-### 3. SwiGLU Feed-Forward Network
-```python
+# 3. SwiGLU MLP
 class SwiGLUMLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hidden_dim = int(2 * (4 * config.n_embd) / 3) # 8/3 expansion
+        hidden_dim = int(2 * (4 * config.n_embd) / 3)
         self.w_gate = nn.Linear(config.n_embd, hidden_dim, bias=False)
         self.w_up = nn.Linear(config.n_embd, hidden_dim, bias=False)
         self.w_down = nn.Linear(hidden_dim, config.n_embd, bias=False)
@@ -268,17 +288,12 @@ class SwiGLUMLP(nn.Module):
 
 ---
 
-## 🛠️ Phase 8: Next-Gen Muon Optimizer Integration
+## 🛠️ Phase 8: Next-Gen Muon Matrix Optimizer Integration
 
-### Mathematical Formulation
 $$\mathbf{X}_{k+1} = \frac{1}{2} \mathbf{X}_k (3\mathbf{I} - \mathbf{X}_k^T \mathbf{X}_k)$$
 
-### Optimizer Definition
 ```python
 def zeropower_via_newtonschulz5(G, steps=5, eps=1e-7):
-    """
-    Newton-Schulz iteration to compute the zeroth power / orthogonalization of 2D matrix G.
-    """
     assert len(G.shape) == 2
     a, b, c = (3.4445, -4.7750,  2.0315)
     X = G.bfloat16() if G.dtype == torch.bfloat16 else G.float()
@@ -324,15 +339,78 @@ class Muon(torch.optim.Optimizer):
 
 ---
 
-## 🎯 Quick Command Checklist
+## 🛠️ Phase 9: Systems Profiling & MFU Roofline Analysis
 
-```bash
-# Step 1: Generate dataset shards
-python data/tinystories.py
+```python
+# Measure MFU (Model FLOPs Utilization)
+def calculate_mfu(model, batch_size, seq_len, dt, peak_tflops=10.0):
+    """
+    Computes MFU percentage: 6 * N_params * tokens / dt / peak_flops
+    """
+    N = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    tokens_per_iter = batch_size * seq_len
+    flops_per_token = 6 * N
+    flops_achieved = (flops_per_token * tokens_per_iter) / dt
+    mfu = flops_achieved / (peak_tflops * 1e12)
+    return mfu * 100.0
 
-# Step 2: Run training
-python brain/train_gpt2.py
-
-# Step 3: Run fast interactive generation
-jupyter notebook brain/play.ipynb
+# Chrome Trace Export
+with torch.profiler.profile(
+    activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+    schedule=torch.profiler.schedule(wait=1, warmup=1, active=3),
+    on_trace_ready=torch.profiler.tensorboard_trace_handler('./log/profiler_trace'),
+    record_shapes=True,
+    profile_memory=True,
+    with_stack=True
+) as prof:
+    for step in range(5):
+        # run step...
+        prof.step()
 ```
+
+---
+
+## 🛠️ Phase 10: Custom Low-Level Kernel (Triton / Metal MSL)
+
+```python
+# Custom RMSNorm in Triton (for CUDA GPUs)
+import triton
+import triton.language as tl
+
+@triton.jit
+def _rmsnorm_kernel(
+    X_ptr, Y_ptr, W_ptr,
+    stride_x_row, stride_y_row,
+    N, eps, BLOCK_SIZE: tl.constexpr
+):
+    row_idx = tl.program_id(0)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < N
+    x = tl.load(X_ptr + row_idx * stride_x_row + cols, mask=mask, other=0.0).to(tl.float32)
+    w = tl.load(W_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+    variance = tl.sum(x * x, axis=0) / N
+    rsqrt = 1.0 / tl.sqrt(variance + eps)
+    y = x * rsqrt * w
+    tl.store(Y_ptr + row_idx * stride_y_row + cols, y, mask=mask)
+```
+
+---
+
+## 🛠️ Phase 11 & 12: Research Paper / Blog & Video Tutorial Blueprint
+
+### Structure of Your Technical Report (`REPORT.md` / Blog Post)
+1. **Abstract**: Problem statement, efficiency goals on constrained hardware (Apple Silicon / Single GPU).
+2. **Architecture Evolution**: Mathematical derivations of RoPE, RMSNorm, SwiGLU, and GQA vs. GPT-2 2019 baseline.
+3. **The Muon Matrix Optimizer**: Newton-Schulz convergence theory vs. AdamW coordinate-wise updates.
+4. **Experimental Setup**: TinyStories (20M tokens) training budget, hyperparameters, learning rate schedules.
+5. **Results & Ablations**:
+   - Loss curve convergence plot (AdamW vs Muon).
+   - Inference latency scaling ($O(1)$ KV-Cache vs $O(T^2)$ naive).
+   - MFU % hardware saturation on Apple Silicon / CUDA.
+6. **Live Demonstration**: Hugging Face Space link + generation outputs across training checkpoints.
+
+### Video Lecture / Tutorial Blueprint (Karpathy-Style Deep Dive)
+- **Part 1: The Foundations**: Attention matrix math, PyTorch building blocks, Pre-LN vs Post-LN.
+- **Part 2: Hardware Optimizations**: TF32, BF16, FlashAttention SRAM tiling, JIT compilation.
+- **Part 3: The 2026 Frontier**: Why LLaMA-3 uses RoPE/RMSNorm/SwiGLU, and why Muon outperforms AdamW.
+- **Part 4: Live Coding & Training**: Sharding TinyStories, training the 124M model on Mac, evaluating live stories.

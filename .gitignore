@@ -23,3 +23,8 @@ checkpoints/
 # System and IDE files
 .DS_Store
 *.log
+
+# Private Local Development & Roadmap Notes
+TODO_ROADMAP.md
+.TODO.md
+*.local.md
