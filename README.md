@@ -165,6 +165,7 @@ This reduces parameter memory by $38.6\text{M}$ weights ($50,257 \times 768$), s
 .
 ├── README.md
 ├── requirements.txt
+├── pyrightconfig.json
 ├── brain/
 │   ├── train_gpt2.py       # Core model definition, DataLoaderLite, and training script
 │   └── play.ipynb          # Interactive experimentation, inspection, and generation notebook
@@ -172,17 +173,21 @@ This reduces parameter memory by $38.6\text{M}$ weights ($50,257 \times 768$), s
     ├── adamw_optimizer_guide.md
     ├── automatic_mixed_precision_amp_guide.md
     ├── cross_attention_vs_self_attention_guide.md
+    ├── datasets_webtext_gpt2_vs_gpt3_guide.md
+    ├── distributed_data_parallel_ddp_guide.md
     ├── flash_attention_guide.md
     ├── generation_and_sampling_strategies.md
+    ├── gpt3_training_hyperparameters_guide.md
+    ├── input.txt
     ├── online_normalizer_calculation_for_softmax_guide.md
     ├── openai_gpt2_repo_breakdown.md
+    ├── roadmap_fineweb_hellaswag_kvcache_guide.md
     ├── stanford_cs25_v2_karpathy_transformers.md
     ├── tensor_cores_and_mixed_precision_guide.md
     ├── the_unreasonable_effectiveness_of_rnns.md
     ├── tiktokenizer_guide.md
     ├── torch_compile_guide.md
     ├── torch_set_float32_matmul_precision_guide.md
-    ├── distributed_data_parallel_ddp_guide.md
     ├── attention_is_all_you_need.pdf
     ├── gelu_paper.pdf
     ├── gpt2_paper.pdf
@@ -233,6 +238,7 @@ The [`material/`](material/) directory provides detailed analytical guides and r
 
 | Document / Reference | Subject Area | Description |
 |:---|:---:|:---|
+| [Advanced Implementation & Evaluation Roadmap](material/roadmap_fineweb_hellaswag_kvcache_guide.md) | Roadmap & Follow-up | Step-by-step code and theory for FineWeb-Edu 10B sharding, validation loss, HellaSwag evaluation, and KV-cache inference. |
 | [Distributed Data Parallel (DDP) Guide](material/distributed_data_parallel_ddp_guide.md) | Distributed & Multi-GPU | Multi-GPU scaling, Ring All-Reduce, gradient bucketing, and `model.no_sync()` gradient accumulation. |
 | [Automatic Mixed Precision (AMP)](material/automatic_mixed_precision_amp_guide.md) | Systems & Hardware | `torch.autocast`, `GradScaler`, dynamic range behavior, and precision formats. |
 | [FlashAttention & Fast SDPA](material/flash_attention_guide.md) | Systems & Hardware | Fused scaled dot-product attention, IO-awareness, and online softmax scaling. |

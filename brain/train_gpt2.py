@@ -1,8 +1,11 @@
 import os
 import math
+import time
 import inspect
 from dataclasses import dataclass
 from typing import cast
+from contextlib import nullcontext
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -11,73 +14,56 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 import tiktoken
 
-# =============================================================================
-# Model Architecture
-# =============================================================================
 
 # -----------------------------------------------------------------------------
-# Causal Self-Attention
+# Model Architecture
 # -----------------------------------------------------------------------------
 
 class CausalSelfAttention(nn.Module):
-    bias: torch.Tensor
-
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
-        # key, query, value projections for all heads, but in a batch
+        # Q, K, V projections for all heads in a single batched linear layer
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
-        # output projection
+        # Output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
-        # In CausalSelfAttention.__init__:
-        setattr(self.c_proj, "NANOGPT_SCALE_INIT", 1)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
 
-        # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
-        # not really a 'bias', more of a mask, but following the OpenAI/HF naming though
-        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
-                                    .view(1, 1, config.block_size, config.block_size))
+        # Autoregressive causal mask
+        self.register_buffer(
+            "bias",
+            torch.tril(torch.ones(config.block_size, config.block_size)).view(
+                1, 1, config.block_size, config.block_size
+            ),
+        )
 
     def forward(self, x):
-        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
-        # calculate query, key, values for all heads in batch and move head forward to be the batch
-        # nh is "number of heads", hs is "head size", and C (number of channels) = nh * hs
-        # e.g. in GPT-2 (124M), n_head=12, hs=64, so nh*hs=C=768 channels in the Transformer
+        B, T, C = x.size()
+        # Project and split into queries, keys, and values: (B, T, 3 * C) -> 3 x (B, T, C)
         qkv = self.c_attn(x)
         q, k, v = qkv.split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        
-            # attention (materializes the large (T,T) matrix for all the queries and keys)
-        #att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        #att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
-        #att = F.softmax(att, dim=-1)
-        #y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        # Reshape to (B, nh, T, hs)
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
 
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
-        # output projection
+        # Fused scaled dot-product attention (FlashAttention / SRAM tiling)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        # Re-assemble head outputs side-by-side: (B, T, C)
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.c_proj(y)
         return y
 
-# -----------------------------------------------------------------------------
-# Multi-Layer Perceptron (MLP)
-# -----------------------------------------------------------------------------
-
-class TanhGELU(nn.Module):
-    def forward(self, input):
-        return 0.5 * input * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (input + 0.044715 * torch.pow(input, 3.0))))
 
 class MLP(nn.Module):
-
     def __init__(self, config):
         super().__init__()
-        self.c_fc   = nn.Linear(config.n_embd, 4 * config.n_embd)
-        self.gelu   = nn.GELU(approximate='tanh')
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
+        self.gelu = nn.GELU(approximate="tanh")
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
-        setattr(self.c_proj, "NANOGPT_SCALE_INIT", 1)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -85,27 +71,20 @@ class MLP(nn.Module):
         x = self.c_proj(x)
         return x
 
-# -----------------------------------------------------------------------------
-# Transformer Block
-# -----------------------------------------------------------------------------
 
 class Block(nn.Module):
-
     def __init__(self, config):
         super().__init__()
         self.ln_1 = nn.LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = nn.LayerNorm(config.n_embd)
-        self.mlp  = MLP(config)
+        self.mlp = MLP(config)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
 
-# -----------------------------------------------------------------------------
-# GPT Model Configuration & Main Class
-# -----------------------------------------------------------------------------
 
 @dataclass
 class GPTConfig:
@@ -115,8 +94,8 @@ class GPTConfig:
     n_head: int = 12
     n_embd: int = 768
 
-class GPT(nn.Module):
 
+class GPT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -127,90 +106,80 @@ class GPT(nn.Module):
             h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f=nn.LayerNorm(config.n_embd),
         ))
-
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-        #weight sharing scheme
+        # Weight tying scheme
         cast(nn.Embedding, self.transformer['wte']).weight = self.lm_head.weight
 
-        # init all weights
+        # Initialize parameter weights
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
             std = 0.02
-            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+            if hasattr(module, "NANOGPT_SCALE_INIT"):
                 std *= (2 * self.config.n_layer) ** -0.5
             torch.nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        
 
     def forward(self, idx, targets=None):
-        # idx is of shape (B, T)
         B, T = idx.size()
-        assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is {self.config.block_size}"
-        # forward the token and position embeddings
-        pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # shape (T)
-        pos_emb = self.transformer['wpe'](pos) # position embeddings of shape (T, n_embd)
-        tok_emb = self.transformer['wte'](idx) # token embeddings of shape (B, T, n_embd)
+        assert T <= self.config.block_size, f"Sequence length {T} exceeds block size {self.config.block_size}"
+
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
+        pos_emb = self.transformer['wpe'](pos)
+        tok_emb = self.transformer['wte'](idx)
         x = tok_emb + pos_emb
-        # forward the blocks of the transformer
+
         for block in cast(nn.ModuleList, self.transformer['h']):
             x = block(x)
-        # forward the final layernorm and the classifier
+
         x = self.transformer['ln_f'](x)
-        logits = self.lm_head(x) # (B, T, vocab_size)
+        logits = self.lm_head(x)
+
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+
         return logits, loss
 
     @classmethod
     def from_pretrained(cls, model_type):
-        """Loads pretrained GPT-2 model weights from huggingface"""
+        """Loads pretrained GPT-2 weights from Hugging Face."""
         assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
         from transformers import GPT2LMHeadModel
-        print("loading weights from pretrained gpt: %s" % model_type)
+        print(f"Loading weights from pretrained GPT-2 ({model_type})")
 
-        # n_layer, n_head and n_embd are determined from model_type
         config_args = {
-            'gpt2':         dict(n_layer=12, n_head=12, n_embd=768),  # 124M params
-            'gpt2-medium':  dict(n_layer=24, n_head=16, n_embd=1024), # 350M params
-            'gpt2-large':   dict(n_layer=36, n_head=20, n_embd=1280), # 774M params
-            'gpt2-xl':      dict(n_layer=48, n_head=25, n_embd=1600), # 1558M params
+            'gpt2':         dict(n_layer=12, n_head=12, n_embd=768),
+            'gpt2-medium':  dict(n_layer=24, n_head=16, n_embd=1024),
+            'gpt2-large':   dict(n_layer=36, n_head=20, n_embd=1280),
+            'gpt2-xl':      dict(n_layer=48, n_head=25, n_embd=1600),
         }[model_type]
-        config_args['vocab_size'] = 50257 # always 50257 for GPT model checkpoints
-        config_args['block_size'] = 1024  # always 1024 for GPT model checkpoints
-        # create a from-scratch initialized minGPT model
+        config_args['vocab_size'] = 50257
+        config_args['block_size'] = 1024
+
         config = GPTConfig(**config_args)
         model = GPT(config)
         sd = model.state_dict()
-        sd_keys = sd.keys()
-        sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')] # discard this mask / buffer, not a param
+        sd_keys = [k for k in sd.keys() if not k.endswith('.attn.bias')]
 
-        # init a huggingface/transformers model
         model_hf = GPT2LMHeadModel.from_pretrained(model_type)
         sd_hf = model_hf.state_dict()
 
-        # copy while ensuring all of the parameters are aligned and match in names and shapes
-        sd_keys_hf = sd_hf.keys()
-        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.masked_bias')] # ignore these, just a buffer
-        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.bias')]        # same, just the mask (buffer)
+        sd_keys_hf = [k for k in sd_hf.keys() if not k.endswith(('.attn.masked_bias', '.attn.bias'))]
         transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
-        # basically the openai checkpoints use a "Conv1D" module, but we only want to use a vanilla Linear
-        # this means that we have to transpose these weights when we import them
-        assert len(sd_keys_hf) == len(sd_keys), f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}"
+
+        assert len(sd_keys_hf) == len(sd_keys), f"Mismatched state dict keys: {len(sd_keys_hf)} != {len(sd_keys)}"
         for k in sd_keys_hf:
             if any(k.endswith(w) for w in transposed):
-                # special treatment for the Conv1D weights we need to transpose
                 assert sd_hf[k].shape[::-1] == sd[k].shape
                 with torch.no_grad():
                     sd[k].copy_(sd_hf[k].t())
             else:
-                # vanilla copy over the other parameters
                 assert sd_hf[k].shape == sd[k].shape
                 with torch.no_grad():
                     sd[k].copy_(sd_hf[k])
@@ -218,94 +187,94 @@ class GPT(nn.Module):
         return model
 
     def configure_optimizers(self, weight_decay, learning_rate, device):
-        # start with all of the candidate parameters (that require grad)
-        param_dict = {pn: p for pn, p in self.named_parameters()}
-        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
-        # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
-        # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
+        # 2D parameters (weights, embeddings) decay; 1D parameters (biases, layernorms) do not
+        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
         decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
         nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+
         optim_groups = [
             {'params': decay_params, 'weight_decay': weight_decay},
             {'params': nodecay_params, 'weight_decay': 0.0}
         ]
-        num_decay_params = sum(p.numel() for p in decay_params)
-        num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters", flush=True)
-        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters", flush=True)
-        # Create AdamW optimizer and use the fused version if it is available
+
+        num_decay = sum(p.numel() for p in decay_params)
+        num_nodecay = sum(p.numel() for p in nodecay_params)
+        print(f"Decayed parameter tensors: {len(decay_params)} ({num_decay:,} params)")
+        print(f"Non-decayed parameter tensors: {len(nodecay_params)} ({num_nodecay:,} params)")
+
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and 'cuda' in device
-        print(f"using fused AdamW: {use_fused}", flush=True)
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
+        use_fused = fused_available and ('cuda' in device)
+        print(f"Using fused AdamW: {use_fused}")
+
+        optimizer = torch.optim.AdamW(
+            optim_groups,
+            lr=learning_rate,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+            fused=use_fused
+        )
         return optimizer
 
-# =============================================================================
+
+# -----------------------------------------------------------------------------
 # Data Loader
-# =============================================================================
+# -----------------------------------------------------------------------------
 
 class DataLoaderLite:
     def __init__(self, B, T):
         self.B = B
         self.T = T
 
-        # at init load tokens from disk and store them in memory
         input_path = 'material/input.txt' if os.path.exists('material/input.txt') else 'input.txt'
         with open(input_path, 'r') as f:
             text = f.read()
+
         enc = tiktoken.get_encoding('gpt2')
         tokens = enc.encode(text)
         self.tokens = torch.tensor(tokens)
-        print(f"loaded {len(self.tokens)} tokens", flush=True)
-        print(f"1 epoch = {len(self.tokens) // (B * T)} batches", flush=True)
+        print(f"Loaded {len(self.tokens)} tokens")
+        print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
 
-        # state
         self.current_position = 0
 
     def next_batch(self):
         B, T = self.B, self.T
         buf = self.tokens[self.current_position : self.current_position + B * T + 1]
-        x = (buf[:-1]).view(B, T) # inputs
-        y = (buf[1:]).view(B, T)  # targets
-        # advance the position in the tensor
+        x = buf[:-1].view(B, T)
+        y = buf[1:].view(B, T)
         self.current_position += B * T
-        # if loading the next batch would be out of bounds, reset
+
         if self.current_position + (B * T + 1) > len(self.tokens):
             self.current_position = 0
         return x, y
 
-# =============================================================================
-# Automatic Device Selection & DDP Setup
-# =============================================================================
 
-import time
+# -----------------------------------------------------------------------------
+# Distributed Setup & Device Detection
+# -----------------------------------------------------------------------------
 
-# set up DDP (distributed data parallel).
-# torchrun command sets the env variables RANK, LOCAL_RANK, and WORLD_SIZE
-ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
+ddp = int(os.environ.get('RANK', -1)) != -1
 if ddp:
-    # use of DDP atm demands CUDA, we set the device appropriately according to rank
-    assert torch.cuda.is_available(), "for now i think we need CUDA for DDP"
+    assert torch.cuda.is_available(), "DDP requires CUDA"
     init_process_group(backend='nccl')
     ddp_rank = int(os.environ['RANK'])
     ddp_local_rank = int(os.environ['LOCAL_RANK'])
     ddp_world_size = int(os.environ['WORLD_SIZE'])
     device = f'cuda:{ddp_local_rank}'
     torch.cuda.set_device(device)
-    master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
+    master_process = ddp_rank == 0
 else:
-    # vanilla, non-DDP run
     ddp_rank = 0
     ddp_local_rank = 0
     ddp_world_size = 1
     master_process = True
-    # attempt to autodetect device
+
     device = "cpu"
     if torch.cuda.is_available():
         device = "cuda"
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         device = "mps"
-    print(f"using device: {device}", flush=True)
+    print(f"Using device: {device}")
 
 torch.manual_seed(1337)
 if torch.cuda.is_available():
@@ -313,96 +282,96 @@ if torch.cuda.is_available():
 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     torch.mps.manual_seed(1337)
 
-# Option C: 16,384 tokens per step (4 micro-steps of 4096 tokens)
-# Total tokens: 16,384 * 1,600 = 26,214,400 (Exact 26.2M token training volume as Andrej's 50 * 524,288 run)
-total_batch_size = 16384 # 16k tokens per step
-B = 4 # micro batch size
-T = 1024 # sequence length
-assert total_batch_size % (B * T) == 0, "make sure total_batch_size is divisible by B * T"
+# Batch size & gradient accumulation setup (16,384 tokens per optimizer step)
+total_batch_size = 16384
+B = 4
+T = 1024
+assert total_batch_size % (B * T) == 0, "total_batch_size must be divisible by B * T"
 grad_accum_steps = total_batch_size // (B * T)
-print(f"total desired batch size: {total_batch_size}", flush=True)
-print(f"=> calculated gradient accumulation steps: {grad_accum_steps}", flush=True)
+print(f"Target batch size: {total_batch_size} tokens | Micro-batch size: {B} | Sequence length: {T}")
+print(f"Gradient accumulation steps: {grad_accum_steps}")
 
-# =============================================================================
-# Model Initialization & Optimization
-# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Training Initialization & Optimization Loop
+# -----------------------------------------------------------------------------
 
 train_loader = DataLoaderLite(B=B, T=T)
 
-# Enable TF32 for NVIDIA CUDA devices
 if device == "cuda":
     torch.set_float32_matmul_precision('high')
 
-# model = GPT.from_pretrained("gpt2")
 model = GPT(GPTConfig())
 model.to(device)
 
-# torch.compile
 if device == "cuda":
     model = cast(GPT, torch.compile(model))
 
-# Autocast: use BF16 on CUDA (Tensor Cores); on MPS/CPU use nullcontext for max native throughput
-from contextlib import nullcontext
-autocast_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device == "cuda" else nullcontext()
+autocast_ctx = (
+    torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    if device == "cuda"
+    else nullcontext()
+)
 
+# Cosine learning rate schedule with warmup
 max_lr = 6e-4
 min_lr = max_lr * 0.1
-warmup_steps = 320 # 20% warmup (same proportion as 10 / 50)
-max_steps = 1600   # total steps to match 26.2M tokens (same volume as 50 * 524,288)
+warmup_steps = 320
+max_steps = 1600
 
 def get_lr(it):
-    # 1) linear warmup for warmup_iters steps
     if it < warmup_steps:
-        return max_lr * (it+1) / warmup_steps
-    # 2) if it > lr_decay_iters, return min learning rate
+        return max_lr * (it + 1) / warmup_steps
     if it > max_steps:
         return min_lr
-    # 3) in between, use cosine decay down to min learning rate
     decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
     assert 0 <= decay_ratio <= 1
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
     return min_lr + coeff * (max_lr - min_lr)
 
-# optimize!
-# optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8)
-optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
+optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=max_lr, device=device)
 
 for step in range(max_steps):
     t0 = time.time()
     optimizer.zero_grad()
     loss_accum = 0.0
+
     for micro_step in range(grad_accum_steps):
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
         with autocast_ctx:
             logits, loss = model(x, y)
-        # scale the loss to account for gradient accumulation
         loss = loss / grad_accum_steps
         loss_accum += loss.detach().item()
         loss.backward()
-        if grad_accum_steps > 1:
-            print(f"\r  [step {step:4d}/{max_steps}] micro-step {micro_step+1:2d}/{grad_accum_steps} | loss: {loss_accum * (grad_accum_steps / (micro_step+1)):.4f}", end="", flush=True)
-    if grad_accum_steps > 1:
-        print() # newline after micro-steps finish
+
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    # determine and set the learning rate for this iteration
+
     lr = get_lr(step)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
+
     optimizer.step()
+
     if device == "cuda":
-        torch.cuda.synchronize() # wait for the GPU to finish work
+        torch.cuda.synchronize()
     elif device == "mps":
         torch.mps.synchronize()
+
     t1 = time.time()
-    dt = t1 - t0 # time difference in seconds
+    dt = t1 - t0
     tokens_processed = train_loader.B * train_loader.T * grad_accum_steps
     tokens_per_sec = tokens_processed / dt
-    print(f"step {step:4d} | loss: {loss_accum:.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}", flush=True)
 
-# =============================================================================
-# Prefix Tokens & Text Generation
-# =============================================================================
+    print(
+        f"step {step:4d}/{max_steps} | loss: {loss_accum:.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}",
+        flush=True,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Text Generation & Sampling
+# -----------------------------------------------------------------------------
 
 num_return_sequences = 5
 max_length = 30
@@ -411,11 +380,10 @@ model.eval()
 
 enc = tiktoken.get_encoding('gpt2')
 tokens = enc.encode("Hello, I'm a language model,")
-tokens = torch.tensor(tokens, dtype=torch.long) # (8,)
-tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # (5, 8)
+tokens = torch.tensor(tokens, dtype=torch.long)
+tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
 x = tokens.to(device)
 
-# set the seed to 42
 torch.manual_seed(42)
 if device == "cuda":
     torch.cuda.manual_seed(42)
@@ -423,33 +391,17 @@ elif device == "mps":
     torch.mps.manual_seed(42)
 
 while x.size(1) < max_length:
-    # forward the model to get the logits
     with torch.no_grad():
-        logits, _ = model(x) # (B, T, vocab_size)
-        # take the logits at the last position
-        logits = logits[:, -1, :] # (B, vocab_size)
-        # get the probabilities
+        logits, _ = model(x)
+        logits = logits[:, -1, :]
         probs = F.softmax(logits, dim=-1)
-        # do top-k sampling of 50 (huggingface pipeline default)
-        # topk_probs here becomes (5, 50), topk_indices is (5, 50)
         topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-        # select a token from the top-k probabilities
-        ix = torch.multinomial(topk_probs, 1) # (B, 1)
-        # gather the corresponding indices
-        xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
-        # append to the sequence
+        ix = torch.multinomial(topk_probs, 1)
+        xcol = torch.gather(topk_indices, -1, ix)
         x = torch.cat((x, xcol), dim=1)
 
-# print the generated text
 print("\n--- Generated Samples ---", flush=True)
 for i in range(num_return_sequences):
     tokens = x[i, :max_length].tolist()
     decoded = enc.decode(tokens)
     print(">", decoded, flush=True)
-
-    #03:30:32
-    #2:17
-    #43:23
-    #02:01:19
-    #7:00:02
-    #39:50
