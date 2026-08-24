@@ -181,10 +181,8 @@ This reduces parameter memory by $38.6\text{M}$ weights ($50,257 \times 768$), s
     ├── input.txt
     ├── online_normalizer_calculation_for_softmax_guide.md
     ├── openai_gpt2_repo_breakdown.md
-    ├── roadmap_fineweb_hellaswag_kvcache_guide.md
     ├── stanford_cs25_v2_karpathy_transformers.md
     ├── tensor_cores_and_mixed_precision_guide.md
-    ├── the_unreasonable_effectiveness_of_rnns.md
     ├── tiktokenizer_guide.md
     ├── torch_compile_guide.md
     ├── torch_set_float32_matmul_precision_guide.md
@@ -192,8 +190,7 @@ This reduces parameter memory by $38.6\text{M}$ weights ($50,257 \times 768$), s
     ├── gelu_paper.pdf
     ├── gpt2_paper.pdf
     ├── gpt3_paper.pdf
-    ├── online_normalizer_calculation_for_softmax_paper.pdf
-    └── pytorch_distributed_ddp_paper.pdf
+    └── online_normalizer_calculation_for_softmax_paper.pdf
 ```
 
 ---
@@ -238,7 +235,6 @@ The [`material/`](material/) directory provides detailed analytical guides and r
 
 | Document / Reference | Subject Area | Description |
 |:---|:---:|:---|
-| [Advanced Implementation & Evaluation Roadmap](material/roadmap_fineweb_hellaswag_kvcache_guide.md) | Roadmap & Follow-up | Step-by-step code and theory for FineWeb-Edu 10B sharding, validation loss, HellaSwag evaluation, and KV-cache inference. |
 | [Distributed Data Parallel (DDP) Guide](material/distributed_data_parallel_ddp_guide.md) | Distributed & Multi-GPU | Multi-GPU scaling, Ring All-Reduce, gradient bucketing, and `model.no_sync()` gradient accumulation. |
 | [Automatic Mixed Precision (AMP)](material/automatic_mixed_precision_amp_guide.md) | Systems & Hardware | `torch.autocast`, `GradScaler`, dynamic range behavior, and precision formats. |
 | [FlashAttention & Fast SDPA](material/flash_attention_guide.md) | Systems & Hardware | Fused scaled dot-product attention, IO-awareness, and online softmax scaling. |
@@ -252,7 +248,6 @@ The [`material/`](material/) directory provides detailed analytical guides and r
 | [Generation & Sampling Strategies](material/generation_and_sampling_strategies.md) | Inference | Mathematical formulations for Temperature, Top-k, Top-p (Nucleus), and Min-p sampling. |
 | [Online Softmax Normalizer Guide](material/online_normalizer_calculation_for_softmax_guide.md) | Algorithms & Math | Safe online softmax recurrence equations underlying FlashAttention. |
 | [OpenAI GPT-2 Repo Breakdown](material/openai_gpt2_repo_breakdown.md) | Architecture | Structural comparison against OpenAI's official TensorFlow release. |
-| [PyTorch Distributed: Accelerating Data Parallel Training (DDP Paper)](material/pytorch_distributed_ddp_paper.pdf) | Literature | Li et al. (VLDB 2020) DistributedDataParallel architecture and gradient bucketing design. |
 | [Attention Is All You Need (Paper)](material/attention_is_all_you_need.pdf) | Literature | Vaswani et al. (2017) transformer architecture foundation. |
 | [Language Models are Unsupervised Multitask Learners (GPT-2 Paper)](material/gpt2_paper.pdf) | Literature | Radford et al. (2019) GPT-2 architecture and empirical findings. |
 | [Language Models are Few-Shot Learners (GPT-3 Paper)](material/gpt3_paper.pdf) | Literature | Brown et al. (2020) GPT-3 scaling laws, Table 2.1 hyperparameter table, and training recipes. |
