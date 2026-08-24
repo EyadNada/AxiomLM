@@ -309,11 +309,12 @@ model.to(device)
 if device == "cuda":
     model = cast(GPT, torch.compile(model))
 
-autocast_ctx = (
-    torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-    if device == "cuda"
-    else nullcontext()
-)
+if device == "cuda":
+    autocast_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+elif device == "mps":
+    autocast_ctx = torch.autocast(device_type="mps", dtype=torch.bfloat16)
+else:
+    autocast_ctx = nullcontext()
 
 # Cosine learning rate schedule with warmup
 max_lr = 6e-4
