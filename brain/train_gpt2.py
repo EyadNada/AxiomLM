@@ -20,6 +20,8 @@ import tiktoken
 # -----------------------------------------------------------------------------
 
 class CausalSelfAttention(nn.Module):
+    bias: torch.Tensor
+
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
@@ -27,7 +29,7 @@ class CausalSelfAttention(nn.Module):
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
         # Output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
-        self.c_proj.NANOGPT_SCALE_INIT = 1
+        setattr(self.c_proj, "NANOGPT_SCALE_INIT", 1)
 
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -63,7 +65,7 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
         self.gelu = nn.GELU(approximate="tanh")
         self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
-        self.c_proj.NANOGPT_SCALE_INIT = 1
+        setattr(self.c_proj, "NANOGPT_SCALE_INIT", 1)
 
     def forward(self, x):
         x = self.c_fc(x)
