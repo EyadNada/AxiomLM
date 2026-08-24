@@ -286,7 +286,7 @@ elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
 
 # Batch size & gradient accumulation setup (16,384 tokens per optimizer step)
 total_batch_size = 16384
-B = 4
+B = 2  # Micro-batch size 2 to reduce Unified Memory pressure
 T = 1024
 assert total_batch_size % (B * T) == 0, "total_batch_size must be divisible by B * T"
 grad_accum_steps = total_batch_size // (B * T)
