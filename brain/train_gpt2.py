@@ -227,7 +227,7 @@ class DataLoaderLite:
         self.B = B
         self.T = T
 
-        input_path = 'material/input.txt' if os.path.exists('material/input.txt') else 'input.txt'
+        §input_path = 'material/input.txt' if os.path.exists('material/input.txt') else 'input.txt'
         with open(input_path, 'r') as f:
             text = f.read()
 
