@@ -20,41 +20,55 @@ A high-performance pretraining engine and modern architectural redesign of the 1
 
 ## Performance Benchmarks
 
-### 1. Training Throughput Progression
+### 1. Training Speed Progression
 
-| Optimization Stage | Tokens / Sec | Step Time (4k tok) | Speedup vs Baseline | Systems Impact |
-| :--- | :---: | :---: | :---: | :--- |
-| **Baseline** (Standard PyTorch FP32) | 2,800 | 1462 ms | 1.0x | Unoptimized loop with standard attention |
-| **+ BF16 Mixed Precision** | 5,100 | 803 ms | 1.8x | 50% reduction in memory bandwidth |
-| **+ Metal SDPA Attention** | 7,450 | 550 ms | 2.7x | Removes global attention score tensor allocation |
-| **+ Zero-Sync Loss Accumulation** | 9,200 | 445 ms | 3.3x | Removes CPU-GPU synchronization stalls |
-| **+ Memory-Mapped Dataset** | 9,200 | 445 ms | 3.3x | Zero-overhead direct disk-to-memory streaming |
+Training throughput increased from 2,800 tokens/sec in the unoptimized baseline to 9,200 tokens/sec across five key systems optimizations.
 
-### 2. Effective Compute & Memory Footprint
+![Training Throughput](assets/1_training_throughput.png)
 
-| Metric | Baseline (FP32) | Optimized (Axiom-LM) | Notes |
-| :--- | :---: | :---: | :--- |
-| **Compute Throughput** | 2.09 TFLOPs | **6.87 TFLOPs** | Measured on Apple Silicon ($6 \times P \times \text{tok/s}$) |
-| **Model Weights Memory** | 497.7 MB | 248.8 MB | FP32 vs BF16 storage |
-| **Training VRAM (Batch=4, T=1024)** | ~3.8 GB | **~1.8 GB** | With SDPA and mixed precision |
-| **Data Ingestion Latency** | ~12.5 ms | **0.00 ms** | `uint16` memory-mapped binary shards |
+Step latency for 4,096 tokens dropped from 1,462 ms down to 445 ms per optimization step.
 
-### 3. Inference Generation Latency & Throughput
+![Step Latency](assets/2_step_latency.png)
 
-| Generated Sequence Length | Baseline (Naive $O(T^2)$) | Optimized (KV-Cache $O(1)$) | Speedup |
-| :---: | :---: | :---: | :---: |
-| **25 tokens** | 32.4 tok/s (30.8 ms/tok) | **168.5 tok/s (5.9 ms/tok)** | **5.2x faster** |
-| **50 tokens** | 24.1 tok/s (41.5 ms/tok) | **166.8 tok/s (6.0 ms/tok)** | **6.9x faster** |
-| **100 tokens** | 18.2 tok/s (54.9 ms/tok) | **165.1 tok/s (6.1 ms/tok)** | **9.1x faster** |
+---
 
-### 4. Classic GPT-2 vs. Modern Architecture (LLaMA-3 Spec)
+### 2. Compute Throughput & Hardware Efficiency
 
-| Component | Classic GPT-2 | Modern Architecture | Advantage |
-| :--- | :--- | :--- | :--- |
-| **Normalization** | LayerNorm | **RMSNorm** | 15-20% faster; eliminates mean-centering arithmetic |
-| **Position Encoding** | Learned Absolute Table | **RoPE (Rotary)** | Relative token awareness; zero parameter overhead |
-| **Feed-Forward** | GELU ($4 d$) | **SwiGLU** ($\frac{8}{3} d$) | Higher representational capacity per parameter |
-| **Attention** | MHA (12 KV heads) | **GQA (4 KV heads)** | **66.7% reduction** in KV cache memory during inference |
+Effective compute throughput scaled from 2.09 TFLOPs to 6.87 TFLOPs through fused Metal attention and BF16 execution.
+
+![Compute TFLOPs](assets/3_compute_tflops.png)
+
+---
+
+### 3. Model Architecture & Training Memory Breakdown
+
+Parameter allocation is concentrated in the feed-forward MLP (45.5%) and token embeddings (31.0%).
+
+![Parameter Distribution](assets/4_parameter_distribution.png)
+
+Training VRAM footprint is kept under 2.3 GB by utilizing BF16 mixed-precision activations and fused attention buffers.
+
+![Training Memory](assets/5_training_memory.png)
+
+---
+
+### 4. Inference Acceleration (KV-Cache vs. Naive Decoding)
+
+Key-Value caching eliminates quadratic token recomputation, maintaining steady ~165 tokens/sec generation speed compared to the degrading baseline.
+
+![Inference Throughput](assets/6_inference_throughput.png)
+
+Per-token generation latency remains constant at ~6.0 ms per token rather than growing up to 55+ ms per token.
+
+![Token Latency](assets/7_token_latency.png)
+
+---
+
+### 5. Grouped-Query Attention (GQA) Memory Savings
+
+Switching from Multi-Head Attention (12 KV heads) to Grouped-Query Attention (4 KV heads) reduces inference memory consumption by 66.7%.
+
+![KV Cache Memory](assets/8_kv_cache_memory.png)
 
 ---
 
@@ -90,9 +104,9 @@ python brain/train_gpt2.py --arch classic --max_steps 4800
 python brain/train_gpt2.py --arch modern --max_steps 4800
 ```
 
-### 4. Interactive Metrics & Visualizations
+### 4. Interactive Analysis
 
-Open the metrics notebook to view live benchmark charts, memory breakdowns, and sample outputs:
+Open the benchmark notebook to run all metrics and visual inspections:
 
 ```bash
 jupyter notebook brain/play.ipynb
@@ -103,9 +117,10 @@ jupyter notebook brain/play.ipynb
 ## Repository Structure
 
 ```
+├── assets/                 # Benchmark charts and evaluation graphs
 ├── brain/
 │   ├── train_gpt2.py       # Core model, data loader, validation, and training loop
-│   └── play.ipynb          # Benchmark charts, memory analysis, and generation tests
+│   └── play.ipynb          # Interactive metrics notebook with all 8 graphs
 ├── data/
 │   ├── tinystories.py      # Streaming tokenizer and binary sharder
 │   ├── train.bin           # 19M token uint16 training binary shard
