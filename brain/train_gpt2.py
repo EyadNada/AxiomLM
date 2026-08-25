@@ -17,41 +17,127 @@ import numpy as np
 
 
 # -----------------------------------------------------------------------------
-# Model Architecture
+# Modern Architecture Modules (LLaMA-3 / Mistral Spec)
+# -----------------------------------------------------------------------------
+
+class RMSNorm(nn.Module):
+    """
+    Root Mean Square Normalization (RMSNorm).
+    Replaces LayerNorm by removing mean centering, improving throughput and numerical stability.
+    """
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        rms = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        return x * rms * self.weight
+
+
+def precompute_rope_frequencies(head_dim: int, max_seq_len: int = 2048, theta: float = 10000.0) -> torch.Tensor:
+    """
+    Precomputes complex rotary frequency tensors for Rotary Position Embeddings (RoPE).
+    Returns complex64 tensor of shape (max_seq_len, head_dim // 2).
+    """
+    assert head_dim % 2 == 0, f"head_dim ({head_dim}) must be even for complex RoPE"
+    freqs = 1.0 / (theta ** (torch.arange(0, head_dim, 2)[: (head_dim // 2)].float() / head_dim))
+    t = torch.arange(max_seq_len, dtype=torch.float32)
+    freqs = torch.outer(t, freqs)
+    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+    return freqs_cis
+
+
+def apply_rope(x: torch.Tensor, freqs_cis: torch.Tensor, start_pos: int = 0) -> torch.Tensor:
+    """
+    Applies rotary position embeddings (RoPE) to query or key tensors.
+    x shape: (B, nh, T, head_dim)
+    """
+    B, nh, T, hs = x.shape
+    x_complex = torch.view_as_complex(x.float().reshape(B, nh, T, hs // 2, 2))
+    freqs_cis_slice = freqs_cis[start_pos : start_pos + T].unsqueeze(0).unsqueeze(0).to(x.device)
+    x_rotated = torch.view_as_real(x_complex * freqs_cis_slice).reshape(B, nh, T, hs)
+    return x_rotated.type_as(x)
+
+
+def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """
+    Broadcasts key/value heads for Grouped-Query Attention (GQA).
+    x: (B, n_kv_head, T, head_dim) -> (B, n_head, T, head_dim)
+    """
+    if n_rep == 1:
+        return x
+    B, n_kv_head, T, hs = x.shape
+    return x[:, :, None, :, :].expand(B, n_kv_head, n_rep, T, hs).reshape(B, n_kv_head * n_rep, T, hs)
+
+
+class SwiGLUMLP(nn.Module):
+    """
+    Swish-Gated Linear Unit (SwiGLU) Feed-Forward Network.
+    Uses dimension scaling 2/3 * 4d aligned to multiple of 64.
+    """
+    def __init__(self, config):
+        super().__init__()
+        hidden_dim = int(2 * (4 * config.n_embd) / 3)
+        hidden_dim = 64 * ((hidden_dim + 64 - 1) // 64)
+        self.w_gate = nn.Linear(config.n_embd, hidden_dim, bias=config.bias)
+        self.w_up = nn.Linear(config.n_embd, hidden_dim, bias=config.bias)
+        self.w_down = nn.Linear(hidden_dim, config.n_embd, bias=config.bias)
+        setattr(self.w_down, "NANOGPT_SCALE_INIT", 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.w_down(F.silu(self.w_gate(x)) * self.w_up(x))
+
+
+# -----------------------------------------------------------------------------
+# Unified Transformer Attention & Block Layers
 # -----------------------------------------------------------------------------
 
 class CausalSelfAttention(nn.Module):
-    bias: torch.Tensor
-
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
-        # Q, K, V projections for all heads in a single batched linear layer
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
-        # Output projection
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.config = config
+        self.n_head = config.n_head
+        self.n_kv_head = config.n_kv_head if config.n_kv_head is not None else config.n_head
+        assert self.n_head % self.n_kv_head == 0, "n_head must be divisible by n_kv_head for GQA"
+        self.n_rep = self.n_head // self.n_kv_head
+        self.head_dim = config.n_embd // config.n_head
+
+        # Projections
+        if self.n_head == self.n_kv_head:
+            self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
+            self.separate_qkv = False
+        else:
+            # GQA: separate projections for Query and reduced-dimension Key/Value
+            self.q_proj = nn.Linear(config.n_embd, self.n_head * self.head_dim, bias=config.bias)
+            self.k_proj = nn.Linear(config.n_embd, self.n_kv_head * self.head_dim, bias=config.bias)
+            self.v_proj = nn.Linear(config.n_embd, self.n_kv_head * self.head_dim, bias=config.bias)
+            self.separate_qkv = True
+
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
         setattr(self.c_proj, "NANOGPT_SCALE_INIT", 1)
 
-        self.n_head = config.n_head
-        self.n_embd = config.n_embd
-        # Autoregressive causal mask
-        self.register_buffer(
-            "bias",
-            torch.tril(torch.ones(config.block_size, config.block_size)).view(
-                1, 1, config.block_size, config.block_size
-            ),
-        )
-
-    def forward(self, x, kv_cache=None, use_cache=False):
+    def forward(self, x, freqs_cis=None, start_pos=0, kv_cache=None, use_cache=False):
         B, T, C = x.size()
-        # Project and split into queries, keys, and values: (B, T, 3 * C) -> 3 x (B, T, C)
-        qkv = self.c_attn(x)
-        q, k, v = qkv.split(self.n_embd, dim=2)
-        # Reshape to (B, nh, T, hs)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
 
+        if not self.separate_qkv:
+            qkv = self.c_attn(x)
+            q, k, v = qkv.split(C, dim=2)
+            q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+            k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+            v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        else:
+            q = self.q_proj(x).view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+            k = self.k_proj(x).view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
+            v = self.v_proj(x).view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
+
+        # Apply Rotary Position Embeddings (RoPE) if enabled
+        if freqs_cis is not None:
+            q = apply_rope(q, freqs_cis, start_pos=start_pos)
+            k = apply_rope(k, freqs_cis, start_pos=start_pos)
+
+        # KV-Cache management
         if kv_cache is not None and kv_cache[0] is not None and kv_cache[1] is not None:
             k_past, v_past = kv_cache
             k = torch.cat([k_past, k], dim=2)
@@ -59,15 +145,16 @@ class CausalSelfAttention(nn.Module):
 
         new_kv_cache = (k, v) if (use_cache or kv_cache is not None) else None
 
-        if kv_cache is None or kv_cache[0] is None:
-            # Fused scaled dot-product attention with causal mask (FlashAttention / SRAM tiling)
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-        else:
-            # Single-token decode attends to all past keys/values; is_causal=False when T_q == 1
-            is_causal = (T > 1)
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=is_causal)
+        # Repeat KV heads for Grouped-Query Attention (GQA)
+        k_rep = repeat_kv(k, self.n_rep)
+        v_rep = repeat_kv(v, self.n_rep)
 
-        # Re-assemble head outputs side-by-side: (B, T, C)
+        if kv_cache is None or kv_cache[0] is None:
+            y = F.scaled_dot_product_attention(q, k_rep, v_rep, is_causal=True)
+        else:
+            is_causal = (T > 1)
+            y = F.scaled_dot_product_attention(q, k_rep, v_rep, is_causal=is_causal)
+
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.c_proj(y)
         return y, new_kv_cache
@@ -76,9 +163,9 @@ class CausalSelfAttention(nn.Module):
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
         self.gelu = nn.GELU(approximate="tanh")
-        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
         setattr(self.c_proj, "NANOGPT_SCALE_INIT", 1)
 
     def forward(self, x):
@@ -91,13 +178,30 @@ class MLP(nn.Module):
 class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.ln_1 = nn.LayerNorm(config.n_embd)
-        self.attn = CausalSelfAttention(config)
-        self.ln_2 = nn.LayerNorm(config.n_embd)
-        self.mlp = MLP(config)
+        # Normalization layer (LayerNorm vs RMSNorm)
+        if config.norm_type == "rmsnorm":
+            self.ln_1 = RMSNorm(config.n_embd)
+            self.ln_2 = RMSNorm(config.n_embd)
+        else:
+            self.ln_1 = nn.LayerNorm(config.n_embd)
+            self.ln_2 = nn.LayerNorm(config.n_embd)
 
-    def forward(self, x, kv_cache=None, use_cache=False):
-        attn_out, new_kv_cache = self.attn(self.ln_1(x), kv_cache=kv_cache, use_cache=use_cache)
+        self.attn = CausalSelfAttention(config)
+
+        # Feed-Forward layer (GELU MLP vs SwiGLU)
+        if config.mlp_type == "swiglu":
+            self.mlp = SwiGLUMLP(config)
+        else:
+            self.mlp = MLP(config)
+
+    def forward(self, x, freqs_cis=None, start_pos=0, kv_cache=None, use_cache=False):
+        attn_out, new_kv_cache = self.attn(
+            self.ln_1(x),
+            freqs_cis=freqs_cis,
+            start_pos=start_pos,
+            kv_cache=kv_cache,
+            use_cache=use_cache,
+        )
         x = x + attn_out
         x = x + self.mlp(self.ln_2(x))
         return x, new_kv_cache
@@ -110,19 +214,40 @@ class GPTConfig:
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
+    # Modern Architecture Options (LLaMA-3 Spec)
+    n_kv_head: int | None = None          # None for classic MHA, or e.g. 4 for 3x GQA
+    norm_type: str = "layernorm"          # "layernorm" (classic) or "rmsnorm" (modern)
+    pos_emb: str = "learned"              # "learned" (classic WPE) or "rope" (modern Rotary)
+    mlp_type: str = "gelu"                # "gelu" (classic) or "swiglu" (modern)
+    rope_theta: float = 10000.0           # Base frequency for RoPE
+    bias: bool = True                     # Set False for modern architectures (LLaMA / Mistral)
 
 
 class GPT(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: GPTConfig):
         super().__init__()
         self.config = config
 
-        self.transformer = nn.ModuleDict(dict(
+        # Precompute RoPE rotary frequencies if enabled
+        self.freqs_cis = None
+        if config.pos_emb == "rope":
+            head_dim = config.n_embd // config.n_head
+            self.freqs_cis = precompute_rope_frequencies(
+                head_dim=head_dim,
+                max_seq_len=config.block_size * 2,
+                theta=config.rope_theta,
+            )
+
+        # Core transformer dictionary
+        transformer_dict = dict(
             wte=nn.Embedding(config.vocab_size, config.n_embd),
-            wpe=nn.Embedding(config.block_size, config.n_embd),
             h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            ln_f=nn.LayerNorm(config.n_embd),
-        ))
+            ln_f=RMSNorm(config.n_embd) if config.norm_type == "rmsnorm" else nn.LayerNorm(config.n_embd),
+        )
+        if config.pos_emb == "learned":
+            transformer_dict['wpe'] = nn.Embedding(config.block_size, config.n_embd)
+
+        self.transformer = nn.ModuleDict(transformer_dict)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         # Weight tying scheme
@@ -150,15 +275,26 @@ class GPT(nn.Module):
         if kv_caches is not None and kv_caches[0] is not None:
             past_len = kv_caches[0][0].size(2)
 
-        pos = torch.arange(past_len, past_len + T, dtype=torch.long, device=idx.device)
-        pos_emb = self.transformer['wpe'](pos)
         tok_emb = self.transformer['wte'](idx)
-        x = tok_emb + pos_emb
+        if self.config.pos_emb == "learned":
+            pos = torch.arange(past_len, past_len + T, dtype=torch.long, device=idx.device)
+            pos_emb = self.transformer['wpe'](pos)
+            x = tok_emb + pos_emb
+        else:
+            x = tok_emb
+
+        freqs_cis = self.freqs_cis if self.config.pos_emb == "rope" else None
 
         new_kv_caches = [] if (use_cache or kv_caches is not None) else None
         for i, block in enumerate(cast(nn.ModuleList, self.transformer['h'])):
             block_kv = kv_caches[i] if kv_caches is not None else None
-            x, updated_kv = block(x, kv_cache=block_kv, use_cache=(use_cache or kv_caches is not None))
+            x, updated_kv = block(
+                x,
+                freqs_cis=freqs_cis,
+                start_pos=past_len,
+                kv_cache=block_kv,
+                use_cache=(use_cache or kv_caches is not None),
+            )
             if new_kv_caches is not None:
                 new_kv_caches.append(updated_kv)
 
@@ -431,6 +567,7 @@ def train(
     eval_interval: int = 50,
     sample_interval: int = 200,
     save_interval: int = 200,
+    architecture: str = "classic",
 ):
     # Distributed setup & device detection
     ddp = int(os.environ.get('RANK', -1)) != -1
@@ -469,7 +606,7 @@ def train(
     assert total_batch_size % (B * T * ddp_world_size) == 0, "total_batch_size must be divisible by B * T * ddp_world_size"
     grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
     if master_process:
-        print(f"[Axiom-LM] Batch config: Total={total_batch_size:,} tok | Micro-B={B} | T={T} | GradAccum={grad_accum_steps}")
+        print(f"[Axiom-LM] Architecture: {architecture.upper()} | Batch config: Total={total_batch_size:,} tok | Micro-B={B} | T={T} | GradAccum={grad_accum_steps}")
 
     # Initialize data loaders
     train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
@@ -483,7 +620,24 @@ def train(
     if device == "cuda":
         torch.set_float32_matmul_precision('high')
 
-    model = GPT(GPTConfig())
+    # Initialize Model Architecture (Classic GPT-2 vs Modern LLaMA-3)
+    if architecture == "modern":
+        config = GPTConfig(
+            block_size=1024,
+            vocab_size=50257,
+            n_layer=12,
+            n_head=12,
+            n_embd=768,
+            n_kv_head=4,         # 3x Grouped-Query Attention (GQA)
+            norm_type="rmsnorm", # Root Mean Square Normalization
+            pos_emb="rope",      # Rotary Positional Embeddings
+            mlp_type="swiglu",   # SwiGLU Gated Feed-Forward Network
+            bias=False,          # Bias-free linear layers
+        )
+    else:
+        config = GPTConfig()
+
+    model = GPT(config)
     model.to(device)
 
     if device == "cuda":
@@ -610,4 +764,40 @@ def train(
 
 
 if __name__ == "__main__":
-    train()
+    import argparse
+    parser = argparse.ArgumentParser(description="Axiom-LM Pretraining Engine (Classic GPT-2 & Modern LLaMA-3)")
+    parser.add_argument("--arch", type=str, default="classic", choices=["classic", "modern"], help="Architecture spec ('classic' GPT-2 or 'modern' LLaMA-3 with RoPE+RMSNorm+SwiGLU+GQA)")
+    parser.add_argument("--max_steps", type=int, default=4800, help="Total training optimization steps")
+    parser.add_argument("--batch_size", type=int, default=4096, help="Total tokens per optimization step")
+    parser.add_argument("--eval_interval", type=int, default=50, help="Validation evaluation step interval")
+    parser.add_argument("--sample_interval", type=int, default=200, help="Live story sampling step interval")
+    parser.add_argument("--save_interval", type=int, default=200, help="Model checkpoint step interval")
+    parser.add_argument("--benchmark", action="store_true", help="Run KV-cache vs Naive generation speed benchmark")
+    args = parser.parse_args()
+
+    if args.benchmark:
+        device = "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+        enc = tiktoken.get_encoding("gpt2")
+        cfg = GPTConfig(
+            block_size=1024,
+            vocab_size=50257,
+            n_layer=12,
+            n_head=12,
+            n_embd=768,
+            n_kv_head=4 if args.arch == "modern" else None,
+            norm_type="rmsnorm" if args.arch == "modern" else "layernorm",
+            pos_emb="rope" if args.arch == "modern" else "learned",
+            mlp_type="swiglu" if args.arch == "modern" else "gelu",
+            bias=False if args.arch == "modern" else True,
+        )
+        bm_model = GPT(cfg).to(device)
+        benchmark_generation_speed(bm_model, enc, device, prompt="Once upon a time", max_length=100)
+    else:
+        train(
+            max_steps=args.max_steps,
+            total_batch_size=args.batch_size,
+            eval_interval=args.eval_interval,
+            sample_interval=args.sample_interval,
+            save_interval=args.save_interval,
+            architecture=args.arch,
+        )
