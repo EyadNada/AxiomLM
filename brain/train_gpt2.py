@@ -316,16 +316,13 @@ class GPT(nn.Module):
         from transformers import GPT2LMHeadModel
         print(f"Loading weights from pretrained GPT-2 ({model_type})")
 
-        config_args = {
-            'gpt2':         dict(n_layer=12, n_head=12, n_embd=768),
-            'gpt2-medium':  dict(n_layer=24, n_head=16, n_embd=1024),
-            'gpt2-large':   dict(n_layer=36, n_head=20, n_embd=1280),
-            'gpt2-xl':      dict(n_layer=48, n_head=25, n_embd=1600),
-        }[model_type]
-        config_args['vocab_size'] = 50257
-        config_args['block_size'] = 1024
-
-        config = GPTConfig(**config_args)
+        config_map = {
+            'gpt2':         GPTConfig(n_layer=12, n_head=12, n_embd=768, vocab_size=50257, block_size=1024),
+            'gpt2-medium':  GPTConfig(n_layer=24, n_head=16, n_embd=1024, vocab_size=50257, block_size=1024),
+            'gpt2-large':   GPTConfig(n_layer=36, n_head=20, n_embd=1280, vocab_size=50257, block_size=1024),
+            'gpt2-xl':      GPTConfig(n_layer=48, n_head=25, n_embd=1600, vocab_size=50257, block_size=1024),
+        }
+        config = config_map[model_type]
         model = GPT(config)
         sd = model.state_dict()
         sd_keys = [k for k in sd.keys() if not k.endswith('.attn.bias')]
