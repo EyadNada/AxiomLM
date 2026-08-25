@@ -13,7 +13,9 @@ from tqdm import tqdm
 
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 
-def prepare_tinystories(target_tokens: int = 20_000_000, val_ratio: float = 0.05):
+import argparse
+
+def prepare_tinystories(target_tokens: int = 20_000_000, val_ratio: float = 0.05, force: bool = False):
     """
     Downloads and tokenizes the TinyStories dataset.
     Target: ~20M tokens (~19M train, ~1M val).
@@ -22,7 +24,7 @@ def prepare_tinystories(target_tokens: int = 20_000_000, val_ratio: float = 0.05
     train_bin_path = os.path.join(DATA_DIR, "train.bin")
     val_bin_path = os.path.join(DATA_DIR, "val.bin")
 
-    if os.path.exists(train_bin_path) and os.path.exists(val_bin_path):
+    if not force and os.path.exists(train_bin_path) and os.path.exists(val_bin_path):
         print(f"[Axiom-LM] Binary shards already exist in {DATA_DIR}:")
         print(f"  - Train: {train_bin_path} ({os.path.getsize(train_bin_path):,} bytes)")
         print(f"  - Val:   {val_bin_path} ({os.path.getsize(val_bin_path):,} bytes)")
@@ -69,4 +71,10 @@ def prepare_tinystories(target_tokens: int = 20_000_000, val_ratio: float = 0.05
     del all_tokens
 
 if __name__ == "__main__":
-    prepare_tinystories()
+    parser = argparse.ArgumentParser(description="Axiom-LM TinyStories Dataset Tokenizer & Sharder")
+    parser.add_argument("--target_tokens", type=int, default=20_000_000, help="Target total token count (default: 20M)")
+    parser.add_argument("--val_ratio", type=float, default=0.05, help="Validation split ratio (default: 0.05)")
+    parser.add_argument("--force", action="store_true", help="Force re-tokenization even if binary shards exist")
+    args = parser.parse_args()
+
+    prepare_tinystories(target_tokens=args.target_tokens, val_ratio=args.val_ratio, force=args.force)
