@@ -448,3 +448,6 @@ for i in range(num_return_sequences):
     tokens = x[i, :max_length].tolist()
     decoded = enc.decode(tokens)
     print(">", decoded, flush=True)
+
+if ddp:
+    destroy_process_group()
