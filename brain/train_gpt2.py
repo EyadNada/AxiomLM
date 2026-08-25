@@ -42,7 +42,7 @@ class CausalSelfAttention(nn.Module):
             ),
         )
 
-    def forward(self, x):
+    def forward(self, x, kv_cache=None, use_cache=False):
         B, T, C = x.size()
         # Project and split into queries, keys, and values: (B, T, 3 * C) -> 3 x (B, T, C)
         qkv = self.c_attn(x)
@@ -52,12 +52,25 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
 
-        # Fused scaled dot-product attention (FlashAttention / SRAM tiling)
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        if kv_cache is not None and kv_cache[0] is not None and kv_cache[1] is not None:
+            k_past, v_past = kv_cache
+            k = torch.cat([k_past, k], dim=2)
+            v = torch.cat([v_past, v], dim=2)
+
+        new_kv_cache = (k, v) if (use_cache or kv_cache is not None) else None
+
+        if kv_cache is None or kv_cache[0] is None:
+            # Fused scaled dot-product attention with causal mask (FlashAttention / SRAM tiling)
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        else:
+            # Single-token decode attends to all past keys/values; is_causal=False when T_q == 1
+            is_causal = (T > 1)
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=is_causal)
+
         # Re-assemble head outputs side-by-side: (B, T, C)
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.c_proj(y)
-        return y
+        return y, new_kv_cache
 
 
 class MLP(nn.Module):
@@ -83,10 +96,11 @@ class Block(nn.Module):
         self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
+    def forward(self, x, kv_cache=None, use_cache=False):
+        attn_out, new_kv_cache = self.attn(self.ln_1(x), kv_cache=kv_cache, use_cache=use_cache)
+        x = x + attn_out
         x = x + self.mlp(self.ln_2(x))
-        return x
+        return x, new_kv_cache
 
 
 @dataclass
@@ -128,17 +142,25 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, kv_caches=None, use_cache=False):
         B, T = idx.size()
         assert T <= self.config.block_size, f"Sequence length {T} exceeds block size {self.config.block_size}"
 
-        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
+        past_len = 0
+        if kv_caches is not None and kv_caches[0] is not None:
+            past_len = kv_caches[0][0].size(2)
+
+        pos = torch.arange(past_len, past_len + T, dtype=torch.long, device=idx.device)
         pos_emb = self.transformer['wpe'](pos)
         tok_emb = self.transformer['wte'](idx)
         x = tok_emb + pos_emb
 
-        for block in cast(nn.ModuleList, self.transformer['h']):
-            x = block(x)
+        new_kv_caches = [] if (use_cache or kv_caches is not None) else None
+        for i, block in enumerate(cast(nn.ModuleList, self.transformer['h'])):
+            block_kv = kv_caches[i] if kv_caches is not None else None
+            x, updated_kv = block(x, kv_cache=block_kv, use_cache=(use_cache or kv_caches is not None))
+            if new_kv_caches is not None:
+                new_kv_caches.append(updated_kv)
 
         x = self.transformer['ln_f'](x)
         logits = self.lm_head(x)
@@ -147,6 +169,8 @@ class GPT(nn.Module):
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
 
+        if use_cache or kv_caches is not None:
+            return logits, loss, new_kv_caches
         return logits, loss
 
     @classmethod
@@ -278,7 +302,7 @@ def get_raw_model(model: nn.Module) -> GPT:
 
 
 def generate_samples(model: GPT, enc, device, prompt="Once upon a time", num_samples=2, max_length=40):
-    """Generates autoregressive text samples given a prompt."""
+    """Generates autoregressive text samples using standard eager re-computation (O(T^2))."""
     model.eval()
     tokens = enc.encode(prompt)
     tokens = torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0).repeat(num_samples, 1)
@@ -298,6 +322,103 @@ def generate_samples(model: GPT, enc, device, prompt="Once upon a time", num_sam
         sample_text = enc.decode(tokens[i, :max_length].tolist())
         samples.append(sample_text)
     return samples
+
+
+def generate_with_cache(
+    model: GPT,
+    enc,
+    device: str,
+    prompt: str = "Once upon a time",
+    num_samples: int = 1,
+    max_length: int = 40,
+    temperature: float = 1.0,
+    top_k: int = 50,
+):
+    """
+    Accelerated autoregressive text generation using per-layer Key-Value caching.
+    Reduces compute complexity from O(T^2) to O(1) per decoding step.
+    """
+    model.eval()
+    prompt_tokens = enc.encode(prompt)
+    x = torch.tensor(prompt_tokens, dtype=torch.long, device=device).unsqueeze(0).repeat(num_samples, 1)
+
+    with torch.no_grad():
+        # 1. Prefill phase: pass entire prompt to initialize KV caches
+        kv_caches = [None] * model.config.n_layer
+        logits, _, kv_caches = model(x, kv_caches=kv_caches)
+
+        next_token_logits = logits[:, -1, :]
+        if temperature > 0:
+            probs = F.softmax(next_token_logits / temperature, dim=-1)
+            topk_probs, topk_indices = torch.topk(probs, min(top_k, probs.size(-1)), dim=-1)
+            ix = torch.multinomial(topk_probs, 1)
+            next_token = torch.gather(topk_indices, -1, ix)
+        else:
+            next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+
+        generated_tokens = torch.cat((x, next_token), dim=1)
+
+        # 2. Decode phase: pass single token (T=1) on each step with cached past
+        while generated_tokens.size(1) < max_length:
+            logits, _, kv_caches = model(next_token, kv_caches=kv_caches)
+            next_token_logits = logits[:, -1, :]
+            if temperature > 0:
+                probs = F.softmax(next_token_logits / temperature, dim=-1)
+                topk_probs, topk_indices = torch.topk(probs, min(top_k, probs.size(-1)), dim=-1)
+                ix = torch.multinomial(topk_probs, 1)
+                next_token = torch.gather(topk_indices, -1, ix)
+            else:
+                next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+            generated_tokens = torch.cat((generated_tokens, next_token), dim=1)
+
+    samples = []
+    for i in range(num_samples):
+        sample_text = enc.decode(generated_tokens[i, :max_length].tolist())
+        samples.append(sample_text)
+    return samples
+
+
+def benchmark_generation_speed(model: GPT, enc, device: str, prompt: str = "Once upon a time", max_length: int = 100):
+    """Benchmarks generation throughput (tokens/sec) comparing Naive O(T^2) vs KV-Cache O(1)."""
+    model.eval()
+    print(f"\n[Axiom-LM Benchmark] Benchmarking generation to {max_length} tokens on {device}...")
+
+    # Warmup
+    _ = generate_samples(model, enc, device, prompt=prompt, num_samples=1, max_length=20)
+    _ = generate_with_cache(model, enc, device, prompt=prompt, num_samples=1, max_length=20)
+
+    # 1. Benchmark Naive Eager O(T^2)
+    if device == "mps" and hasattr(torch.mps, "synchronize"):
+        torch.mps.synchronize()
+    elif device == "cuda" and hasattr(torch.cuda, "synchronize"):
+        torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    _ = generate_samples(model, enc, device, prompt=prompt, num_samples=1, max_length=max_length)
+    if device == "mps" and hasattr(torch.mps, "synchronize"):
+        torch.mps.synchronize()
+    elif device == "cuda" and hasattr(torch.cuda, "synchronize"):
+        torch.cuda.synchronize()
+    t_naive = time.perf_counter() - t0
+
+    # 2. Benchmark KV-Cache O(1)
+    t0 = time.perf_counter()
+    _ = generate_with_cache(model, enc, device, prompt=prompt, num_samples=1, max_length=max_length)
+    if device == "mps" and hasattr(torch.mps, "synchronize"):
+        torch.mps.synchronize()
+    elif device == "cuda" and hasattr(torch.cuda, "synchronize"):
+        torch.cuda.synchronize()
+    t_cache = time.perf_counter() - t0
+
+    prompt_len = len(enc.encode(prompt))
+    tokens_generated = max_length - prompt_len
+    tok_per_sec_naive = tokens_generated / t_naive
+    tok_per_sec_cache = tokens_generated / t_cache
+    speedup = t_naive / t_cache
+
+    print(f"  • Naive Eager O(T^2)  : {t_naive*1000:.2f} ms ({tok_per_sec_naive:.2f} tokens/s)")
+    print(f"  • KV-Cache O(1)       : {t_cache*1000:.2f} ms ({tok_per_sec_cache:.2f} tokens/s)")
+    print(f"  • Speedup Factor      : {speedup:.2f}x faster with KV-Cache\n")
+    return {"t_naive": t_naive, "t_cache": t_cache, "speedup": speedup}
 
 
 # -----------------------------------------------------------------------------
@@ -418,11 +539,11 @@ def train(max_steps: int = 1600, eval_interval: int = 50, sample_interval: int =
                 if master_process:
                     print(f"\n[Val Eval @ Step {step:4d}] validation loss: {val_loss:.4f}", flush=True)
 
-        # 2. Live Text Generation Sampling
+        # 2. Live Text Generation Sampling (KV-Cache Accelerated)
         if master_process and ((sample_interval > 0 and step % sample_interval == 0) or last_step):
             raw_model = get_raw_model(model)
-            samples = generate_samples(raw_model, enc, device, prompt="Once upon a time", num_samples=2, max_length=45)
-            print(f"--- Live Generated Samples @ Step {step:4d} ---")
+            samples = generate_with_cache(raw_model, enc, device, prompt="Once upon a time", num_samples=2, max_length=45)
+            print(f"--- Live Generated Samples (KV-Cache) @ Step {step:4d} ---")
             for idx, s in enumerate(samples, 1):
                 print(f"  [{idx}] {s}")
             print("-" * 50, flush=True)
