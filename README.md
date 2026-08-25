@@ -1,22 +1,23 @@
 # Axiom-LM (124M)
 
-A ground-up architectural and systems-level redesign of the 124-million-parameter autoregressive Transformer, engineered from low-level GPU tensor operations and memory hierarchies up to global pretraining dynamics.
+A high-performance, Apple Silicon (Metal Performance Shaders / MPS) and Unified Memory Architecture (UMA) native pretraining engine and architectural redesign of the 124M parameter autoregressive Transformer.
 
 ---
 
 ## Overview
 
 ### What is Axiom-LM?
-**Axiom-LM** is an engineered-from-scratch decoder-only language model and high-throughput pretraining engine. Rather than relying on high-level library abstractions or third-party wrappers, Axiom-LM reconstructs the entire autoregressive modeling stack directly from tensor primitives:
-- **Custom Model Architecture**: Explicit implementation of causal multi-head self-attention, pre-layer normalization residual streams, parameter initialization scaling, and weight-tied token embeddings.
-- **Hardware-Aware Memory & Compute Hierarchy**: Native integration with low-level GPU mechanics, including on-chip SRAM tiled attention, Ampere/Hopper TensorFloat-32 (TF32) precision, and Bfloat16 (BF16) mixed precision.
-- **Compiled Execution Graph**: Kernel fusion and graph-level optimizations via PyTorch 2.x TorchInductor (`torch.compile`) targeting minimal Python dispatch overhead and zero redundant global memory roundtrips.
-- **Systems-Optimized Training Engine**: Gradient accumulation with micro-batching, decoupled AdamW optimizer state management (2D tensor decay vs. 1D bias exclusion), and cosine learning rate decay with linear warmup.
+**Axiom-LM** is an engineered-from-scratch decoder-only language model and pretraining engine optimized specifically for Apple Silicon and cross-platform hardware. While the broader deep learning ecosystem is predominantly hardwired for NVIDIA CUDA, Axiom-LM redesigns the complete autoregressive modeling and execution stack to treat Apple's Unified Memory Architecture (UMA) and Metal Performance Shaders as first-class compute targets:
+- **Custom Model Architecture**: Pure PyTorch implementation of causal multi-head self-attention, pre-layer normalization residual streams, variance-scaled weight initialization, and tied input/output embedding matrices.
+- **Apple Silicon & MPS Native Execution**: Direct integration with PyTorch's Metal Performance Shaders backend, including native `bfloat16` autocasting, Metal-accelerated Scaled Dot-Product Attention (SDPA), and deterministic `torch.mps` synchronization.
+- **Unified Memory Optimization**: Zero-copy data streaming architectures designed to exploit Apple Silicon's shared CPU-GPU memory pool, avoiding PCIe transfer bottlenecks.
+- **High-Throughput Training Dynamics**: Gradient accumulation with micro-batch sizing tuned for unified memory pressure, decoupled AdamW optimizer state management (2D weight decay vs. 1D bias exclusion), and cosine learning rate decay with linear warmup.
 
-### Why Axiom-LM?
-1. **Hardware-Level Tensor Co-Design**: Modern LLM performance is predominantly memory-bandwidth bound. Axiom-LM addresses this directly at the hardware boundary—minimizing High Bandwidth Memory (HBM) traffic through fused FlashAttention kernels, aligning tensor dimensions for Tensor Core warp utilization, and leveraging hardware-native numeric formats.
-2. **First-Principles Systems Architecture**: By controlling every layer of the compute stack—from byte-pair encoding (BPE) streaming to gradient synchronization and backward graphs—Axiom-LM provides full transparency and deterministic control over compute throughput and memory allocation.
-3. **Foundation for Advanced Model Research**: Serves as a modular, high-performance platform for evaluating architectural evolutions (Rotary Positional Embeddings, RMSNorm, SwiGLU activations, Grouped-Query Attention) and next-generation matrix optimizers (such as Muon).
+### Why Axiom-LM? (The Systems Rationale)
+1. **Breaking CUDA Lock-In**: Modern LLM pretraining frameworks (Triton, FlashAttention-CUDA, CUTLASS, Megatron) are tightly coupled to NVIDIA hardware. Axiom-LM establishes a high-performance alternative engineered for Apple Silicon's unified memory bandwidth (up to 800+ GB/s on Max/Ultra configurations).
+2. **Unified Memory Exploitation**: In traditional discrete GPU setups, data must traverse high-latency PCIe buses from host RAM to VRAM. Apple Silicon shares a single high-bandwidth physical address space between CPU and GPU cores. Axiom-LM is structured to leverage zero-copy memory-mapped token arrays directly inside this unified pool.
+3. **First-Principles Transparency**: Complete control over every tensor operation—from Byte-Pair Encoding (BPE) token sharding to gradient backward graphs and optimizer updates—without opaque library wrappers.
+4. **Foundation for Modern Architecture Research**: Serves as a modular, hackable platform for integrating modern Transformer components (RoPE, RMSNorm, SwiGLU, GQA) and next-generation optimizers (such as Muon).
 
 ---
 
@@ -36,7 +37,7 @@ A ground-up architectural and systems-level redesign of the 124-million-paramete
             ┌────────────────▼────────────────┐
             │     Transformer Block (×12)     │
             │   ├── LayerNorm (Pre-LN)        │
-            │   ├── Causal Self-Attention     │ ◄── Fused SDPA / SRAM Tiling
+            │   ├── Causal Self-Attention     │ ◄── Metal Accelerated SDPA
             │   ├── Residual Connection (+)   │
             │   ├── LayerNorm                 │
             │   ├── MLP (GELU, 4× Expansion)  │ ◄── 768 → 3072 → 768
@@ -57,35 +58,33 @@ A ground-up architectural and systems-level redesign of the 124-million-paramete
 | **Layers** | $L$ | `12` | Stacked decoder blocks |
 | **Hidden Dimension** | $d_{\text{model}}$ | `768` | Model state capacity |
 | **Attention Heads** | $N_h$ | `12` | Subspace attention splits |
-| **Head Dimension** | $d_k$ | `64` | $768 / 12 = 64$ (Standard Tensor Core GEMM alignment) |
+| **Head Dimension** | $d_k$ | `64` | $768 / 12 = 64$ (Standard GEMM tile alignment) |
 | **Context Length** | $T$ | `1024` | Maximum sequence length |
-| **Vocabulary Size** | $V$ | `50,257` | Byte-Pair Encoding (BPE) vocabulary |
+| **Vocabulary Size** | $V$ | `50,257` | GPT-2 Byte-Pair Encoding (BPE) vocabulary |
 | **Parameter Count** | $P$ | `124,439,808` | Total parameters with tied embeddings |
 
 ---
 
-## Systems & Kernel Optimizations
+## Hardware-Level Systems Optimizations
 
-### 1. Fused Attention & SRAM Tiling
-- Replaces naive $O(T^2)$ attention matrices with `F.scaled_dot_product_attention`.
-- Blocks queries, keys, and values into on-chip SRAM partitions ($19\text{ TB/s}$ bandwidth), computing intermediate softmax statistics online and avoiding large intermediate activations in global VRAM.
+### 1. Metal Performance Shaders (MPS) & SDPA
+- Leverages PyTorch's native MPS backend for `F.scaled_dot_product_attention`, executing causal self-attention through Apple Silicon's hardware matrix engines.
+- Eliminates materializing the quadratic $(B, N_h, T, T)$ attention score matrix in global memory, computing softmax normalizers incrementally.
 
-### 2. Mixed Precision Arithmetic (TF32 & BF16)
-- **TF32 Matmul**: Uses `torch.set_float32_matmul_precision('high')` to truncate mantissas to 10 bits while retaining the 8-bit dynamic exponent range for accelerated matrix multiplication on Ampere+ architectures.
-- **BF16 Autocast**: Halves activation and gradient memory footprints without the dynamic range degradation and loss-scaling instability of standard IEEE FP16.
+### 2. Native Bfloat16 Precision Contexts
+- Executes forward activations in `bfloat16` via `torch.autocast(device_type="mps", dtype=torch.bfloat16)` on supported Apple Silicon chips.
+- Cuts memory bandwidth consumption by 50% while preserving the dynamic exponent range of FP32, preventing numerical instability without requiring artificial loss scaling.
 
-### 3. Graph Compilation (`torch.compile`)
-- Utilizes TorchDynamo to trace computation graphs and TorchInductor to emit optimized Triton C++/CUDA kernels.
-- Fuses pointwise operations (LayerNorm, GELU, residual additions) to eliminate back-to-back kernel launches and global memory roundtrips.
+### 3. Unified Memory-Aware Batch Tiling
+- Uses micro-batching ($B = 2, T = 1024$) coupled with gradient accumulation ($16,384$ tokens per optimizer step) to balance memory pressure on macOS unified memory and avoid memory fragmentation in the Metal command buffer allocator.
 
 ### 4. Decoupled Optimizer Parameter Partitioning
 - Parameter tensors are categorized by dimensional rank:
-  - **Rank $\ge 2$ (Weights, Projections)**: Decoupled weight decay ($0.1$).
+  - **Rank $\ge 2$ (Weight Matrices, Projections)**: Decoupled weight decay ($0.1$).
   - **Rank $< 2$ (Biases, Normalization Scales)**: Zero weight decay.
-- Fused AdamW updates parameters directly in a single pass over memory.
 
-### 5. Depth-Dependent Residual Initialization
-- Projection layers (`c_proj`) are scaled at initialization by $\sigma = \frac{0.02}{\sqrt{2L}}$ ($L=12$), stabilizing activation variance growth through the residual stream during early training iterations.
+### 5. Depth-Scaled Residual Initialization
+- Projection layers (`c_proj`) are scaled at initialization by $\sigma = \frac{0.02}{\sqrt{2L}}$ ($L=12$), stabilizing activation variance through the residual stream during training.
 
 ---
 
@@ -95,6 +94,7 @@ A ground-up architectural and systems-level redesign of the 124-million-paramete
 ├── brain/
 │   ├── train_gpt2.py       # Core Axiom-LM model, data loader, and training engine
 │   └── play.ipynb          # Interactive experimentation, weight validation, and sampling
+├── data/                   # Dataset tokenization and binary sharding pipelines
 ├── material/               # Mathematical formulations, systems analyses, and technical guides
 │   ├── adamw_optimizer_guide.md
 │   ├── automatic_mixed_precision_amp_guide.md
@@ -129,7 +129,7 @@ pip install -r requirements.txt
 
 ### 2. Execution
 
-The engine detects available hardware targets (`cuda`, `mps`, or `cpu`) and configures memory and precision contexts automatically:
+The engine detects available hardware targets (`mps`, `cuda`, or `cpu`) and configures precision contexts automatically:
 
 ```bash
 python brain/train_gpt2.py
@@ -151,10 +151,10 @@ Reference documentation covering the mathematics and low-level engineering princ
 
 | Document | Area | Scope |
 | :--- | :--- | :--- |
-| [DDP Guide](material/distributed_data_parallel_ddp_guide.md) | Distributed Computing | Ring All-Reduce, gradient bucketing, and multi-GPU synchronization |
+| [DDP Guide](material/distributed_data_parallel_ddp_guide.md) | Distributed Systems | Ring All-Reduce, gradient bucketing, and multi-device synchronization |
 | [FlashAttention Guide](material/flash_attention_guide.md) | GPU Microarchitecture | SRAM tiling, online softmax, and IO complexity |
 | [AMP Guide](material/automatic_mixed_precision_amp_guide.md) | Numerical Precision | Dynamic ranges, IEEE FP32 vs TF32 vs BF16 |
-| [Torch Compile Guide](material/torch_compile_guide.md) | Compiler & JIT | TorchDynamo, TorchInductor, and fused Triton kernels |
+| [Torch Compile Guide](material/torch_compile_guide.md) | Compiler & JIT | TorchDynamo, TorchInductor, and fused kernel generation |
 | [AdamW Guide](material/adamw_optimizer_guide.md) | Optimization Theory | Decoupled weight decay vs L2 regularization dynamics |
 | [Hyperparameters Guide](material/gpt3_training_hyperparameters_guide.md) | Training Dynamics | Learning rate schedules, warmup steps, and token throughput |
 | [Pretraining Datasets](material/datasets_webtext_gpt2_vs_gpt3_guide.md) | Data Engineering | Dataset pipelines (WebText, FineWeb-Edu, SlimPajama) |
@@ -165,10 +165,10 @@ Reference documentation covering the mathematics and low-level engineering princ
 
 - [x] Pure PyTorch Axiom-LM (124M) core architecture
 - [x] Hugging Face parameter matching and verification
-- [x] Low-level system optimizations (TF32, BF16 Autocast, FlashAttention / SDPA)
-- [x] TorchInductor graph compilation (`torch.compile`)
+- [x] Apple Silicon (MPS) native execution & BF16 autocast support
+- [x] SDPA / Fused Attention integration
 - [x] Gradient accumulation and cosine warmup learning rate schedule
-- [ ] Memory-mapped sharded binary data pipeline (TinyStories / FineWeb-Edu)
+- [ ] Unified Memory sharded binary dataset pipeline (`uint16` memory-mapping)
 - [ ] Holdout validation loss evaluation loop
 - [ ] Checkpoint persistence and resume mechanics (`torch.save`)
 - [ ] Key-Value (KV) cache inference engine
