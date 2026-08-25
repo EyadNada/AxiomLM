@@ -425,7 +425,13 @@ def benchmark_generation_speed(model: GPT, enc, device: str, prompt: str = "Once
 # Main Training Engine
 # -----------------------------------------------------------------------------
 
-def train(max_steps: int = 1600, eval_interval: int = 50, sample_interval: int = 200, save_interval: int = 200):
+def train(
+    max_steps: int = 4800,
+    total_batch_size: int = 4096,
+    eval_interval: int = 50,
+    sample_interval: int = 200,
+    save_interval: int = 200,
+):
     # Distributed setup & device detection
     ddp = int(os.environ.get('RANK', -1)) != -1
     if ddp:
@@ -457,12 +463,11 @@ def train(max_steps: int = 1600, eval_interval: int = 50, sample_interval: int =
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         torch.mps.manual_seed(1337)
 
-    # Batch size & gradient accumulation setup (16,384 tokens per optimizer step)
-    total_batch_size = 16384
+    # Batch size & gradient accumulation setup (e.g. 4,096 tokens per optimizer step for fast iteration)
     B = 2  # Micro-batch size 2 to reduce Unified Memory pressure
     T = 1024
-    assert total_batch_size % (B * T) == 0, "total_batch_size must be divisible by B * T"
-    grad_accum_steps = total_batch_size // (B * T)
+    assert total_batch_size % (B * T * ddp_world_size) == 0, "total_batch_size must be divisible by B * T * ddp_world_size"
+    grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
     if master_process:
         print(f"[Axiom-LM] Batch config: Total={total_batch_size:,} tok | Micro-B={B} | T={T} | GradAccum={grad_accum_steps}")
 
@@ -498,7 +503,7 @@ def train(max_steps: int = 1600, eval_interval: int = 50, sample_interval: int =
     # Cosine learning rate schedule with linear warmup
     max_lr = 6e-4
     min_lr = max_lr * 0.1
-    warmup_steps = 320
+    warmup_steps = min(300, max_steps // 10)
 
     def get_lr(it):
         if it < warmup_steps:
@@ -516,7 +521,6 @@ def train(max_steps: int = 1600, eval_interval: int = 50, sample_interval: int =
 
     # Training Loop
     for step in range(max_steps):
-        t0 = time.time()
         last_step = (step == max_steps - 1)
 
         # 1. Validation loss evaluation
@@ -565,6 +569,7 @@ def train(max_steps: int = 1600, eval_interval: int = 50, sample_interval: int =
         model.train()
         optimizer.zero_grad()
         loss_accum_tensor = torch.zeros(1, device=device)
+        t0 = time.time()
 
         for micro_step in range(grad_accum_steps):
             x, y = train_loader.next_batch()
