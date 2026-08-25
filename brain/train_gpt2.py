@@ -268,10 +268,16 @@ class DataLoaderLite:
 
 # -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
-# Text Generation & Sampling Helper
+# Model Unwrapping & Sampling Helpers
 # -----------------------------------------------------------------------------
 
-def generate_samples(model, enc, device, prompt="Once upon a time", num_samples=2, max_length=40):
+def get_raw_model(model: nn.Module) -> GPT:
+    """Safely unwraps DDP (DistributedDataParallel) and torch.compile containers."""
+    unwrapped = getattr(model, "module", getattr(model, "_orig_mod", model))
+    return cast(GPT, unwrapped)
+
+
+def generate_samples(model: GPT, enc, device, prompt="Once upon a time", num_samples=2, max_length=40):
     """Generates autoregressive text samples given a prompt."""
     model.eval()
     tokens = enc.encode(prompt)
@@ -357,6 +363,9 @@ def train(max_steps: int = 1600, eval_interval: int = 50, sample_interval: int =
     if device == "cuda":
         model = cast(GPT, torch.compile(model))
 
+    if ddp:
+        model = cast(GPT, DDP(model, device_ids=[ddp_local_rank]))
+
     # Precision context
     if device == "cuda":
         autocast_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
@@ -380,7 +389,8 @@ def train(max_steps: int = 1600, eval_interval: int = 50, sample_interval: int =
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
         return min_lr + coeff * (max_lr - min_lr)
 
-    optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=max_lr, device=device)
+    raw_model = get_raw_model(model)
+    optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=max_lr, device=device)
     enc = tiktoken.get_encoding('gpt2')
 
     # Training Loop
@@ -410,7 +420,7 @@ def train(max_steps: int = 1600, eval_interval: int = 50, sample_interval: int =
 
         # 2. Live Text Generation Sampling
         if master_process and ((sample_interval > 0 and step % sample_interval == 0) or last_step):
-            raw_model = model.module if ddp else getattr(model, '_orig_mod', model)
+            raw_model = get_raw_model(model)
             samples = generate_samples(raw_model, enc, device, prompt="Once upon a time", num_samples=2, max_length=45)
             print(f"--- Live Generated Samples @ Step {step:4d} ---")
             for idx, s in enumerate(samples, 1):
@@ -419,7 +429,7 @@ def train(max_steps: int = 1600, eval_interval: int = 50, sample_interval: int =
 
         # 3. Model Checkpointing
         if master_process and ((save_interval > 0 and step % save_interval == 0 and step > 0) or last_step):
-            raw_model = model.module if ddp else getattr(model, '_orig_mod', model)
+            raw_model = get_raw_model(model)
             checkpoint_path = os.path.join(checkpoint_dir, "model_latest.pt")
             checkpoint = {
                 "step": step,
