@@ -64,5 +64,9 @@ def prepare_tinystories(target_tokens: int = 20_000_000, val_ratio: float = 0.05
     print(f"  - Train: {train_bin_path} ({len(train_tokens):,} tokens, {os.path.getsize(train_bin_path) / 1024 / 1024:.2f} MB)")
     print(f"  - Val:   {val_bin_path} ({len(val_tokens):,} tokens, {os.path.getsize(val_bin_path) / 1024 / 1024:.2f} MB)")
 
+    # Explicitly clean up streaming connections to avoid socket teardown warnings
+    del dataset
+    del all_tokens
+
 if __name__ == "__main__":
     prepare_tinystories()
