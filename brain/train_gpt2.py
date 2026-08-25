@@ -224,31 +224,45 @@ class GPT(nn.Module):
 # -----------------------------------------------------------------------------
 
 class DataLoaderLite:
-    def __init__(self, B, T):
+    def __init__(self, B, T, process_rank=0, num_processes=1, split="train"):
         self.B = B
         self.T = T
+        self.process_rank = process_rank
+        self.num_processes = num_processes
+        self.split = split
+        assert split in {"train", "val"}, "split must be 'train' or 'val'"
 
-        input_path = 'material/input.txt' if os.path.exists('material/input.txt') else 'input.txt'
-        with open(input_path, 'r') as f:
-            text = f.read()
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        shard_path = os.path.join(project_root, "data", f"{split}.bin")
+        if os.path.exists(shard_path):
+            self.tokens = np.memmap(shard_path, dtype=np.uint16, mode='r')
+            print(f"[DataLoaderLite] Loaded {split} shard from {shard_path} ({len(self.tokens):,} tokens)")
+        else:
+            input_path = os.path.join(project_root, "material", "input.txt")
+            if not os.path.exists(input_path):
+                input_path = "input.txt"
+            with open(input_path, "r") as f:
+                text = f.read()
+            enc = tiktoken.get_encoding("gpt2")
+            self.tokens = np.array(enc.encode(text), dtype=np.uint16)
+            print(f"[DataLoaderLite] Loaded fallback text with {len(self.tokens):,} tokens")
 
-        enc = tiktoken.get_encoding('gpt2')
-        tokens = enc.encode(text)
-        self.tokens = torch.tensor(tokens)
-        print(f"Loaded {len(self.tokens)} tokens")
-        print(f"1 epoch = {len(self.tokens) // (B * T)} batches")
+        print(f"[DataLoaderLite] 1 epoch = {len(self.tokens) // (B * T * num_processes)} batches")
+        self.reset()
 
-        self.current_position = 0
+    def reset(self):
+        self.current_position = self.B * self.T * self.process_rank
 
     def next_batch(self):
         B, T = self.B, self.T
         buf = self.tokens[self.current_position : self.current_position + B * T + 1]
-        x = buf[:-1].view(B, T)
-        y = buf[1:].view(B, T)
-        self.current_position += B * T
+        buf_torch = torch.tensor(buf.astype(np.int64), dtype=torch.long)
+        x = buf_torch[:-1].view(B, T)
+        y = buf_torch[1:].view(B, T)
+        self.current_position += B * T * self.num_processes
 
-        if self.current_position + (B * T + 1) > len(self.tokens):
-            self.current_position = 0
+        if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
+            self.reset()
         return x, y
 
 
