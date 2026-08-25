@@ -313,7 +313,8 @@ print(f"Gradient accumulation steps: {grad_accum_steps}")
 # Training Initialization & Optimization Loop
 # -----------------------------------------------------------------------------
 
-train_loader = DataLoaderLite(B=B, T=T)
+train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
+val_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="val")
 
 if device == "cuda":
     torch.set_float32_matmul_precision('high')
@@ -351,6 +352,30 @@ optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=max_lr, d
 
 for step in range(max_steps):
     t0 = time.time()
+    last_step = (step == max_steps - 1)
+
+    # Periodic validation loss evaluation
+    if step % 50 == 0 or last_step:
+        model.eval()
+        val_loader.reset()
+        with torch.no_grad():
+            val_loss_accum = 0.0
+            val_loss_steps = 20
+            for _ in range(val_loss_steps):
+                x_val, y_val = val_loader.next_batch()
+                x_val, y_val = x_val.to(device), y_val.to(device)
+                with autocast_ctx:
+                    _, loss_val = model(x_val, y_val)
+                loss_val = loss_val / val_loss_steps
+                val_loss_accum += loss_val.detach().item()
+            if ddp:
+                val_loss_tensor = torch.tensor(val_loss_accum, device=device)
+                dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.AVG)
+                val_loss_accum = val_loss_tensor.item()
+            if master_process:
+                print(f"[step {step:4d}] validation loss: {val_loss_accum:.4f}", flush=True)
+
+    model.train()
     optimizer.zero_grad()
     loss_accum = 0.0
 
