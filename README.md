@@ -181,7 +181,7 @@ Reference documentation covering the mathematics and low-level engineering princ
 - [x] Holdout validation loss evaluation loop
 - [x] Periodic live generation sampling inside training loop
 - [x] Checkpoint persistence and resume mechanics (`torch.save`)
-- [ ] Key-Value (KV) cache inference engine
+- [x] Key-Value (KV) cache inference engine ($O(1)$ decoding with MPS/SDPA acceleration)
 - [ ] Modern architecture enhancements (RoPE, RMSNorm, SwiGLU, GQA)
 - [ ] Muon matrix optimizer integration
 - [ ] MFU & PyTorch profiler roofline analysis
