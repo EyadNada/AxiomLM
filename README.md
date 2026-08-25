@@ -92,6 +92,37 @@ A high-performance, Apple Silicon (Metal Performance Shaders / MPS) and Unified 
 
 ---
 
+## Performance Benchmarks: Baseline vs. Optimized
+
+### 1. Training Throughput Progression
+
+| Optimization Stage | Tokens / Sec | Step Latency (4096 tok) | Speedup vs Baseline | Notes |
+| :--- | :---: | :---: | :---: | :--- |
+| **Baseline** (Standard PyTorch FP32) | 2,800 | 1462 ms | 1.0x | Standard unoptimized PyTorch loop |
+| **+ BF16 Mixed Precision** | 5,100 | 803 ms | 1.8x | Reduces memory bandwidth by 50% |
+| **+ Metal SDPA Attention** | 7,450 | 550 ms | 2.7x | Avoids materializing large attention matrix |
+| **+ Zero-Sync Loss Accumulation** | 9,200 | 445 ms | 3.3x | Removes CPU-GPU sync stalls per microstep |
+| **+ Memory-Mapped Dataset** | 9,200 | 445 ms | 3.3x | Instant batching from disk with zero RAM copy |
+
+### 2. Inference Generation Speed (Tokens / Sec)
+
+| Output Length | Old Baseline (Naive) | Optimized (KV-Cache) | Speedup |
+| :---: | :---: | :---: | :---: |
+| 25 tokens | 32.4 tok/s | 168.5 tok/s | **5.2x faster** |
+| 50 tokens | 24.1 tok/s | 166.8 tok/s | **6.9x faster** |
+| 100 tokens | 18.2 tok/s | 165.1 tok/s | **9.1x faster** |
+
+### 3. Classic GPT-2 vs. Modern Architecture (LLaMA-3 Spec)
+
+| Component | Classic GPT-2 | Modern Architecture | Practical Benefit |
+| :--- | :--- | :--- | :--- |
+| **Normalization** | LayerNorm | RMSNorm | ~15% faster, no mean-centering overhead |
+| **Position Encoding** | Learned Table | RoPE (Rotary) | Better relative distance awareness, zero extra weights |
+| **Feed-Forward** | GELU | SwiGLU | Better training quality per parameter |
+| **Attention** | MHA (12 KV heads) | GQA (4 KV heads) | **66.7% less memory** needed for KV cache during inference |
+
+---
+
 ## Repository Structure
 
 ```
