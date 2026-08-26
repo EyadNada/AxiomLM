@@ -346,33 +346,84 @@ class GPT(nn.Module):
 
         return model
 
-    def configure_optimizers(self, weight_decay, learning_rate, device):
-        # 2D parameters (weights, embeddings) decay; 1D parameters (biases, layernorms) do not
+    def configure_optimizers(
+        self,
+        weight_decay: float,
+        learning_rate: float,
+        device: str,
+        optimizer_type: str = "adamw",
+        muon_lr: float = 0.02,
+    ):
         param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
-        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
-        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
-
-        optim_groups = [
-            {'params': decay_params, 'weight_decay': weight_decay},
-            {'params': nodecay_params, 'weight_decay': 0.0}
-        ]
-
-        num_decay = sum(p.numel() for p in decay_params)
-        num_nodecay = sum(p.numel() for p in nodecay_params)
-        print(f"Decayed parameter tensors: {len(decay_params)} ({num_decay:,} params)")
-        print(f"Non-decayed parameter tensors: {len(nodecay_params)} ({num_nodecay:,} params)")
 
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and ('cuda' in device)
-        print(f"Using fused AdamW: {use_fused}")
 
-        optimizer = torch.optim.AdamW(
-            optim_groups,
-            lr=learning_rate,
-            betas=(0.9, 0.95),
-            eps=1e-8,
-            fused=use_fused
-        )
+        if optimizer_type == "adamw":
+            decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+            nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+
+            optim_groups = [
+                {'params': decay_params, 'weight_decay': weight_decay},
+                {'params': nodecay_params, 'weight_decay': 0.0}
+            ]
+
+            num_decay = sum(p.numel() for p in decay_params)
+            num_nodecay = sum(p.numel() for p in nodecay_params)
+            print(f"[AdamW] Decayed parameter tensors: {len(decay_params)} ({num_decay:,} params)")
+            print(f"[AdamW] Non-decayed parameter tensors: {len(nodecay_params)} ({num_nodecay:,} params)")
+            print(f"[AdamW] Using fused AdamW: {use_fused}")
+
+            optimizer = torch.optim.AdamW(
+                optim_groups,
+                lr=learning_rate,
+                betas=(0.9, 0.95),
+                eps=1e-8,
+                fused=use_fused
+            )
+            return [optimizer]
+
+        elif optimizer_type == "muon":
+            # Dual parameter routing:
+            # 1. 2D internal weight matrices (Attention Q/K/V/Out, MLP projections) -> Muon
+            # 2. Embedding matrices (wte, wpe) and 1D vectors (RMSNorm/LayerNorm weights, biases) -> AdamW
+            embedding_names = {"transformer.wte.weight", "transformer.wpe.weight", "lm_head.weight"}
+
+            muon_params = [p for n, p in param_dict.items() if p.dim() == 2 and n not in embedding_names]
+            adamw_decay_params = [p for n, p in param_dict.items() if p.dim() >= 2 and n in embedding_names]
+            adamw_nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+
+            num_muon = sum(p.numel() for p in muon_params)
+            num_adamw_decay = sum(p.numel() for p in adamw_decay_params)
+            num_adamw_nodecay = sum(p.numel() for p in adamw_nodecay_params)
+
+            print(f"[Muon Hybrid] 2D Matrix tensors: {len(muon_params)} ({num_muon:,} params) -> Optimized with Muon (lr={muon_lr})")
+            print(f"[Muon Hybrid] Embedding tensors: {len(adamw_decay_params)} ({num_adamw_decay:,} params) -> Optimized with AdamW (lr={learning_rate})")
+            print(f"[Muon Hybrid] 1D Vector/Norm tensors: {len(adamw_nodecay_params)} ({num_adamw_nodecay:,} params) -> Optimized with AdamW (lr={learning_rate})")
+
+            optimizer_muon = Muon(
+                muon_params,
+                lr=muon_lr,
+                momentum=0.95,
+                nesterov=True,
+                ns_steps=5,
+                weight_decay=0.0,
+            )
+
+            adamw_groups = [
+                {'params': adamw_decay_params, 'weight_decay': weight_decay},
+                {'params': adamw_nodecay_params, 'weight_decay': 0.0}
+            ]
+            optimizer_adamw = torch.optim.AdamW(
+                adamw_groups,
+                lr=learning_rate,
+                betas=(0.9, 0.95),
+                eps=1e-8,
+                fused=use_fused,
+            )
+            return [optimizer_muon, optimizer_adamw]
+        else:
+            raise ValueError(f"Unsupported optimizer_type: {optimizer_type}. Choose 'adamw' or 'muon'.")
 
 # -----------------------------------------------------------------------------
 # Next-Gen Matrix Optimizer (Muon with Newton-Schulz Polar Decomposition)
