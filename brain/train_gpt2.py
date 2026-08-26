@@ -3,7 +3,7 @@ import math
 import time
 import inspect
 from dataclasses import dataclass
-from typing import cast
+from typing import cast, Callable, Any
 from contextlib import nullcontext
 
 import torch
@@ -474,43 +474,43 @@ class Muon(torch.optim.Optimizer):
         )
         super().__init__(params, defaults)
 
-    @torch.no_grad()
-    def step(self, closure=None):
+    def step(self, closure: Callable[[], float] | None = None) -> float | None:
         loss = None
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
 
-        for group in self.param_groups:
-            lr = group['lr']
-            momentum = group['momentum']
-            nesterov = group['nesterov']
-            ns_steps = group['ns_steps']
-            weight_decay = group['weight_decay']
+        with torch.no_grad():
+            for group in self.param_groups:
+                lr = group['lr']
+                momentum = group['momentum']
+                nesterov = group['nesterov']
+                ns_steps = group['ns_steps']
+                weight_decay = group['weight_decay']
 
-            for p in group['params']:
-                if p.grad is None:
-                    continue
-                g = p.grad
-                assert g.ndim == 2, f"Muon optimizer requires 2D matrix parameters, got shape {g.shape}"
+                for p in group['params']:
+                    if p.grad is None:
+                        continue
+                    g = p.grad
+                    assert g.ndim == 2, f"Muon optimizer requires 2D matrix parameters, got shape {g.shape}"
 
-                if weight_decay > 0.0:
-                    p.mul_(1.0 - lr * weight_decay)
+                    if weight_decay > 0.0:
+                        p.mul_(1.0 - lr * weight_decay)
 
-                state = self.state[p]
-                if 'momentum_buffer' not in state:
-                    state['momentum_buffer'] = torch.zeros_like(g)
-                buf = state['momentum_buffer']
-                buf.mul_(momentum).add_(g)
+                    state = self.state[p]
+                    if 'momentum_buffer' not in state:
+                        state['momentum_buffer'] = torch.zeros_like(g)
+                    buf = state['momentum_buffer']
+                    buf.mul_(momentum).add_(g)
 
-                if nesterov:
-                    update_g = g.add(buf, alpha=momentum)
-                else:
-                    update_g = buf
+                    if nesterov:
+                        update_g = g.add(buf, alpha=momentum)
+                    else:
+                        update_g = buf
 
-                u = zeropower_via_newtonschulz5(update_g, steps=ns_steps)
-                scale = max(1.0, (p.size(0) / p.size(1)) ** 0.5)
-                p.add_(u, alpha=-lr * scale)
+                    u = zeropower_via_newtonschulz5(update_g, steps=ns_steps)
+                    scale = max(1.0, (p.size(0) / p.size(1)) ** 0.5)
+                    p.add_(u, alpha=-lr * scale)
 
         return loss
 
