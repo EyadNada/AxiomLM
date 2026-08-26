@@ -22,7 +22,7 @@ What's AxiomLM? Why AxiomLM? its a high-performance pretraining engine and moder
 
 ### 1. Architectural & Systems Paradigm Comparison
 
-| Dimension / Metric | 🔴 2019 Baseline (GPT-2 / Eager FP32) | 🟢 2026 Axiom-LM (Modern Spec) | 🚀 Impact / Multiplier |
+| Dimension / Metric |  2019 Baseline (GPT-2 / Eager FP32) |  2026 Axiom-LM (Modern Spec) | Impact / Multiplier |
 | :--- | :--- | :--- | :--- |
 | **Precision Execution** | Eager FP32 (Full 32-bit floats) | BF16 Mixed-Precision Autocast | **$2.0\times$ ALU Speed & Memory Efficiency** |
 | **Attention Kernel** | Naive $O(T^2)$ Materialized Softmax | Fused FlashAttention / SDPA Tiling | **Zero SRAM $\rightarrow$ HBM roundtrips** |
