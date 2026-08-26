@@ -704,6 +704,8 @@ def train(
     sample_interval: int = 200,
     save_interval: int = 200,
     architecture: str = "classic",
+    optimizer_type: str = "adamw",
+    muon_lr: float = 0.02,
 ):
     # Distributed setup & device detection
     ddp = int(os.environ.get('RANK', -1)) != -1
@@ -742,7 +744,7 @@ def train(
     assert total_batch_size % (B * T * ddp_world_size) == 0, "total_batch_size must be divisible by B * T * ddp_world_size"
     grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
     if master_process:
-        print(f"[Axiom-LM] Architecture: {architecture.upper()} | Batch config: Total={total_batch_size:,} tok | Micro-B={B} | T={T} | GradAccum={grad_accum_steps}")
+        print(f"[Axiom-LM] Architecture: {architecture.upper()} | Optimizer: {optimizer_type.upper()} | Batch config: Total={total_batch_size:,} tok | Micro-B={B} | T={T} | GradAccum={grad_accum_steps}")
 
     # Initialize data loaders
     train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
@@ -791,22 +793,28 @@ def train(
         autocast_ctx = nullcontext()
 
     # Cosine learning rate schedule with linear warmup
-    max_lr = 6e-4
-    min_lr = max_lr * 0.1
+    max_adamw_lr = 6e-4
     warmup_steps = min(300, max_steps // 10)
 
-    def get_lr(it):
+    def get_scheduled_lr(it: int, base_lr: float) -> float:
+        min_lr = base_lr * 0.1
         if it < warmup_steps:
-            return max_lr * (it + 1) / warmup_steps
+            return base_lr * (it + 1) / warmup_steps
         if it > max_steps:
             return min_lr
         decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
         assert 0 <= decay_ratio <= 1
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
-        return min_lr + coeff * (max_lr - min_lr)
+        return min_lr + coeff * (base_lr - min_lr)
 
     raw_model = get_raw_model(model)
-    optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=max_lr, device=device)
+    optimizers = raw_model.configure_optimizers(
+        weight_decay=0.1,
+        learning_rate=max_adamw_lr,
+        device=device,
+        optimizer_type=optimizer_type,
+        muon_lr=muon_lr,
+    )
     enc = tiktoken.get_encoding('gpt2')
 
     # Training Loop
@@ -849,7 +857,8 @@ def train(
             checkpoint = {
                 "step": step,
                 "model_state_dict": raw_model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
+                "optimizer_state_dicts": [opt.state_dict() for opt in optimizers],
+                "optimizer_type": optimizer_type,
                 "config": raw_model.config,
             }
             torch.save(checkpoint, checkpoint_path)
@@ -857,7 +866,8 @@ def train(
 
         # 4. Forward / Backward with Micro-Batching (Zero MPS Sync during accumulation)
         model.train()
-        optimizer.zero_grad()
+        for opt in optimizers:
+            opt.zero_grad()
         loss_accum_tensor = torch.zeros(1, device=device)
         t0 = time.time()
 
@@ -872,11 +882,22 @@ def train(
 
         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-        lr = get_lr(step)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
+        # Update learning rates per optimizer group
+        current_adamw_lr = get_scheduled_lr(step, max_adamw_lr)
+        current_muon_lr = get_scheduled_lr(step, muon_lr)
 
-        optimizer.step()
+        if optimizer_type == "muon":
+            # optimizers[0] is Muon, optimizers[1] is AdamW
+            for param_group in optimizers[0].param_groups:
+                param_group['lr'] = current_muon_lr
+            for param_group in optimizers[1].param_groups:
+                param_group['lr'] = current_adamw_lr
+        else:
+            for param_group in optimizers[0].param_groups:
+                param_group['lr'] = current_adamw_lr
+
+        for opt in optimizers:
+            opt.step()
 
         if device == "cuda":
             torch.cuda.synchronize()
@@ -890,8 +911,12 @@ def train(
         loss_val = loss_accum_tensor.item()
 
         if master_process:
+            if optimizer_type == "muon":
+                lr_str = f"muon_lr: {current_muon_lr:.4e} | adamw_lr: {current_adamw_lr:.4e}"
+            else:
+                lr_str = f"lr: {current_adamw_lr:.4e}"
             print(
-                f"step {step:4d}/{max_steps} | loss: {loss_val:.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}",
+                f"step {step:4d}/{max_steps} | loss: {loss_val:.6f} | {lr_str} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}",
                 flush=True,
             )
 
@@ -903,6 +928,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Axiom-LM Pretraining Engine (Classic GPT-2 & Modern LLaMA-3)")
     parser.add_argument("--arch", type=str, default="classic", choices=["classic", "modern"], help="Architecture spec ('classic' GPT-2 or 'modern' LLaMA-3 with RoPE+RMSNorm+SwiGLU+GQA)")
+    parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "muon"], help="Optimizer choice: 'adamw' (standard) or 'muon' (2D Matrix Newton-Schulz + AdamW hybrid)")
+    parser.add_argument("--muon_lr", type=float, default=0.02, help="Peak learning rate for Muon matrix optimizer")
     parser.add_argument("--max_steps", type=int, default=4800, help="Total training optimization steps")
     parser.add_argument("--batch_size", type=int, default=4096, help="Total tokens per optimization step")
     parser.add_argument("--eval_interval", type=int, default=50, help="Validation evaluation step interval")
@@ -936,4 +963,6 @@ if __name__ == "__main__":
             sample_interval=args.sample_interval,
             save_interval=args.save_interval,
             architecture=args.arch,
+            optimizer_type=args.optimizer,
+            muon_lr=args.muon_lr,
         )
