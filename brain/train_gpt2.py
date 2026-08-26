@@ -373,7 +373,31 @@ class GPT(nn.Module):
             eps=1e-8,
             fused=use_fused
         )
-        return optimizer
+
+# -----------------------------------------------------------------------------
+# Next-Gen Matrix Optimizer (Muon with Newton-Schulz Polar Decomposition)
+# -----------------------------------------------------------------------------
+
+def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5, eps: float = 1e-7) -> torch.Tensor:
+    """
+    Computes an approximate polar decomposition (orthogonal factor) using a quintic (5th-order)
+    Newton-Schulz iteration:
+        X_{k+1} = a * X_k + B @ X_k, where B = b * A + c * A^2, and A = X_k @ X_k^T
+    Given matrix G, produces orthogonal matrix U such that U = G (G^T G)^{-1/2}.
+    """
+    assert len(G.shape) == 2, f"Expected 2D matrix, got shape {G.shape}"
+    a, b, c = (3.4445, -4.7750, 2.0315)
+    X = G.bfloat16() if G.dtype == torch.bfloat16 else G.float()
+    X = X / (X.norm() + eps)
+    if G.size(0) > G.size(1):
+        X = X.T
+    for _ in range(steps):
+        A = X @ X.T
+        B = b * A + c * (A @ A)
+        X = a * X + B @ X
+    if G.size(0) > G.size(1):
+        X = X.T
+    return X.type_as(G)
 
 
 # -----------------------------------------------------------------------------
