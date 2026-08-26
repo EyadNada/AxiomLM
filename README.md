@@ -94,14 +94,17 @@ python data/tinystories.py --target_tokens 20000000 --val_ratio 0.05
 
 ### 3. Pretraining
 
-Train the model with auto-detected hardware backend (`mps`, `cuda`, or `cpu`):
+Train the model with auto-detected hardware backend (`mps`, `cuda`, or `cpu`) and choice of optimizer (`adamw` or `muon`):
 
 ```bash
-# Classic GPT-2 architecture
-python brain/train_gpt2.py --arch classic --max_steps 4800
+# Classic GPT-2 architecture with AdamW baseline
+python brain/train_gpt2.py --arch classic --optimizer adamw --max_steps 4800
 
-# Modern LLaMA-3 architecture (RoPE + RMSNorm + SwiGLU + GQA)
-python brain/train_gpt2.py --arch modern --max_steps 4800
+# Modern LLaMA-3 architecture with AdamW
+python brain/train_gpt2.py --arch modern --optimizer adamw --max_steps 4800
+
+# Modern LLaMA-3 architecture with Next-Gen Muon Matrix Optimizer
+python brain/train_gpt2.py --arch modern --optimizer muon --muon_lr 0.02 --max_steps 4800
 ```
 
 ### 4. Interactive Analysis
@@ -109,7 +112,7 @@ python brain/train_gpt2.py --arch modern --max_steps 4800
 Open the benchmark notebook to run all metrics and visual inspections:
 
 ```bash
-jupyter notebook brain/play.ipynb
+jupyter notebook brain/performance_metrics.ipynb
 ```
 
 ---
@@ -119,8 +122,8 @@ jupyter notebook brain/play.ipynb
 ```
 ├── assets/                 # Benchmark charts and evaluation graphs
 ├── brain/
-│   ├── train_gpt2.py       # Core model, data loader, validation, and training loop
-│   └── play.ipynb          # Interactive metrics notebook with all 8 graphs
+│   ├── train_gpt2.py       # Core model, data loader, Muon/AdamW optimizers, and training loop
+│   └── performance_metrics.ipynb # Interactive metrics notebook with all 8 graphs
 ├── data/
 │   ├── tinystories.py      # Streaming tokenizer and binary sharder
 │   ├── train.bin           # 19M token uint16 training binary shard
