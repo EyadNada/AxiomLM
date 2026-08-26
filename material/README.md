@@ -22,6 +22,9 @@ If you are exploring the codebase or trying to understand how the pieces fit tog
 4. **[Rotary Position Embeddings (RoPE)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/rope_rotary_position_embeddings_guide.md)**  
    Why absolute positional embeddings limit sequence length, and how 2D complex rotations encode relative token distances naturally.
 
+5. **[The Muon Matrix Optimizer Master Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/muon_optimizer_guide.md)**  
+   Explains why coordinate-wise AdamW struggles with 2D matrix geometry, how 5th-order Newton-Schulz polar decomposition orthogonalizes gradients, and why dual-parameter routing yields ~42% faster step convergence.
+
 ---
 
 ## Architecture and Modeling
@@ -50,7 +53,8 @@ If you are exploring the codebase or trying to understand how the pieces fit tog
 ## Optimizers and Training
 
 * **[AdamW Optimizer Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/adamw_optimizer_guide.md)**: Derivation of first and second moment estimators, bias correction, and decoupled weight decay.
-* **[Muon Matrix Optimizer Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/muon_optimizer_guide.md)**: Orthogonal matrix updates using Newton-Schulz iterations for faster neural network convergence.
+* **[Muon Matrix Optimizer Master Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/muon_optimizer_guide.md)**: Orthogonal matrix updates, polar decomposition ($G = U H$), and dual parameter routing architecture.
+* **[Newton-Schulz Spectral Analysis Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/newton_schulz_spectral_analysis_guide.md)**: Chebyshev minimax polynomial derivations ($p(x) = ax + bx^3 + cx^5$), singular value evolution, and systolic GEMM hardware efficiency.
 * **[GPT-3 Training Hyperparameters Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/gpt3_training_hyperparameters_guide.md)**: Learning rate warmups, cosine schedules, weight decay exclusions, and gradient clipping norms.
 * **[Distributed Data Parallel (DDP)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/distributed_data_parallel_ddp_guide.md)**: Ring All-Reduce communication patterns, gradient bucketing, and multi-GPU synchronization.
 
