@@ -1,6 +1,6 @@
 # Axiom-LM (124M)
 
-A high-performance pretraining engine and modern architectural redesign of the 124M parameter autoregressive Transformer, optimized for Apple Silicon (Metal Performance Shaders / MPS) and NVIDIA CUDA.
+What's AxiomLM? Why AxiomLM? its a high-performance pretraining engine and modern architectural redesign of OpenAI's original GPT2 124M parameter autoregressive Transformer, optimized for Apple Silicon (Metal Performance Shaders / MPS) and NVIDIA CUDA.
 
 ---
 
