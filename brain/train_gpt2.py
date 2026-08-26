@@ -3,7 +3,7 @@ import math
 import time
 import inspect
 from dataclasses import dataclass
-from typing import cast, Callable, Any
+from typing import cast, Callable, Any, overload
 from contextlib import nullcontext
 
 import torch
@@ -473,6 +473,12 @@ class Muon(torch.optim.Optimizer):
             weight_decay=weight_decay,
         )
         super().__init__(params, defaults)
+
+    @overload
+    def step(self, closure: None = None) -> None: ...
+
+    @overload
+    def step(self, closure: Callable[[], float]) -> float: ...
 
     def step(self, closure: Callable[[], float] | None = None) -> float | None:
         loss = None
