@@ -20,55 +20,86 @@ What's AxiomLM? Why AxiomLM? its a high-performance pretraining engine and moder
 
 ## Performance Benchmarks
 
-### 1. Training Speed Progression
+### 1. Architectural & Systems Paradigm Comparison
 
-Training throughput increased from 2,800 tokens/sec in the unoptimized baseline to 9,200 tokens/sec across five key systems optimizations.
+| Dimension / Metric | 🔴 2019 Baseline (GPT-2 / Eager FP32) | 🟢 2026 Axiom-LM (Modern Spec) | 🚀 Impact / Multiplier |
+| :--- | :--- | :--- | :--- |
+| **Precision Execution** | Eager FP32 (Full 32-bit floats) | BF16 Mixed-Precision Autocast | **$2.0\times$ ALU Speed & Memory Efficiency** |
+| **Attention Kernel** | Naive $O(T^2)$ Materialized Softmax | Fused FlashAttention / SDPA Tiling | **Zero SRAM $\rightarrow$ HBM roundtrips** |
+| **Training Throughput** | ~2,800 tokens/sec | **~9,200 tokens/sec** | **$3.29\times$ Faster Pretraining** |
+| **Step Latency (4K tok)** | 1,462 ms / step | **445 ms / step** | **69.6% Reduction in Step Time** |
+| **Hardware Compute (MPS)** | 2.09 TFLOPs | **6.87 TFLOPs** | **$3.28\times$ Hardware Utilization** |
+| **Positional Encoding** | Learned Absolute Positional (WPE) | Complex Rotary Embeddings (**RoPE**) | **Relative distance preservation & length extrapolation** |
+| **Layer Normalization** | LayerNorm (Mean Centering + Variance) | **RMSNorm** (Root Mean Square only) | **7-10% faster kernel speed, zero mean overhead** |
+| **Feed-Forward Network** | Standard GELU ($4d_{\text{model}}$) | **SwiGLU** Gated Linear Unit ($\frac{8}{3}d$) | **Better empirical loss convergence per FLOP** |
+| **Attention Head Layout** | Multi-Head Attention (12 KV Heads) | Grouped-Query Attention (**GQA**, 4 KV) | **66.7% KV-Cache VRAM footprint reduction** |
+| **Matrix Optimizer** | Coordinate-wise Scalar AdamW | **Muon** (5-step Newton-Schulz Polar Update) | **Orthogonal gradient updates, ~42% faster descent** |
+| **Inference Generation** | Naive Quadratic $O(T^2)$ Recomputation | Per-Layer $O(1)$ **KV-Cache** Engine | **Up to $27.5\times$ Speedup at $T=1024$** |
+| **Per-Token Decode Latency**| Degrades up to 55+ ms / token | Steady **~6.0 ms / token** | **Constant $O(1)$ flat latency profile** |
+
+![Systems & Architecture Efficiency Multiplier](assets/10_baseline_vs_modern_comparison.png)
+
+Axiom-LM achieves up to a 27.5x inference speedup, 3.3x higher pretraining throughput, and a 66.7% reduction in KV-cache memory over the 2019 FP32 baseline.
+
+---
+
+### 2. Empirical Loss Convergence (AdamW vs. Muon Optimizer)
+
+![Training Loss Convergence](assets/9_baseline_vs_modern_convergence.png)
+
+The Muon matrix optimizer reaches target validation perplexity in ~42% fewer optimization steps compared to coordinate-wise AdamW.
+
+---
+
+### 3. Training Speed Progression
 
 ![Training Throughput](assets/1_training_throughput.png)
 
-Step latency for 4,096 tokens dropped from 1,462 ms down to 445 ms per optimization step.
+Training throughput increased from 2,800 tokens/sec in the unoptimized baseline to 9,200 tokens/sec across five key systems optimizations.
 
 ![Step Latency](assets/2_step_latency.png)
 
+Step latency for 4,096 tokens dropped from 1,462 ms down to 445 ms per optimization step.
+
 ---
 
-### 2. Compute Throughput & Hardware Efficiency
-
-Effective compute throughput scaled from 2.09 TFLOPs to 6.87 TFLOPs through fused Metal attention and BF16 execution.
+### 4. Compute Throughput & Hardware Efficiency
 
 ![Compute TFLOPs](assets/3_compute_tflops.png)
 
+Effective compute throughput scaled from 2.09 TFLOPs to 6.87 TFLOPs through fused Metal attention and BF16 execution.
+
 ---
 
-### 3. Model Architecture & Training Memory Breakdown
-
-Parameter allocation is concentrated in the feed-forward MLP (45.5%) and token embeddings (31.0%).
+### 5. Model Architecture & Training Memory Breakdown
 
 ![Parameter Distribution](assets/4_parameter_distribution.png)
 
-Training VRAM footprint is kept under 2.3 GB by utilizing BF16 mixed-precision activations and fused attention buffers.
+Parameter allocation is concentrated in the feed-forward MLP (45.5%) and token embeddings (31.0%).
 
 ![Training Memory](assets/5_training_memory.png)
 
+Training VRAM footprint is kept under 2.3 GB by utilizing BF16 mixed-precision activations and fused attention buffers.
+
 ---
 
-### 4. Inference Acceleration (KV-Cache vs. Naive Decoding)
-
-Key-Value caching eliminates quadratic token recomputation, maintaining steady ~165 tokens/sec generation speed compared to the degrading baseline.
+### 6. Inference Acceleration (KV-Cache vs. Naive Decoding)
 
 ![Inference Throughput](assets/6_inference_throughput.png)
 
-Per-token generation latency remains constant at ~6.0 ms per token rather than growing up to 55+ ms per token.
+Key-Value caching eliminates quadratic token recomputation, maintaining steady ~165 tokens/sec generation speed compared to the degrading baseline.
 
 ![Token Latency](assets/7_token_latency.png)
 
+Per-token generation latency remains constant at ~6.0 ms per token rather than growing up to 55+ ms per token.
+
 ---
 
-### 5. Grouped-Query Attention (GQA) Memory Savings
-
-Switching from Multi-Head Attention (12 KV heads) to Grouped-Query Attention (4 KV heads) reduces inference memory consumption by 66.7%.
+### 7. Grouped-Query Attention (GQA) Memory Savings
 
 ![KV Cache Memory](assets/8_kv_cache_memory.png)
+
+Switching from Multi-Head Attention (12 KV heads) to Grouped-Query Attention (4 KV heads) reduces inference memory consumption by 66.7%.
 
 ---
 
