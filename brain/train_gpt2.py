@@ -400,6 +400,70 @@ def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5, eps: float = 1e
     return X.type_as(G)
 
 
+class Muon(torch.optim.Optimizer):
+    """
+    Muon (Momentum Orthogonalized by Newton-Schulz) Matrix Optimizer.
+    Optimizes 2D linear weight matrices via normalized orthogonal updates.
+    """
+    def __init__(
+        self,
+        params,
+        lr: float = 0.02,
+        momentum: float = 0.95,
+        nesterov: bool = True,
+        ns_steps: int = 5,
+        weight_decay: float = 0.0,
+    ):
+        defaults = dict(
+            lr=lr,
+            momentum=momentum,
+            nesterov=nesterov,
+            ns_steps=ns_steps,
+            weight_decay=weight_decay,
+        )
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            lr = group['lr']
+            momentum = group['momentum']
+            nesterov = group['nesterov']
+            ns_steps = group['ns_steps']
+            weight_decay = group['weight_decay']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                g = p.grad
+                assert g.ndim == 2, f"Muon optimizer requires 2D matrix parameters, got shape {g.shape}"
+
+                if weight_decay > 0.0:
+                    p.mul_(1.0 - lr * weight_decay)
+
+                state = self.state[p]
+                if 'momentum_buffer' not in state:
+                    state['momentum_buffer'] = torch.zeros_like(g)
+                buf = state['momentum_buffer']
+                buf.mul_(momentum).add_(g)
+
+                if nesterov:
+                    update_g = g.add(buf, alpha=momentum)
+                else:
+                    update_g = buf
+
+                u = zeropower_via_newtonschulz5(update_g, steps=ns_steps)
+                scale = max(1.0, (p.size(0) / p.size(1)) ** 0.5)
+                p.add_(u, alpha=-lr * scale)
+
+        return loss
+
+
 # -----------------------------------------------------------------------------
 # Data Loader
 # -----------------------------------------------------------------------------
