@@ -773,7 +773,7 @@ def train(
         if os.path.isfile(resume_path):
             if master_process:
                 print(f"[Axiom-LM] Loading checkpoint from: {resume_path}")
-            checkpoint_data = torch.load(resume_path, map_location=device)
+            checkpoint_data = torch.load(resume_path, map_location=device, weights_only=False)
             start_step = checkpoint_data.get("step", -1) + 1
             if "optimizer_type" in checkpoint_data:
                 optimizer_type = checkpoint_data["optimizer_type"]
