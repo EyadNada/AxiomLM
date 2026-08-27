@@ -229,14 +229,16 @@ class GPT(nn.Module):
         self.config = config
 
         # Precompute RoPE rotary frequencies if enabled
-        self.freqs_cis = None
         if config.pos_emb == "rope":
             head_dim = config.n_embd // config.n_head
-            self.freqs_cis = precompute_rope_frequencies(
+            freqs = precompute_rope_frequencies(
                 head_dim=head_dim,
                 max_seq_len=config.block_size * 2,
                 theta=config.rope_theta,
             )
+            self.register_buffer("freqs_cis", freqs, persistent=False)
+        else:
+            self.freqs_cis = None
 
         # Core transformer dictionary
         transformer_dict = dict(
@@ -555,6 +557,16 @@ class DataLoaderLite:
     def reset(self):
         self.current_position = self.B * self.T * self.process_rank
 
+    def set_step(self, step: int, grad_accum_steps: int = 1):
+        """Fast-forwards data loader position to match resumed training step."""
+        tokens_per_step = self.B * self.T * self.num_processes * grad_accum_steps
+        total_tokens = len(self.tokens)
+        max_valid_pos = total_tokens - (self.B * self.T * self.num_processes + 1)
+        if max_valid_pos > 0:
+            self.current_position = (step * tokens_per_step + self.B * self.T * self.process_rank) % max_valid_pos
+        else:
+            self.reset()
+
     def next_batch(self):
         B, T = self.B, self.T
         buf = self.tokens[self.current_position : self.current_position + B * T + 1]
@@ -856,6 +868,12 @@ def train(
             opt.load_state_dict(opt_sd)
         if master_process:
             print("[Axiom-LM] Successfully restored optimizer states and momentum buffers.")
+
+    # Fast-forward training data loader position when resuming
+    if start_step > 0:
+        train_loader.set_step(start_step, grad_accum_steps)
+        if master_process:
+            print(f"[DataLoaderLite] Synchronized dataset position to step {start_step} (token offset: {train_loader.current_position:,})")
 
     enc = tiktoken.get_encoding('gpt2')
 
