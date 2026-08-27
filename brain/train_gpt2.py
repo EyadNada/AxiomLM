@@ -860,107 +860,127 @@ def train(
     enc = tiktoken.get_encoding('gpt2')
 
     # Training Loop
-    for step in range(start_step, max_steps):
-        last_step = (step == max_steps - 1)
+    current_step = start_step
+    try:
+        for step in range(start_step, max_steps):
+            current_step = step
+            last_step = (step == max_steps - 1)
 
-        # 1. Validation loss evaluation
-        if (eval_interval > 0 and step % eval_interval == 0) or last_step:
-            model.eval()
-            val_loader.reset()
-            with torch.no_grad():
-                val_loss_tensor = torch.zeros(1, device=device)
-                val_loss_steps = 20
-                for _ in range(val_loss_steps):
-                    x_val, y_val = val_loader.next_batch()
-                    x_val, y_val = x_val.to(device), y_val.to(device)
-                    with autocast_ctx:
-                        _, loss_val = model(x_val, y_val)
-                    val_loss_tensor += loss_val / val_loss_steps
-                
-                if ddp:
-                    dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.AVG)
-                val_loss = val_loss_tensor.item()
-                if master_process:
-                    print(f"\n[Val Eval @ Step {step:4d}] validation loss: {val_loss:.4f}", flush=True)
+            # 1. Validation loss evaluation
+            if (eval_interval > 0 and step % eval_interval == 0) or last_step:
+                model.eval()
+                val_loader.reset()
+                with torch.no_grad():
+                    val_loss_tensor = torch.zeros(1, device=device)
+                    val_loss_steps = 20
+                    for _ in range(val_loss_steps):
+                        x_val, y_val = val_loader.next_batch()
+                        x_val, y_val = x_val.to(device), y_val.to(device)
+                        with autocast_ctx:
+                            _, loss_val = model(x_val, y_val)
+                        val_loss_tensor += loss_val / val_loss_steps
+                    
+                    if ddp:
+                        dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.AVG)
+                    val_loss = val_loss_tensor.item()
+                    if master_process:
+                        print(f"\n[Val Eval @ Step {step:4d}] validation loss: {val_loss:.4f}", flush=True)
 
-        # 2. Live Text Generation Sampling (KV-Cache Accelerated)
-        if master_process and ((sample_interval > 0 and step % sample_interval == 0) or last_step):
-            raw_model = get_raw_model(model)
-            samples = generate_with_cache(raw_model, enc, device, prompt="Once upon a time", num_samples=2, max_length=45)
-            print(f"--- Live Generated Samples (KV-Cache) @ Step {step:4d} ---")
-            for idx, s in enumerate(samples, 1):
-                print(f"  [{idx}] {s}")
-            print("-" * 50, flush=True)
+            # 2. Live Text Generation Sampling (KV-Cache Accelerated)
+            if master_process and ((sample_interval > 0 and step % sample_interval == 0) or last_step):
+                raw_model = get_raw_model(model)
+                samples = generate_with_cache(raw_model, enc, device, prompt="Once upon a time", num_samples=2, max_length=45)
+                print(f"--- Live Generated Samples (KV-Cache) @ Step {step:4d} ---")
+                for idx, s in enumerate(samples, 1):
+                    print(f"  [{idx}] {s}")
+                print("-" * 50, flush=True)
 
-        # 3. Model Checkpointing
-        if master_process and ((save_interval > 0 and step % save_interval == 0 and step > 0) or last_step):
+            # 3. Model Checkpointing
+            if master_process and ((save_interval > 0 and step % save_interval == 0 and step > 0) or last_step):
+                raw_model = get_raw_model(model)
+                checkpoint_path = os.path.join(checkpoint_dir, "model_latest.pt")
+                checkpoint = {
+                    "step": step,
+                    "model_state_dict": raw_model.state_dict(),
+                    "optimizer_state_dicts": [opt.state_dict() for opt in optimizers],
+                    "optimizer_type": optimizer_type,
+                    "config": raw_model.config,
+                }
+                torch.save(checkpoint, checkpoint_path)
+                print(f"[Axiom-LM] Saved checkpoint to {checkpoint_path}", flush=True)
+
+            # 4. Forward / Backward with Micro-Batching (Zero MPS Sync during accumulation)
+            model.train()
+            for opt in optimizers:
+                opt.zero_grad()
+            loss_accum_tensor = torch.zeros(1, device=device)
+            t0 = time.time()
+
+            for micro_step in range(grad_accum_steps):
+                x, y = train_loader.next_batch()
+                x, y = x.to(device), y.to(device)
+                with autocast_ctx:
+                    logits, loss = model(x, y)
+                loss = loss / grad_accum_steps
+                loss_accum_tensor += loss.detach()
+                loss.backward()
+
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+            # Update learning rates per optimizer group
+            current_adamw_lr = get_scheduled_lr(step, max_adamw_lr)
+            current_muon_lr = get_scheduled_lr(step, muon_lr)
+
+            if optimizer_type == "muon":
+                # optimizers[0] is Muon, optimizers[1] is AdamW
+                for param_group in optimizers[0].param_groups:
+                    param_group['lr'] = current_muon_lr
+                for param_group in optimizers[1].param_groups:
+                    param_group['lr'] = current_adamw_lr
+            else:
+                for param_group in optimizers[0].param_groups:
+                    param_group['lr'] = current_adamw_lr
+
+            for opt in optimizers:
+                opt.step()
+
+            if device == "cuda":
+                torch.cuda.synchronize()
+            elif device == "mps":
+                torch.mps.synchronize()
+
+            t1 = time.time()
+            dt = t1 - t0
+            tokens_processed = total_batch_size
+            tokens_per_sec = tokens_processed / dt
+            loss_val = loss_accum_tensor.item()
+
+            if master_process:
+                if optimizer_type == "muon":
+                    lr_str = f"muon_lr: {current_muon_lr:.4e} | adamw_lr: {current_adamw_lr:.4e}"
+                else:
+                    lr_str = f"lr: {current_adamw_lr:.4e}"
+                print(
+                    f"step {step:4d}/{max_steps} | loss: {loss_val:.6f} | {lr_str} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}",
+                    flush=True,
+                )
+    except KeyboardInterrupt:
+        if master_process:
+            print(f"\n[Axiom-LM] KeyboardInterrupt caught! Gracefully saving pause snapshot at step {current_step}...")
             raw_model = get_raw_model(model)
             checkpoint_path = os.path.join(checkpoint_dir, "model_latest.pt")
             checkpoint = {
-                "step": step,
+                "step": current_step,
                 "model_state_dict": raw_model.state_dict(),
                 "optimizer_state_dicts": [opt.state_dict() for opt in optimizers],
                 "optimizer_type": optimizer_type,
                 "config": raw_model.config,
             }
             torch.save(checkpoint, checkpoint_path)
-            print(f"[Axiom-LM] Saved checkpoint to {checkpoint_path}", flush=True)
-
-        # 4. Forward / Backward with Micro-Batching (Zero MPS Sync during accumulation)
-        model.train()
-        for opt in optimizers:
-            opt.zero_grad()
-        loss_accum_tensor = torch.zeros(1, device=device)
-        t0 = time.time()
-
-        for micro_step in range(grad_accum_steps):
-            x, y = train_loader.next_batch()
-            x, y = x.to(device), y.to(device)
-            with autocast_ctx:
-                logits, loss = model(x, y)
-            loss = loss / grad_accum_steps
-            loss_accum_tensor += loss.detach()
-            loss.backward()
-
-        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-        # Update learning rates per optimizer group
-        current_adamw_lr = get_scheduled_lr(step, max_adamw_lr)
-        current_muon_lr = get_scheduled_lr(step, muon_lr)
-
-        if optimizer_type == "muon":
-            # optimizers[0] is Muon, optimizers[1] is AdamW
-            for param_group in optimizers[0].param_groups:
-                param_group['lr'] = current_muon_lr
-            for param_group in optimizers[1].param_groups:
-                param_group['lr'] = current_adamw_lr
-        else:
-            for param_group in optimizers[0].param_groups:
-                param_group['lr'] = current_adamw_lr
-
-        for opt in optimizers:
-            opt.step()
-
-        if device == "cuda":
-            torch.cuda.synchronize()
-        elif device == "mps":
-            torch.mps.synchronize()
-
-        t1 = time.time()
-        dt = t1 - t0
-        tokens_processed = total_batch_size
-        tokens_per_sec = tokens_processed / dt
-        loss_val = loss_accum_tensor.item()
-
-        if master_process:
-            if optimizer_type == "muon":
-                lr_str = f"muon_lr: {current_muon_lr:.4e} | adamw_lr: {current_adamw_lr:.4e}"
-            else:
-                lr_str = f"lr: {current_adamw_lr:.4e}"
-            print(
-                f"step {step:4d}/{max_steps} | loss: {loss_val:.6f} | {lr_str} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}",
-                flush=True,
-            )
+            print(f"[Axiom-LM] Successfully saved pause state to {checkpoint_path}. Resume anytime with '--resume'.", flush=True)
+        if ddp:
+            destroy_process_group()
+        return
 
     if ddp:
         destroy_process_group()
