@@ -712,6 +712,7 @@ def train(
     architecture: str = "classic",
     optimizer_type: str = "adamw",
     muon_lr: float = 0.02,
+    resume: str | None = None,
 ):
     # Distributed setup & device detection
     ddp = int(os.environ.get('RANK', -1)) != -1
@@ -764,8 +765,28 @@ def train(
     if device == "cuda":
         torch.set_float32_matmul_precision('high')
 
+    # Handle checkpoint resume metadata if specified
+    checkpoint_data = None
+    start_step = 0
+    if resume:
+        resume_path = resume if isinstance(resume, str) else os.path.join(checkpoint_dir, "model_latest.pt")
+        if os.path.isfile(resume_path):
+            if master_process:
+                print(f"[Axiom-LM] Loading checkpoint from: {resume_path}")
+            checkpoint_data = torch.load(resume_path, map_location=device)
+            start_step = checkpoint_data.get("step", -1) + 1
+            if "optimizer_type" in checkpoint_data:
+                optimizer_type = checkpoint_data["optimizer_type"]
+            if master_process:
+                print(f"[Axiom-LM] Resuming training from step {start_step}/{max_steps} (Optimizer: {optimizer_type.upper()})")
+        else:
+            if master_process:
+                print(f"[Axiom-LM] Warning: Checkpoint file '{resume_path}' not found. Starting fresh from step 0.")
+
     # Initialize Model Architecture (Classic GPT-2 vs Modern LLaMA-3)
-    if architecture == "modern":
+    if checkpoint_data is not None and "config" in checkpoint_data:
+        config = checkpoint_data["config"]
+    elif architecture == "modern":
         config = GPTConfig(
             block_size=1024,
             vocab_size=50257,
@@ -782,6 +803,13 @@ def train(
         config = GPTConfig()
 
     model = GPT(config)
+
+    # Load model weights if resuming
+    if checkpoint_data is not None and "model_state_dict" in checkpoint_data:
+        model.load_state_dict(checkpoint_data["model_state_dict"])
+        if master_process:
+            print("[Axiom-LM] Successfully loaded model state dict.")
+
     model.to(device)
 
     if device == "cuda":
@@ -821,10 +849,18 @@ def train(
         optimizer_type=optimizer_type,
         muon_lr=muon_lr,
     )
+
+    # Restore optimizer state dicts if resuming
+    if checkpoint_data is not None and "optimizer_state_dicts" in checkpoint_data:
+        for opt, opt_sd in zip(optimizers, checkpoint_data["optimizer_state_dicts"]):
+            opt.load_state_dict(opt_sd)
+        if master_process:
+            print("[Axiom-LM] Successfully restored optimizer states and momentum buffers.")
+
     enc = tiktoken.get_encoding('gpt2')
 
     # Training Loop
-    for step in range(max_steps):
+    for step in range(start_step, max_steps):
         last_step = (step == max_steps - 1)
 
         # 1. Validation loss evaluation
@@ -941,6 +977,7 @@ if __name__ == "__main__":
     parser.add_argument("--eval_interval", type=int, default=50, help="Validation evaluation step interval")
     parser.add_argument("--sample_interval", type=int, default=200, help="Live story sampling step interval")
     parser.add_argument("--save_interval", type=int, default=200, help="Model checkpoint step interval")
+    parser.add_argument("--resume", nargs="?", const="checkpoints/model_latest.pt", default=None, help="Resume training from checkpoint file path (defaults to checkpoints/model_latest.pt if flag provided without path)")
     parser.add_argument("--benchmark", action="store_true", help="Run KV-cache vs Naive generation speed benchmark")
     args = parser.parse_args()
 
@@ -971,4 +1008,5 @@ if __name__ == "__main__":
             architecture=args.arch,
             optimizer_type=args.optimizer,
             muon_lr=args.muon_lr,
+            resume=args.resume,
         )
