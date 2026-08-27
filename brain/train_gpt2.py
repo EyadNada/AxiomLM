@@ -210,7 +210,7 @@ class Block(nn.Module):
 @dataclass
 class GPTConfig:
     block_size: int = 1024
-    vocab_size: int = 50257
+    vocab_size: int = 50304
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
@@ -801,7 +801,7 @@ def train(
     elif architecture == "modern":
         config = GPTConfig(
             block_size=1024,
-            vocab_size=50257,
+            vocab_size=50304,
             n_layer=12,
             n_head=12,
             n_embd=768,
@@ -1024,7 +1024,7 @@ if __name__ == "__main__":
         enc = tiktoken.get_encoding("gpt2")
         cfg = GPTConfig(
             block_size=1024,
-            vocab_size=50257,
+            vocab_size=50304,
             n_layer=12,
             n_head=12,
             n_embd=768,
