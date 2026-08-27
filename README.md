@@ -13,8 +13,8 @@ What's AxiomLM? Why AxiomLM? its a high-performance pretraining engine and moder
 | **Attention Heads** | $N_h$ | 12 | Query heads ($d_k = 64$) |
 | **KV Heads (GQA)** | $N_{kv}$ | 4 | Grouped-Query Attention (Modern spec) |
 | **Context Length** | $T$ | 1024 | Maximum sequence length |
-| **Vocabulary Size** | $V$ | 50,257 | GPT-2 BPE token vocabulary |
-| **Total Parameters** | $P$ | 124,439,808 | Tied input/output embeddings |
+| **Vocabulary Size** | $V$ | 50,304 | GPT-2 BPE vocabulary (padded for Tensor Core / SIMD alignment) |
+| **Total Parameters** | $P$ | 124,475,904 | Tied input/output embeddings (114.1M Modern GQA spec) |
 
 ---
 
@@ -169,6 +169,23 @@ jupyter notebook brain/performance_metrics.ipynb
 ├── requirements.txt        # Minimal environment dependencies
 └── README.md
 ```
+
+---
+
+## 🗺️ Roadmap & Upcoming Milestones (TODO List)
+
+- [x] **Padded Vocabulary (`50,304`)**: Memory and warp tiling alignment for Apple Silicon SIMD and NVIDIA Tensor Cores.
+- [x] **Graceful Snapshotting & Resuming**: Auto-capture state upon `Ctrl+C` interrupt and restore full optimizer momentum via `--resume`.
+- [x] **Dual Architecture Pretraining Engine**: Classic GPT-2 & Modern LLaMA-3 spec (RMSNorm, RoPE, SwiGLU, GQA).
+- [x] **Next-Gen Muon Matrix Optimizer**: Quintic Newton-Schulz polar decomposition with dual AdamW parameter routing.
+- [x] **$O(1)$ KV-Cache Inference Engine**: Low-latency incremental autoregressive generation.
+- [ ] **Standalone Inference CLI (`generate.py`)**: Dedicated prompt-testing tool supporting arbitrary checkpoints.
+- [ ] **Advanced Sampling Engine**: Top-$p$ (Nucleus Sampling) and Repetition Penalty ($\theta$) integration.
+- [ ] **Real-Time MFU % Metric**: Live hardware compute utilization logging ($\text{MFU} = \frac{6P \times \text{tok/s}}{\text{Peak FLOPs}}$) during training.
+- [ ] **Interactive Web Application (`app.py`)**: Browser-based interactive UI with temperature/top-p sliders and live KV-cache speed benchmarks.
+- [ ] **PyTorch Profiler & Chrome Trace Exporter**: Single-flag `--profile` execution producing `trace.json` for kernel timeline inspection.
+- [ ] **Custom Low-Level Kernel**: OpenAI Triton (CUDA) / Metal Shading Language (Apple Silicon) custom fused RMSNorm kernel.
+- [ ] **Hugging Face Hub Export**: One-click script to package `.safetensors` model weights and publish a model card.
 
 ---
 

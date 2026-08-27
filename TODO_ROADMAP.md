@@ -8,7 +8,7 @@
 
 | Domain / Pillar | Progress | What is Implemented | What Remains for "Top 0.01%" Tier |
 | :--- | :---: | :--- | :--- |
-| **1. Classic GPT-2 Architecture** | **95%** | Full model from scratch, Pre-LN, weight tying, Hugging Face weight loading verification. | Padded vocab to `50,304` for Tensor Core tile alignment. |
+| **1. Classic GPT-2 Architecture** | **100%** | Full model from scratch, Pre-LN, weight tying, Hugging Face weight loading, padded vocab to `50,304` for Tensor Core tile alignment. | Completed. |
 | **2. Low-Level System Optimizations** | **95%** | TF32, BF16 Autocast, SDPA / FlashAttention, zero-sync on-device loss accumulation, parameter splitting. | MPS/CUDA kernel profiling & MFU calculations. |
 | **3. Pretraining Data Pipeline** | **95%** | Token sharder (`data/tinystories.py`), memory-mapped binary `train.bin` (19M) / `val.bin` (1M) with CLI args. | Multi-shard rotation for multi-billion token corpora. |
 | **4. Training Loop & Validation** | **95%** | Step loop, lr schedule, grad accum, throughput timer (`tok/s`), holdout val loss loop, live story sampling, checkpointing (`.pt`). | DDP multi-node distributed scaling. |
