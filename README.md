@@ -136,7 +136,12 @@ python brain/train_gpt2.py --arch modern --optimizer adamw --max_steps 4800
 
 # Modern LLaMA-3 architecture with Next-Gen Muon Matrix Optimizer
 python brain/train_gpt2.py --arch modern --optimizer muon --muon_lr 0.02 --max_steps 4800
+
+# Resume training from latest saved checkpoint (or graceful Ctrl+C pause snapshot)
+python brain/train_gpt2.py --resume checkpoints/model_latest.pt
 ```
+
+> **Tip:** You can press `Ctrl+C` at any time during training—the engine will intercept the interrupt, gracefully save an exact training snapshot (weights, optimizer momentum, and step counter) to `checkpoints/model_latest.pt`, and allow you to resume with `--resume`.
 
 ### 4. Interactive Analysis
 
