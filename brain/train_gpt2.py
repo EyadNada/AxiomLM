@@ -712,6 +712,77 @@ def benchmark_generation_speed(model: GPT, enc, device: str, prompt: str = "Once
 
 
 # -----------------------------------------------------------------------------
+# Hardware Peak Compute & MFU (Model FLOPs Utilization) Engine
+# -----------------------------------------------------------------------------
+
+def estimate_hardware_peak_tflops(device: str) -> float:
+    """Estimates theoretical peak BF16/FP16 TFLOPs for the active hardware accelerator."""
+    if device == "cuda":
+        if torch.cuda.is_available():
+            try:
+                gpu_name = torch.cuda.get_device_name(0).lower()
+                if "h100" in gpu_name:
+                    return 989.0
+                elif "a100" in gpu_name:
+                    return 312.0
+                elif "4090" in gpu_name:
+                    return 165.2
+                elif "3090" in gpu_name:
+                    return 71.0
+                elif "4080" in gpu_name:
+                    return 97.5
+                elif "t4" in gpu_name:
+                    return 65.0
+                elif "v100" in gpu_name:
+                    return 125.0
+            except Exception:
+                pass
+        return 70.0
+    elif device == "mps":
+        # Apple Silicon MPS: ~10.0 TFLOPs base (M1/M2/M3/M4) / ~35.0 TFLOPs Pro/Max
+        return 10.0
+    return 2.0  # CPU fallback
+
+
+def calculate_mfu(
+    model: nn.Module,
+    tokens_per_sec: float,
+    seq_len: int,
+    peak_tflops: float,
+) -> tuple[float, float]:
+    """
+    Computes MFU percentage: (6P + 12*L*d_model*T) * tokens_per_sec / Peak_FLOPs.
+    Returns (mfu_percentage, achieved_tflops).
+    """
+    raw_model = get_raw_model(model)
+    cfg = raw_model.config
+    P = sum(p.numel() for p in raw_model.parameters() if p.requires_grad)
+    flops_per_token = 6 * P + 12 * cfg.n_layer * cfg.n_embd * seq_len
+    achieved_flops = flops_per_token * tokens_per_sec
+    achieved_tflops = achieved_flops / 1e12
+    peak_flops = peak_tflops * 1e12
+    mfu_pct = (achieved_flops / peak_flops) * 100.0
+    return mfu_pct, achieved_tflops
+
+
+def create_profiler(output_dir: str = "./log/profiler_trace"):
+    """Creates a torch.profiler.profile instance with tensorboard trace handler."""
+    activities = [torch.profiler.ProfilerActivity.CPU]
+    if torch.cuda.is_available():
+        activities.append(torch.profiler.ProfilerActivity.CUDA)
+
+    os.makedirs(output_dir, exist_ok=True)
+    return torch.profiler.profile(
+        activities=activities,
+        schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(output_dir),
+        record_shapes=True,
+        profile_memory=True,
+        with_stack=True,
+    )
+
+
+# -----------------------------------------------------------------------------
 # Main Training Engine
 # -----------------------------------------------------------------------------
 
@@ -725,6 +796,7 @@ def train(
     optimizer_type: str = "adamw",
     muon_lr: float = 0.02,
     resume: str | None = None,
+    profile: bool = False,
 ):
     # Distributed setup & device detection
     ddp = int(os.environ.get('RANK', -1)) != -1
@@ -749,6 +821,10 @@ def train(
         elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             device = "mps"
         print(f"[Axiom-LM] Using compute device: {device}")
+
+    peak_tflops = estimate_hardware_peak_tflops(device)
+    if master_process:
+        print(f"[Axiom-LM] Theoretical Peak Hardware Compute: ~{peak_tflops:.1f} TFLOPs")
 
     # Set seeds for reproducibility
     torch.manual_seed(1337)
@@ -877,6 +953,16 @@ def train(
 
     enc = tiktoken.get_encoding('gpt2')
 
+    # Profiler configuration
+    if profile:
+        trace_dir = os.path.join(project_root, "log", "profiler_trace")
+        if master_process:
+            print(f"[Axiom-LM Profiler] Recording trace to {trace_dir}...")
+        prof_ctx = create_profiler(trace_dir)
+        prof_ctx.__enter__()
+    else:
+        prof_ctx = None
+
     # Training Loop
     current_step = start_step
     try:
@@ -972,6 +1058,10 @@ def train(
             tokens_processed = total_batch_size
             tokens_per_sec = tokens_processed / dt
             loss_val = loss_accum_tensor.item()
+            mfu_pct, achieved_tflops = calculate_mfu(model, tokens_per_sec, T, peak_tflops)
+
+            if prof_ctx is not None:
+                prof_ctx.step()
 
             if master_process:
                 if optimizer_type == "muon":
@@ -979,7 +1069,7 @@ def train(
                 else:
                     lr_str = f"lr: {current_adamw_lr:.4e}"
                 print(
-                    f"step {step:4d}/{max_steps} | loss: {loss_val:.6f} | {lr_str} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}",
+                    f"step {step:4d}/{max_steps} | loss: {loss_val:.6f} | {lr_str} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f} | MFU: {mfu_pct:.1f}% ({achieved_tflops:.2f} TF)",
                     flush=True,
                 )
     except KeyboardInterrupt:
@@ -996,9 +1086,16 @@ def train(
             }
             torch.save(checkpoint, checkpoint_path)
             print(f"[Axiom-LM] Successfully saved pause state to {checkpoint_path}. Resume anytime with '--resume'.", flush=True)
+        if prof_ctx is not None:
+            prof_ctx.__exit__(None, None, None)
         if ddp:
             destroy_process_group()
         return
+
+    if prof_ctx is not None:
+        prof_ctx.__exit__(None, None, None)
+        if master_process:
+            print(f"[Axiom-LM Profiler] Profiling complete! View trace in chrome://tracing or https://ui.perfetto.dev using files in {trace_dir}")
 
     if ddp:
         destroy_process_group()
@@ -1017,6 +1114,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_interval", type=int, default=200, help="Model checkpoint step interval")
     parser.add_argument("--resume", nargs="?", const="checkpoints/model_latest.pt", default=None, help="Resume training from checkpoint file path (defaults to checkpoints/model_latest.pt if flag provided without path)")
     parser.add_argument("--benchmark", action="store_true", help="Run KV-cache vs Naive generation speed benchmark")
+    parser.add_argument("--profile", action="store_true", help="Enable PyTorch profiler and export Chrome trace to log/profiler_trace")
     args = parser.parse_args()
 
     if args.benchmark:
@@ -1037,8 +1135,9 @@ if __name__ == "__main__":
         bm_model = GPT(cfg).to(device)
         benchmark_generation_speed(bm_model, enc, device, prompt="Once upon a time", max_length=100)
     else:
+        train_steps = 5 if args.profile and args.max_steps == 4800 else args.max_steps
         train(
-            max_steps=args.max_steps,
+            max_steps=train_steps,
             total_batch_size=args.batch_size,
             eval_interval=args.eval_interval,
             sample_interval=args.sample_interval,
@@ -1047,4 +1146,5 @@ if __name__ == "__main__":
             optimizer_type=args.optimizer,
             muon_lr=args.muon_lr,
             resume=args.resume,
+            profile=args.profile,
         )
