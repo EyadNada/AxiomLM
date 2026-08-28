@@ -782,6 +782,58 @@ def create_profiler(output_dir: str = "./log/profiler_trace"):
     )
 
 
+def save_checkpoint(
+    step: int,
+    model: nn.Module,
+    optimizers: list,
+    optimizer_type: str,
+    checkpoint_dir: str,
+    is_pause: bool = False,
+    keep_step_ckpt: bool = True,
+) -> tuple[str, str | None]:
+    """
+    Safely saves checkpoint atomically with .bak fallback and step-stamped archiving.
+    Prevents file corruption and accidental loss of training progress.
+    """
+    raw_model = get_raw_model(model)
+    checkpoint = {
+        "step": step,
+        "model_state_dict": raw_model.state_dict(),
+        "optimizer_state_dicts": [opt.state_dict() for opt in optimizers],
+        "optimizer_type": optimizer_type,
+        "config": raw_model.config,
+    }
+    latest_path = os.path.join(checkpoint_dir, "model_latest.pt")
+    tmp_path = os.path.join(checkpoint_dir, "model_latest.pt.tmp")
+    bak_path = os.path.join(checkpoint_dir, "model_latest.pt.bak")
+
+    # 1. Atomic write to temporary file
+    torch.save(checkpoint, tmp_path)
+
+    # 2. Rotate previous latest checkpoint to .bak before replacing
+    if os.path.exists(latest_path):
+        try:
+            if os.path.exists(bak_path):
+                os.remove(bak_path)
+            os.rename(latest_path, bak_path)
+        except OSError:
+            pass
+
+    os.rename(tmp_path, latest_path)
+
+    # 3. Save permanent step snapshot for archiving
+    step_path = None
+    if keep_step_ckpt and (step > 0 or is_pause):
+        step_path = os.path.join(checkpoint_dir, f"model_step_{step:04d}.pt")
+        try:
+            import shutil
+            shutil.copy2(latest_path, step_path)
+        except Exception:
+            torch.save(checkpoint, step_path)
+
+    return latest_path, step_path
+
+
 # -----------------------------------------------------------------------------
 # Main Training Engine
 # -----------------------------------------------------------------------------
@@ -1000,18 +1052,16 @@ def train(
                 print("-" * 50, flush=True)
 
             # 3. Model Checkpointing
-            if master_process and ((save_interval > 0 and step % save_interval == 0 and step > 0) or last_step):
-                raw_model = get_raw_model(model)
-                checkpoint_path = os.path.join(checkpoint_dir, "model_latest.pt")
-                checkpoint = {
-                    "step": step,
-                    "model_state_dict": raw_model.state_dict(),
-                    "optimizer_state_dicts": [opt.state_dict() for opt in optimizers],
-                    "optimizer_type": optimizer_type,
-                    "config": raw_model.config,
-                }
-                torch.save(checkpoint, checkpoint_path)
-                print(f"[Axiom-LM] Saved checkpoint to {checkpoint_path}", flush=True)
+            if not profile and master_process and ((save_interval > 0 and step % save_interval == 0 and step > 0) or last_step):
+                latest_p, step_p = save_checkpoint(
+                    step=step,
+                    model=model,
+                    optimizers=optimizers,
+                    optimizer_type=optimizer_type,
+                    checkpoint_dir=checkpoint_dir,
+                    keep_step_ckpt=True,
+                )
+                print(f"[Axiom-LM] Saved checkpoint to {latest_p}" + (f" (archived {os.path.basename(step_p)})" if step_p else ""), flush=True)
 
             # 4. Forward / Backward with Micro-Batching (Zero MPS Sync during accumulation)
             model.train()
@@ -1075,17 +1125,16 @@ def train(
     except KeyboardInterrupt:
         if master_process:
             print(f"\n[Axiom-LM] KeyboardInterrupt caught! Gracefully saving pause snapshot at step {current_step}...")
-            raw_model = get_raw_model(model)
-            checkpoint_path = os.path.join(checkpoint_dir, "model_latest.pt")
-            checkpoint = {
-                "step": current_step,
-                "model_state_dict": raw_model.state_dict(),
-                "optimizer_state_dicts": [opt.state_dict() for opt in optimizers],
-                "optimizer_type": optimizer_type,
-                "config": raw_model.config,
-            }
-            torch.save(checkpoint, checkpoint_path)
-            print(f"[Axiom-LM] Successfully saved pause state to {checkpoint_path}. Resume anytime with '--resume'.", flush=True)
+            latest_p, step_p = save_checkpoint(
+                step=current_step,
+                model=model,
+                optimizers=optimizers,
+                optimizer_type=optimizer_type,
+                checkpoint_dir=checkpoint_dir,
+                is_pause=True,
+                keep_step_ckpt=True,
+            )
+            print(f"[Axiom-LM] Successfully saved pause state to {latest_p}. Resume anytime with '--resume'.", flush=True)
         if prof_ctx is not None:
             prof_ctx.__exit__(None, None, None)
         if ddp:
