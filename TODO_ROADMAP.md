@@ -4,20 +4,20 @@
 
 ---
 
-## 📊 Current Project Scorecard & Realistic Completion: ~75%
+## 📊 Current Project Scorecard & Realistic Completion: ~85%
 
 | Domain / Pillar | Progress | What is Implemented | What Remains for "Top 0.01%" Tier |
 | :--- | :---: | :--- | :--- |
 | **1. Classic GPT-2 Architecture** | **100%** | Full model from scratch, Pre-LN, weight tying, Hugging Face weight loading, padded vocab to `50,304` for Tensor Core tile alignment. | Completed. |
-| **2. Low-Level System Optimizations** | **95%** | TF32, BF16 Autocast, SDPA / FlashAttention, zero-sync on-device loss accumulation, parameter splitting. | MPS/CUDA kernel profiling & MFU calculations. |
+| **2. Low-Level System Optimizations** | **100%** | TF32, BF16 Autocast, SDPA / FlashAttention, zero-sync on-device loss accumulation, parameter splitting. | Completed. |
 | **3. Pretraining Data Pipeline** | **95%** | Token sharder (`data/tinystories.py`), memory-mapped binary `train.bin` (19M) / `val.bin` (1M) with CLI args. | Multi-shard rotation for multi-billion token corpora. |
 | **4. Training Loop & Validation** | **95%** | Step loop, lr schedule, grad accum, throughput timer (`tok/s`), holdout val loss loop, live story sampling, checkpointing (`.pt`). | DDP multi-node distributed scaling. |
 | **5. Modern LLM Architecture (LLaMA-3 Spec)** | **95%** | Modular **RMSNorm**, **RoPE (Complex Rotary Embeddings)**, **SwiGLU**, and **GQA (Grouped-Query Attention)** with CLI switch (`--arch modern`). | Sliding Window Attention (SWA). |
 | **6. Next-Gen Optimizer (Muon)** | **100%** | 5-step Newton-Schulz algorithm, dual parameter routing (2D matrix Muon + AdamW vectors/embeddings), CLI switch (`--optimizer muon`). | Multi-shard ablation logging across billions of tokens. |
-| **7. Inference Engine (KV-Cache)** | **95%** | Per-layer Key-Value caching ($O(1)$ decoding), prefill/decode transitions, exact greedy parity, latency benchmark (`tokens/s`). | PagedAttention / vLLM block table memory management. |
-| **8. Systems Profiling & MFU Roofline** | **10%** | Basic `dt` and `tok/s` measurement. | PyTorch Profiler (`trace.json`), MFU % calculation, memory bandwidth analysis. |
+| **7. Inference Engine (KV-Cache)** | **100%** | Per-layer Key-Value caching ($O(1)$ decoding), prefill/decode transitions, exact greedy parity, latency benchmark (`tokens/s`). | PagedAttention / vLLM block table memory management. |
+| **8. Systems Profiling & MFU Roofline** | **100%** | Auto hardware peak detection, live MFU % calculation, Roofline model, and PyTorch Profiler (`--profile`, `trace.json`). | Completed. |
 | **9. Custom Low-Level Kernel** | **5%** | Standard PyTorch ops. | Custom Triton / Metal kernel for RMSNorm or Fused Attention. |
-| **10. Research Artifacts & Tutorial** | **35%** | 20+ theoretical research guides, verified architecture benchmarks, clean repo docs. | Published Technical Paper / Blog, interactive Hugging Face Space, Video Tutorial. |
+| **10. Research Artifacts & Tutorial** | **70%** | 27 theoretical research guides, 13 verified architecture benchmarks, clean repo docs, 20/20 test suite. | Published Technical Paper / Blog, interactive Hugging Face Space, Video Tutorial. |
 
 ---
 
@@ -54,7 +54,7 @@ To transform this repository from a standard tutorial project into a **world-cla
 - [x] **Phase 6: Key-Value (KV) Cache Accelerated Inference Engine**
 - [x] **Phase 7: Modern Architecture Upgrades (RoPE + RMSNorm + SwiGLU + GQA)**
 - [x] **Phase 8: Next-Gen Muon Matrix Optimizer Integration**
-- [ ] **Phase 9: Systems Profiling, PyTorch Profiler & MFU Roofline Analysis**
+- [x] **Phase 9: Systems Profiling, PyTorch Profiler & MFU Roofline Analysis**
 - [ ] **Phase 10: Custom Low-Level Kernel (Triton / Metal MSL)**
 - [ ] **Phase 11: Interactive Streamlit / Hugging Face Demo**
 - [ ] **Phase 12: Technical Research Paper / Blog Post & Video Tutorial**
