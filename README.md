@@ -198,7 +198,7 @@ jupyter notebook brain/performance_metrics.ipynb
 │   ├── train.bin           # 19M token uint16 training binary shard
 │   └── val.bin             # 1M token uint16 validation binary shard
 ├── checkpoints/            # Model weight snapshots (.pt)
-├── material/               # Mathematical formulations, papers, and systems guides (27 docs)
+├── material/               # Mathematical formulations, papers, and systems guides (28 docs)
 ├── tests/                  # Automated unit and integration test suite
 │   ├── test_all.py         # Full integration & architecture test suite (20 tests)
 │   └── test_kernels.py     # Custom low-level kernel & gradcheck test suite (8 tests)
