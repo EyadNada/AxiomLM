@@ -9,21 +9,25 @@ These kernels fuse reductions, nonlinear activations, and arithmetic operations
 into single SRAM passes, avoiding DRAM roundtrips on NVIDIA Tensor Core GPUs.
 """
 
-from typing import Tuple, Optional
+# pyright: reportMissingImports=false
+# pyright: reportAttributeAccessIssue=false
+# pyright: reportOptionalCall=false
+
+from typing import Tuple, Optional, Any
 import torch
 
 try:
-    import triton
-    import triton.language as tl
+    import triton  # type: ignore
+    import triton.language as tl  # type: ignore
     HAS_TRITON = True
-except ImportError:
+except (ImportError, ModuleNotFoundError):
     HAS_TRITON = False
     triton = None  # type: ignore
     tl = None      # type: ignore
 
 
 if HAS_TRITON:
-    @triton.jit
+    @triton.jit  # type: ignore
     def _rmsnorm_forward_kernel(
         X_ptr,          # Pointer to input tensor X (M, N)
         Y_ptr,          # Pointer to output tensor Y (M, N)
@@ -33,7 +37,7 @@ if HAS_TRITON:
         stride_y_row,   # Stride between rows of Y
         N,              # Hidden dimension D
         eps,            # Epsilon for numerical stability
-        BLOCK_SIZE: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,  # type: ignore
     ):
         row_idx = tl.program_id(0)
         cols = tl.arange(0, BLOCK_SIZE)
@@ -60,7 +64,7 @@ if HAS_TRITON:
         y_offsets = row_idx * stride_y_row + cols
         tl.store(Y_ptr + y_offsets, y, mask=mask)
 
-    @triton.jit
+    @triton.jit  # type: ignore
     def _rmsnorm_backward_kernel(
         DY_ptr,         # Pointer to incoming gradient dY (M, N)
         X_ptr,          # Pointer to forward input X (M, N)
@@ -73,7 +77,7 @@ if HAS_TRITON:
         stride_dx_row,
         stride_dw_row,
         N,
-        BLOCK_SIZE: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,  # type: ignore
     ):
         row_idx = tl.program_id(0)
         cols = tl.arange(0, BLOCK_SIZE)
@@ -100,13 +104,13 @@ if HAS_TRITON:
 
         tl.store(DX_ptr + row_idx * stride_dx_row + cols, dx, mask=mask)
 
-    @triton.jit
+    @triton.jit  # type: ignore
     def _swiglu_forward_kernel(
         Gate_ptr,       # Pointer to Gate tensor (N,)
         Up_ptr,         # Pointer to Up tensor (N,)
         Out_ptr,        # Pointer to Output tensor (N,)
         N_elements,     # Total element count
-        BLOCK_SIZE: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,  # type: ignore
     ):
         pid = tl.program_id(0)
         offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -122,7 +126,7 @@ if HAS_TRITON:
 
         tl.store(Out_ptr + offsets, out, mask=mask)
 
-    @triton.jit
+    @triton.jit  # type: ignore
     def _swiglu_backward_kernel(
         DY_ptr,         # Upstream grad dY (N,)
         Gate_ptr,       # Gate input (N,)
@@ -130,7 +134,7 @@ if HAS_TRITON:
         DGate_ptr,      # Output dGate (N,)
         DUp_ptr,        # Output dUp (N,)
         N_elements,
-        BLOCK_SIZE: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,  # type: ignore
     ):
         pid = tl.program_id(0)
         offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -156,7 +160,7 @@ if HAS_TRITON:
 
 def triton_rmsnorm_forward(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> Tuple[torch.Tensor, torch.Tensor]:
     """Triton implementation of RMSNorm forward pass."""
-    if not HAS_TRITON:
+    if not HAS_TRITON or triton is None:
         raise RuntimeError("OpenAI Triton is not installed or available on this system.")
     M = x.numel() // x.size(-1)
     N = x.size(-1)
@@ -175,7 +179,7 @@ def triton_rmsnorm_forward(x: torch.Tensor, weight: torch.Tensor, eps: float = 1
 
 def triton_swiglu_forward(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     """Triton implementation of SwiGLU forward pass."""
-    if not HAS_TRITON:
+    if not HAS_TRITON or triton is None:
         raise RuntimeError("OpenAI Triton is not installed or available on this system.")
     assert gate.shape == up.shape
     out = torch.empty_like(gate)

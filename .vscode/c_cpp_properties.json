@@ -1,0 +1,25 @@
+{
+  "configurations": [
+    {
+      "name": "Mac-Apple-Silicon",
+      "includePath": [
+        "${workspaceFolder}/**",
+        "${workspaceFolder}/venv/lib/python3.12/site-packages/torch/include",
+        "${workspaceFolder}/venv/lib/python3.12/site-packages/torch/include/torch/csrc/api/include",
+        "/opt/homebrew/opt/python@3.12/Frameworks/Python.framework/Versions/3.12/include/python3.12"
+      ],
+      "defines": [
+        "TORCH_EXTENSION_NAME=axiom_neon_kernels",
+        "TORCH_API_INCLUDE_EXTENSION_H"
+      ],
+      "macFrameworkPath": [
+        "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks"
+      ],
+      "compilerPath": "/usr/bin/clang++",
+      "cStandard": "c17",
+      "cppStandard": "c++20",
+      "intelliSenseMode": "macos-clang-arm64"
+    }
+  ],
+  "version": 4
+}
