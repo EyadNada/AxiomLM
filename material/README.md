@@ -1,82 +1,87 @@
-# Engineering Notes and Research Materials
+# 📚 Engineering Notes, Research Materials & Deep-Dive Curriculum
 
-This directory contains my study notes, mathematical derivations, and technical summaries written while building and optimizing this 124M parameter transformer from scratch.
+This directory contains master technical guides, mathematical derivations, and systems engineering documentation for the **GPT-2 (124M) & Modern LLaMA-3 Pretraining Engine**.
 
-The goal was to start from the classic 2019 GPT-2 baseline, understand every bottleneck down to the hardware level, and systematically upgrade the engine with modern architectural choices (RoPE, RMSNorm, SwiGLU, GQA) and low-level system optimizations (FlashAttention, BF16 mixed precision, zero-sync gradient accumulation, KV-cache decoding).
-
----
-
-## Suggested Reading Order
-
-If you are exploring the codebase or trying to understand how the pieces fit together, here is the recommended sequence:
-
-1. **[Modern Technologies & Optimizations Master Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/modern_llm_technologies_and_optimizations_guide.md)**  
-   Start here. A complete end-to-end breakdown comparing classic GPT-2 to modern transformer architectures, including intuitive explanations, mathematical formulations, and benchmarks.
-
-2. **[FlashAttention and Fast Scaled Dot-Product Attention](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/flash_attention_guide.md)**  
-   Explains GPU memory hierarchy (HBM vs. on-chip SRAM), why standard attention stalls on memory bandwidth, and how tiling avoids materializing the full attention matrix in VRAM.
-
-3. **[Key-Value (KV) Cache and Fast Inference](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/kv_cache_inference_engine_guide.md)**  
-   Explains the algorithmic transition from quadratic generation time down to constant per-token latency during autoregression.
-
-4. **[Rotary Position Embeddings (RoPE)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/rope_rotary_position_embeddings_guide.md)**  
-   Why absolute positional embeddings limit sequence length, and how 2D complex rotations encode relative token distances naturally.
-
-5. **[The Muon Matrix Optimizer Master Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/muon_optimizer_guide.md)**  
-   Explains why coordinate-wise AdamW struggles with 2D matrix geometry, how 5th-order Newton-Schulz polar decomposition orthogonalizes gradients, and why dual-parameter routing yields ~42% faster step convergence.
+The curriculum spans first-principles transformer mechanics, low-level hardware memory hierarchies, custom GPU/CPU kernel engineering, spectral optimizer theory (Muon & Newton-Schulz), and production inference acceleration.
 
 ---
 
-## Architecture and Modeling
+## 🗺️ Suggested Reading Order (The 0.01% Systems Track)
 
-* **[Rotary Position Embeddings (RoPE)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/rope_rotary_position_embeddings_guide.md)**: Complex rotation in 2D coordinate pairs, relative distance encoding, and context length extrapolation.
-* **[Root Mean Square Normalization (RMSNorm)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/rmsnorm_guide.md)**: Why mean-centering is unnecessary for training stability, and how variance-only scaling saves memory bandwidth.
-* **[SwiGLU Activation and Gated FFN](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/swiglu_activation_guide.md)**: Bilinear gating, dimensional scaling with parameter parity, and loss convergence improvements.
-* **[Grouped-Query Attention (GQA)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/gqa_grouped_query_attention_guide.md)**: Sharing key-value heads across query head groups to reduce inference cache footprint by 66.7%.
-* **[Cross-Attention vs. Self-Attention](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/cross_attention_vs_self_attention_guide.md)**: Mathematical differences between encoder-decoder attention and decoder-only autoregressive self-attention.
-* **[OpenAI GPT-2 Implementation Notes](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/openai_gpt2_repo_breakdown.md)**: Code-level breakdown of the original 2019 TensorFlow implementation and Karpathy's clean PyTorch recreation.
-* **[Karpathy Stanford CS25 Lecture Summary](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/stanford_cs25_v2_karpathy_transformers.md)**: Takeaways from Andrej Karpathy's transformer mechanics and optimization lecture.
+If you are exploring the codebase or mastering transformer systems engineering, follow this progression:
 
----
+1. **[Modern LLM Technologies & Optimizations Master Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/modern_llm_technologies_and_optimizations_guide.md)**  
+   *The complete blueprint*: Architectural comparison of classic GPT-2 (2019) vs. Modern LLaMA-3/Mistral (2024+), mathematical formulations, and empirical ablation benchmarks.
 
-## Systems and Hardware Acceleration
+2. **[Custom Low-Level Kernels: Triton, Metal MSL & ARM NEON SIMD](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/custom_low_level_kernels_triton_metal_neon_guide.md)**  
+   *Hardware-level kernel fusion*: Why chained PyTorch ops stall on DRAM bandwidth, mathematical autograd derivations for fused RMSNorm & SwiGLU, and implementations across OpenAI Triton, Metal Shading Language, and Apple ARM NEON SIMD.
 
-* **[FlashAttention and SDPA](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/flash_attention_guide.md)**: Tiled attention inside SRAM, online softmax, and backward pass recomputation.
-* **[Online Softmax Normalizer Calculation](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/online_normalizer_calculation_for_softmax_guide.md)**: Mathematical derivation of the streaming single-pass softmax trick that makes FlashAttention possible.
-* **[Automatic Mixed Precision (AMP)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/automatic_mixed_precision_amp_guide.md)**: BF16 and FP16 autocasting, dynamic range differences, and gradient scaling.
-* **[Tensor Cores and Mixed Precision](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/tensor_cores_and_mixed_precision_guide.md)**: Systolic array compute hardware, matrix multiply-accumulate operations, and precision formats.
-* **[PyTorch Float32 Matmul Precision (TF32)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/torch_set_float32_matmul_precision_guide.md)**: Enabling 19-bit TensorFloat math on Ampere and Hopper GPUs.
-* **[PyTorch Compile (torch.compile)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/torch_compile_guide.md)**: TorchDynamo graph capture, AOTAutograd, and TorchInductor kernel fusion.
+3. **[The Muon Matrix Optimizer Master Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/muon_optimizer_guide.md)**  
+   *Next-generation optimization*: Why coordinate-wise AdamW fails on 2D matrix geometry, polar decomposition ($G = U H$), and dual-parameter routing for ~42% faster step convergence.
 
----
+4. **[Newton-Schulz Spectral Analysis & Polynomial Approximation Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/newton_schulz_spectral_analysis_guide.md)**  
+   *Under the hood of Muon*: Minimax quintic polynomial derivation ($p(x) = ax + bx^3 + cx^5$), singular value spectrum flattening, and systolic GEMM efficiency.
 
-## Optimizers and Training
+5. **[Model FLOPs Utilization (MFU) & Hardware Roofline Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/model_flops_utilization_mfu_guide.md)**  
+   *Hardware efficiency*: $6N$ dense compute derivations, attention quadratic scaling, peak hardware TFLOPs estimation, and Roofline arithmetic intensity analysis.
 
-* **[AdamW Optimizer Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/adamw_optimizer_guide.md)**: Derivation of first and second moment estimators, bias correction, and decoupled weight decay.
-* **[Muon Matrix Optimizer Master Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/muon_optimizer_guide.md)**: Orthogonal matrix updates, polar decomposition ($G = U H$), and dual parameter routing architecture.
-* **[Newton-Schulz Spectral Analysis Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/newton_schulz_spectral_analysis_guide.md)**: Chebyshev minimax polynomial derivations ($p(x) = ax + bx^3 + cx^5$), singular value evolution, and systolic GEMM hardware efficiency.
-* **[GPT-3 Training Hyperparameters Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/gpt3_training_hyperparameters_guide.md)**: Learning rate warmups, cosine schedules, weight decay exclusions, and gradient clipping norms.
-* **[Distributed Data Parallel (DDP)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/distributed_data_parallel_ddp_guide.md)**: Ring All-Reduce communication patterns, gradient bucketing, and multi-GPU synchronization.
+6. **[Key-Value (KV) Cache & Inference Engine Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/kv_cache_inference_engine_guide.md)**  
+   *Algorithmic inference scaling*: Transitioning from $\mathcal{O}(T^2)$ quadratic autoregression to $\mathcal{O}(1)$ constant-time token generation with prefill/decode state caching.
 
 ---
 
-## Inference and Generation
+## 🏛️ Module 1: Modern Transformer Architecture (LLaMA-3 Spec)
 
-* **[Key-Value (KV) Cache Engine](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/kv_cache_inference_engine_guide.md)**: Memory-mapped key-value state management and decoding performance benchmarks.
-* **[Generation and Sampling Strategies](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/generation_and_sampling_strategies.md)**: Mechanics of greedy search, temperature scaling, top-k filtering, and nucleus (top-p) sampling.
-
----
-
-## Data Pipeline and Tokenization
-
-* **[TikToken and Byte-Pair Encoding (BPE)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/tiktokenizer_guide.md)**: How byte-level BPE constructs the 50,257 vocabulary without out-of-vocabulary tokens.
-* **[WebText vs. Modern Pretraining Datasets](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/datasets_webtext_gpt2_vs_gpt3_guide.md)**: Evolution of training corpora from WebText to Common Crawl, FineWeb, and synthetic datasets like TinyStories.
+* **[Rotary Position Embeddings (RoPE)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/rope_rotary_position_embeddings_guide.md)**: Complex 2D rotations, relative distance preservation, and context window extrapolation.
+* **[Root Mean Square Normalization (RMSNorm)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/rmsnorm_guide.md)**: Elimination of mean-centering overhead and variance-only scaling for $30\%$ bandwidth savings.
+* **[SwiGLU Activation & Gated FFN](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/swiglu_activation_guide.md)**: Bilinear multiplicative gating, parameter parity dimension scaling ($\frac{8}{3}d$), and smoother gradient flow.
+* **[Grouped-Query Attention (GQA)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/gqa_grouped_query_attention_guide.md)**: Key-Value head sharing across query groups to reduce inference VRAM footprint by $66.7\%$.
+* **[Cross-Attention vs. Self-Attention](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/cross_attention_vs_self_attention_guide.md)**: Structural and mathematical differences between encoder-decoder architectures and decoder-only autoregressive models.
+* **[OpenAI GPT-2 Implementation Notes](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/openai_gpt2_repo_breakdown.md)**: Code-level comparison of the original 2019 TensorFlow implementation and Andrej Karpathy's clean PyTorch design.
+* **[Karpathy Stanford CS25 Lecture Summary](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/stanford_cs25_v2_karpathy_transformers.md)**: Core takeaways from Andrej Karpathy's transformer mechanics and optimization deep-dive.
 
 ---
 
-## Primary Papers (Local Copies)
+## ⚡ Module 2: Hardware Acceleration & Custom Kernels
 
-Original source papers collected for reference while writing the code:
+* **[Custom Low-Level Kernels (Triton / Metal / ARM NEON)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/custom_low_level_kernels_triton_metal_neon_guide.md)**: Fused RMSNorm & SwiGLU operators written in OpenAI Triton (CUDA), Apple Metal MSL, and C++ ARM NEON intrinsics.
+* **[FlashAttention & Fast Scaled Dot-Product Attention (SDPA)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/flash_attention_guide.md)**: On-chip SRAM tiling, avoidance of $N \times N$ VRAM materialization, and backward recomputation.
+* **[Online Softmax Normalizer Calculation](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/online_normalizer_calculation_for_softmax_guide.md)**: Milakov & Gimelshein streaming single-pass softmax formulation.
+* **[Automatic Mixed Precision (AMP)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/automatic_mixed_precision_amp_guide.md)**: BF16 vs FP16 dynamic ranges, subnormal stability, and gradient scaling mechanics.
+* **[Tensor Cores & Mixed-Precision Arithmetic](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/tensor_cores_and_mixed_precision_guide.md)**: Systolic array compute hardware, HMMA/MMA instructions, and memory tile alignment.
+* **[PyTorch Float32 Matmul Precision (TF32)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/torch_set_float32_matmul_precision_guide.md)**: 19-bit TensorFloat math on NVIDIA Ampere, Ada Lovelace, and Hopper architectures.
+* **[PyTorch Compile (`torch.compile`)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/torch_compile_guide.md)**: TorchDynamo graph capture, AOTAutograd graph tracing, and TorchInductor C++/Triton codegen.
+
+---
+
+## 🚀 Module 3: Optimizers & Training Systems
+
+* **[The Muon Matrix Optimizer Master Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/muon_optimizer_guide.md)**: Orthogonal matrix updates via polar decomposition ($G = U H$) and dual-path AdamW/Muon parameter routing.
+* **[Newton-Schulz Spectral Analysis Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/newton_schulz_spectral_analysis_guide.md)**: 5th-order polynomial spectral projector derivation and systolic GEMM optimization.
+* **[AdamW Optimizer Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/adamw_optimizer_guide.md)**: First and second moment estimators, bias correction schedules, and decoupled weight decay ($L_2$ regularization separation).
+* **[GPT-3 Training Hyperparameters Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/gpt3_training_hyperparameters_guide.md)**: Warmup ratios, cosine decay schedules, gradient clipping thresholds, and parameter initialization scales.
+* **[Distributed Data Parallel (DDP)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/distributed_data_parallel_ddp_guide.md)**: Ring All-Reduce communication topologies, gradient bucketing, and multi-node synchronization.
+* **[Scaling Laws & Chinchilla Compute Optimality](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/scaling_laws_and_chinchilla_guide.md)**: Kaplan vs. Hoffmann (Chinchilla) scaling frontiers, token-to-parameter ratios, and compute budget allocation.
+
+---
+
+## 🔍 Module 4: Systems Profiling & Observability
+
+* **[Model FLOPs Utilization (MFU) & Roofline Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/model_flops_utilization_mfu_guide.md)**: Exact analytical FLOPs counting, hardware peak TFLOPs lookup, and arithmetic intensity ceilings.
+* **[PyTorch Profiler & Chrome/Perfetto Tracing Guide](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/pytorch_profiler_and_chrome_tracing_guide.md)**: Microsecond-accurate timeline profiling, detecting host-device synchronizations, and analyzing Chrome trace graphs.
+
+---
+
+## 💬 Module 5: Inference & Data Pipeline
+
+* **[Key-Value (KV) Cache Inference Engine](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/kv_cache_inference_engine_guide.md)**: Prefill vs. decode phase state maintenance, memory footprint formulas, and latency benchmarks.
+* **[Generation & Sampling Strategies](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/generation_and_sampling_strategies.md)**: Greedy decoding, temperature scaling, Top-$k$ truncation, and Top-$p$ (Nucleus) sampling dynamics.
+* **[TikToken & Byte-Pair Encoding (BPE)](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/tiktokenizer_guide.md)**: Byte-level vocabulary construction, regex splitting rules, and tokenizing without out-of-vocabulary artifacts.
+* **[WebText vs. Modern Pretraining Datasets](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/datasets_webtext_gpt2_vs_gpt3_guide.md)**: Evolution from WebText to FineWeb, RedPajama, and synthetic textbook corpora like TinyStories.
+
+---
+
+## 📑 Module 6: Primary Reference Papers (Local PDFs)
 
 * `attention_is_all_you_need.pdf` — Vaswani et al. (2017)
 * `gpt2_paper.pdf` — Radford et al. (2019)
