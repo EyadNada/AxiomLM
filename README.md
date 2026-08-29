@@ -1,26 +1,26 @@
 # AxiomLM (124M)
 
-> **A high-performance pretraining engine and modern architectural overhaul of OpenAI's original GPT-2 (124M) in pure PyTorch—optimized from first principles for Apple Silicon (Metal / MPS / ARM NEON) and NVIDIA CUDA.**
+> **A high-performance pretraining engine and modern architectural overhaul of OpenAI's original GPT-2 (124M) in pure PyTorch, optimized from first principles for Apple Silicon (Metal / MPS / ARM NEON) and NVIDIA CUDA.**
 
 ---
 
-##  What is AxiomLM?
+## Project Overview
 
 **AxiomLM** is a next-generation, high-throughput Transformer pretraining and inference engine. It is a **complete, ground-up redesign** of OpenAI's foundational 2019 GPT-2 (124M parameter) autoregressive architecture, rebuilt in **modern PyTorch 2.x** and modernized with 2026 state-of-the-art LLM advances (LLaMA-3, Mistral, and DeepSeek architectural paradigms).
 
-Every single layer of the stack has been re-engineered from scratch:
+Every layer of the stack has been re-engineered from scratch:
 
 1. **Atomic Mathematical Primitives**: 
-   - **Root Mean Square Normalization (RMSNorm)** replacing legacy LayerNorm to eliminate mean-centering memory overhead.
-   - **Complex Rotary Position Embeddings (RoPE)** replacing static learned position lookup tables ($W_{pe}$) for relative distance preservation and sequence length extrapolation.
-   - **SwiGLU Gated Feed-Forward Networks** ($\frac{8}{3}d_{\text{model}}$) with SiLU activations for accelerated empirical loss convergence per FLOP.
-   - **Grouped-Query Attention (GQA)** (4 KV heads vs. 12 Query heads) slashing KV-cache inference VRAM footprints by **66.7%**.
-   - **Padded Vocabulary (`50,304`)** aligned to 64-element warp / SIMD boundaries for Apple Silicon and NVIDIA Tensor Core execution.
+   - **Root Mean Square Normalization (RMSNorm)**: Replaces legacy LayerNorm to eliminate mean-centering memory overhead and reduce reduction passes.
+   - **Complex Rotary Position Embeddings (RoPE)**: Replaces static learned position lookup tables ($W_{pe}$) for relative distance preservation and sequence length extrapolation.
+   - **SwiGLU Gated Feed-Forward Networks ($\frac{8}{3}d_{\text{model}}$)**: Employs SiLU gating for accelerated empirical loss convergence per FLOP.
+   - **Grouped-Query Attention (GQA)**: Configured with 4 KV heads vs. 12 Query heads, slashing KV-cache inference VRAM footprints by **66.7%**.
+   - **Padded Vocabulary (`50,304`)**: Aligned to 64-element warp / SIMD boundaries for Apple Silicon and NVIDIA Tensor Core execution.
 
 2. **Next-Generation Matrix Optimization (Muon)**:
-   - Implementation of the **Muon (Momentum Orthogonalized by Newton-Schulz)** matrix optimizer.
-   - Computes quintic (5th-order) Newton-Schulz iterations to perform polar spectral decomposition on 2D linear weight matrices, achieving orthogonal parameter updates in activation space.
-   - Coupled with coordinate-wise AdamW for 1D vectors and embedding tables, Muon converges to target validation perplexity in **~42% fewer optimization steps** than scalar AdamW.
+   - Implements the **Muon (Momentum Orthogonalized by Newton-Schulz)** matrix optimizer.
+   - Computes quintic (5th-order) Newton-Schulz iterations to perform polar spectral decomposition on 2D linear weight matrices, generating orthogonal parameter updates in activation space.
+   - Combined with coordinate-wise AdamW for 1D vectors and embedding tables, Muon converges to target validation perplexity in **~42% fewer optimization steps** than scalar AdamW.
 
 3. **Hardware Acceleration for Apple Silicon & CUDA**:
    - Engineered specifically for **Apple Silicon Unified Memory** (Metal Performance Shaders / MPS) and **NVIDIA GPUs** (Triton / Tensor Cores / DDP).
@@ -43,15 +43,15 @@ Every single layer of the stack has been re-engineered from scratch:
 
 ---
 
-## 🔄 What Changed Over the Old 2019 TensorFlow GPT-2 (124M)?
+## Architectural & Systems Evolution: 2019 GPT-2 vs. 2026 AxiomLM
 
-OpenAI's original 2019 release of GPT-2 was implemented in **TensorFlow 1.x** (specifically TensorFlow 1.15 static computation graphs with `tf.variable_scope`, `tf.Session`, and custom 1D convolutions). Over the past seven years, the field of deep learning has made fundamental leaps in both Transformer architecture and hardware execution.
+OpenAI's original 2019 release of GPT-2 was implemented in **TensorFlow 1.x** (specifically TensorFlow 1.15 static computation graphs with `tf.variable_scope`, `tf.Session`, and custom 1D convolutions). 
 
 AxiomLM completely replaces the legacy TensorFlow implementation with a modernized, high-performance PyTorch systems architecture:
 
 ### Architectural & Systems Evolution Matrix
 
-| Dimension / Component | 🏛️ 2019 Original GPT-2 (OpenAI TensorFlow 1.x) | ⚡ 2026 AxiomLM (Modern PyTorch 2.x Engine) | Engineering Impact & Multiplier |
+| Dimension / Component | 2019 Original GPT-2 (OpenAI TensorFlow 1.x) | 2026 AxiomLM (Modern PyTorch 2.x Engine) | Engineering Impact & Multiplier |
 | :--- | :--- | :--- | :--- |
 | **Framework & Runtime** | TensorFlow 1.15 Static Graph / `tf.Session` | Pure PyTorch 2.x Eager + Fused MSL/NEON/Triton Kernels | **Dynamic hardware dispatch & near-metal kernel control** |
 | **Execution Precision** | Eager FP32 (Full 32-bit floating point) | BF16 / FP16 Mixed-Precision Autocast | **$2.0\times$ ALU Speed & 50% Reduced Memory Traffic** |
@@ -71,7 +71,7 @@ AxiomLM completely replaces the legacy TensorFlow implementation with a moderniz
 
 ---
 
-## 📐 Technical Specifications
+## Technical Specifications
 
 | Parameter | Symbol | Classic GPT-2 Baseline | Modern AxiomLM Spec | Engineering Rationale |
 | :--- | :---: | :---: | :---: | :--- |
@@ -88,58 +88,7 @@ AxiomLM completely replaces the legacy TensorFlow implementation with a moderniz
 
 ---
 
-## 📊 Live Training & Inference Metrics Snippets (With Generated Sentences)
-
-During pretraining on massive token datasets, AxiomLM logs real-time systems telemetry, validation perplexity, and live autoregressive story generation using the accelerated $O(1)$ KV-cache engine.
-
-### 1. Real-Time Pretraining Step Logs & Hardware Telemetry
-
-```text
-[Axiom-LM] Using compute device: mps
-[Axiom-LM] Theoretical Peak Hardware Compute: ~10.0 TFLOPs
-[Axiom-LM] Architecture: MODERN | Optimizer: MUON | Batch config: Total=4,096 tok | Micro-B=2 | T=1024 | GradAccum=2
-[DataLoaderLite] Loaded train shard from data/train.bin (19,000,000 tokens)
-[DataLoaderLite] Loaded val shard from data/val.bin (1,000,000 tokens)
-[Muon Hybrid] 2D Matrix tensors: 50 (55,705,600 params) -> Optimized with Muon (lr=0.02)
-[Muon Hybrid] Embedding tensors: 2 (38,633,472 params) -> Optimized with AdamW (lr=0.0006)
-[Muon Hybrid] 1D Vector/Norm tensors: 26 (19,968 params) -> Optimized with AdamW (lr=0.0006)
-
-step  0550/4800 | loss: 3.241512 | muon_lr: 1.8340e-02 | adamw_lr: 5.5020e-04 | norm: 0.8921 | dt: 442.30ms | tok/sec: 9260.68 | MFU: 69.1% (6.91 TF)
-step  0560/4800 | loss: 3.198401 | muon_lr: 1.8210e-02 | adamw_lr: 5.4630e-04 | norm: 0.8654 | dt: 444.15ms | tok/sec: 9222.11 | MFU: 68.8% (6.88 TF)
-step  0570/4800 | loss: 3.165230 | muon_lr: 1.8080e-02 | adamw_lr: 5.4240e-04 | norm: 0.8412 | dt: 443.80ms | tok/sec: 9229.38 | MFU: 68.9% (6.89 TF)
-step  0580/4800 | loss: 3.129845 | muon_lr: 1.7950e-02 | adamw_lr: 5.3850e-04 | norm: 0.8290 | dt: 445.02ms | tok/sec: 9204.08 | MFU: 68.7% (6.87 TF)
-
-[Val Eval @ Step  0600] validation loss: 3.0942
-```
-
-### 2. Live Generated Story Snippets (Evaluated from Saved Checkpoints)
-
-Below are authentic sentence outputs generated live during training checkpoints from the prompt `"Once upon a time"` using the accelerated $O(1)$ KV-Cache decoder:
-
-```text
---- Live Generated Samples (KV-Cache Engine) @ Checkpoint Step 0600 ---
-  [1] Once upon a time, there was a little girl named Lily. Lily loved to play outside
-      in the big garden. One day, Lily found a little blue bird sitting on a branch.
-      The bird looked hungry, so Lily shared her bread with the bird. The bird sang happily!
-  
-  [2] Once upon a time, there was a little boy named Timmy. Timmy had a bright red ball.
-      He loved to bounce it high into the sky. One sunny morning, the ball rolled under
-      a big green bush. Timmy looked inside and saw a cute puppy wagging its tail.
---------------------------------------------------------------------------------------
-```
-
-### 3. Generation Latency & Throughput Benchmark Snippet
-
-```text
-[Axiom-LM Benchmark] Benchmarking generation to 100 tokens on mps:
-  • Naive Eager O(T^2) Decoding : 538.40 ms (178.31 tokens/s)
-  • Hardware KV-Cache O(1)      : 19.62 ms (4,892.97 tokens/s)
-  • Speedup Factor              : 27.44x faster with KV-Cache Engine
-```
-
----
-
-## 📈 Performance Benchmarks & Systems Visualizations
+## Performance Benchmarks & Systems Visualizations
 
 AxiomLM has been rigorously benchmarked across 10 empirical dimensions comparing the 2019 OpenAI baseline against the modern 2026 engine.
 
@@ -236,7 +185,58 @@ As sequence length scales to $8\text{K}$ and $16\text{K}$ tokens, Grouped-Query 
 
 ---
 
-## ⚡ Quickstart
+## Live Training & Inference Metrics Snippets
+
+During pretraining on massive token datasets, AxiomLM logs real-time systems telemetry, validation perplexity, and live autoregressive story generation using the accelerated $O(1)$ KV-cache engine.
+
+### 1. Real-Time Pretraining Step Logs & Hardware Telemetry
+
+```text
+[Axiom-LM] Using compute device: mps
+[Axiom-LM] Theoretical Peak Hardware Compute: ~10.0 TFLOPs
+[Axiom-LM] Architecture: MODERN | Optimizer: MUON | Batch config: Total=4,096 tok | Micro-B=2 | T=1024 | GradAccum=2
+[DataLoaderLite] Loaded train shard from data/train.bin (19,000,000 tokens)
+[DataLoaderLite] Loaded val shard from data/val.bin (1,000,000 tokens)
+[Muon Hybrid] 2D Matrix tensors: 50 (55,705,600 params) -> Optimized with Muon (lr=0.02)
+[Muon Hybrid] Embedding tensors: 2 (38,633,472 params) -> Optimized with AdamW (lr=0.0006)
+[Muon Hybrid] 1D Vector/Norm tensors: 26 (19,968 params) -> Optimized with AdamW (lr=0.0006)
+
+step  0550/4800 | loss: 3.241512 | muon_lr: 1.8340e-02 | adamw_lr: 5.5020e-04 | norm: 0.8921 | dt: 442.30ms | tok/sec: 9260.68 | MFU: 69.1% (6.91 TF)
+step  0560/4800 | loss: 3.198401 | muon_lr: 1.8210e-02 | adamw_lr: 5.4630e-04 | norm: 0.8654 | dt: 444.15ms | tok/sec: 9222.11 | MFU: 68.8% (6.88 TF)
+step  0570/4800 | loss: 3.165230 | muon_lr: 1.8080e-02 | adamw_lr: 5.4240e-04 | norm: 0.8412 | dt: 443.80ms | tok/sec: 9229.38 | MFU: 68.9% (6.89 TF)
+step  0580/4800 | loss: 3.129845 | muon_lr: 1.7950e-02 | adamw_lr: 5.3850e-04 | norm: 0.8290 | dt: 445.02ms | tok/sec: 9204.08 | MFU: 68.7% (6.87 TF)
+
+[Val Eval @ Step  0600] validation loss: 3.0942
+```
+
+### 2. Live Generated Story Snippets (Evaluated from Checkpoints)
+
+Below are authentic sentence outputs generated live during training checkpoints from the prompt `"Once upon a time"` using the accelerated $O(1)$ KV-Cache decoder:
+
+```text
+--- Live Generated Samples (KV-Cache Engine) @ Checkpoint Step 0600 ---
+  [1] Once upon a time, there was a little girl named Lily. Lily loved to play outside
+      in the big garden. One day, Lily found a little blue bird sitting on a branch.
+      The bird looked hungry, so Lily shared her bread with the bird. The bird sang happily!
+  
+  [2] Once upon a time, there was a little boy named Timmy. Timmy had a bright red ball.
+      He loved to bounce it high into the sky. One sunny morning, the ball rolled under
+      a big green bush. Timmy looked inside and saw a cute puppy wagging its tail.
+--------------------------------------------------------------------------------------
+```
+
+### 3. Generation Latency & Throughput Benchmark Snippet
+
+```text
+[Axiom-LM Benchmark] Benchmarking generation to 100 tokens on mps:
+  • Naive Eager O(T^2) Decoding : 538.40 ms (178.31 tokens/s)
+  • Hardware KV-Cache O(1)      : 19.62 ms (4,892.97 tokens/s)
+  • Speedup Factor              : 27.44x faster with KV-Cache Engine
+```
+
+---
+
+## Quickstart
 
 ### 1. Installation
 
@@ -277,7 +277,7 @@ python brain/train_gpt2.py --profile
 python brain/train_gpt2.py --resume checkpoints/model_latest.pt
 ```
 
-> **Tip:** You can press `Ctrl+C` at any time during training—the engine will intercept the interrupt, gracefully save an exact training snapshot (weights, optimizer momentum buffers, step counter, and dataset offset) to `checkpoints/model_latest.pt`, allowing seamless resumption with `--resume`.
+> **Note:** You can press `Ctrl+C` at any time during training—the engine intercepts the interrupt, gracefully saving an exact training snapshot (weights, optimizer momentum buffers, step counter, and dataset offset) to `checkpoints/model_latest.pt`, allowing seamless resumption with `--resume`.
 
 ### 4. Generation Speed Benchmarking
 
@@ -297,7 +297,7 @@ jupyter notebook brain/performance_metrics.ipynb
 
 ---
 
-## 🛠️ Custom Low-Level Kernel Suite
+## Custom Low-Level Kernel Suite
 
 AxiomLM includes custom low-level GPU and CPU kernels with analytical backward passes:
 
@@ -312,7 +312,7 @@ kernels/
 
 ---
 
-## 📂 Repository Structure
+## Repository Structure
 
 ```
 ├── assets/                 # 13 publication-grade benchmark plots and architectural charts
@@ -341,7 +341,7 @@ kernels/
 
 ---
 
-## 🗺️ Roadmap & Completed Milestones
+## Roadmap & Completed Milestones
 
 - [x] **From-Scratch PyTorch Reimplementation**: Pure PyTorch 2.x recreation of OpenAI GPT-2 124M.
 - [x] **Padded Vocabulary (`50,304`)**: Memory and warp tiling alignment for Apple Silicon SIMD and NVIDIA Tensor Cores.
@@ -360,7 +360,7 @@ kernels/
 
 ---
 
-## 🧪 Verification & Automated Test Suite
+## Verification & Automated Test Suite
 
 Run the full automated test suite (28/28 unit and integration tests):
 
@@ -374,6 +374,6 @@ python -m unittest tests/test_kernels.py
 
 ---
 
-## 📜 License
+## License
 
 MIT License.
