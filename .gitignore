@@ -10,6 +10,11 @@ __pycache__/
 *$py.class
 *.so
 *.dylib
+*.o
+*.obj
+*.air
+*.metallib
+*.dSYM/
 scratch/
 
 # Jupyter Notebook checkpoints
