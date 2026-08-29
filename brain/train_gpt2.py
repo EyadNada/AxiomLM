@@ -15,6 +15,14 @@ import torch.distributed as dist
 import tiktoken
 import numpy as np
 
+try:
+    from kernels import FusedRMSNorm, FusedSwiGLUMLP
+    HAS_CUSTOM_KERNELS = True
+except ImportError:
+    HAS_CUSTOM_KERNELS = False
+    FusedRMSNorm = None  # type: ignore
+    FusedSwiGLUMLP = None  # type: ignore
+
 
 # -----------------------------------------------------------------------------
 # Modern Architecture Modules (LLaMA-3 / Mistral Spec)
@@ -178,19 +186,26 @@ class MLP(nn.Module):
 class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
-        # Normalization layer (LayerNorm vs RMSNorm)
+        # Normalization layer (LayerNorm vs RMSNorm vs FusedRMSNorm)
         if config.norm_type == "rmsnorm":
-            self.ln_1 = RMSNorm(config.n_embd)
-            self.ln_2 = RMSNorm(config.n_embd)
+            if getattr(config, "use_fused_kernels", False) and FusedRMSNorm is not None:
+                self.ln_1 = FusedRMSNorm(config.n_embd)
+                self.ln_2 = FusedRMSNorm(config.n_embd)
+            else:
+                self.ln_1 = RMSNorm(config.n_embd)
+                self.ln_2 = RMSNorm(config.n_embd)
         else:
             self.ln_1 = nn.LayerNorm(config.n_embd)
             self.ln_2 = nn.LayerNorm(config.n_embd)
 
         self.attn = CausalSelfAttention(config)
 
-        # Feed-Forward layer (GELU MLP vs SwiGLU)
+        # Feed-Forward layer (GELU MLP vs SwiGLU vs FusedSwiGLU)
         if config.mlp_type == "swiglu":
-            self.mlp = SwiGLUMLP(config)
+            if getattr(config, "use_fused_kernels", False) and FusedSwiGLUMLP is not None:
+                self.mlp = FusedSwiGLUMLP(config)
+            else:
+                self.mlp = SwiGLUMLP(config)
         else:
             self.mlp = MLP(config)
 
@@ -221,6 +236,7 @@ class GPTConfig:
     mlp_type: str = "gelu"                # "gelu" (classic) or "swiglu" (modern)
     rope_theta: float = 10000.0           # Base frequency for RoPE
     bias: bool = True                     # Set False for modern architectures (LLaMA / Mistral)
+    use_fused_kernels: bool = False       # Enable low-level fused GPU/SIMD kernels
 
 
 class GPT(nn.Module):
@@ -240,11 +256,16 @@ class GPT(nn.Module):
         else:
             self.freqs_cis = None
 
+        if config.norm_type == "rmsnorm":
+            ln_f = FusedRMSNorm(config.n_embd) if (config.use_fused_kernels and FusedRMSNorm is not None) else RMSNorm(config.n_embd)
+        else:
+            ln_f = nn.LayerNorm(config.n_embd)
+
         # Core transformer dictionary
         transformer_dict = dict(
             wte=nn.Embedding(config.vocab_size, config.n_embd),
             h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            ln_f=RMSNorm(config.n_embd) if config.norm_type == "rmsnorm" else nn.LayerNorm(config.n_embd),
+            ln_f=ln_f,
         )
         if config.pos_emb == "learned":
             transformer_dict['wpe'] = nn.Embedding(config.block_size, config.n_embd)
@@ -849,6 +870,7 @@ def train(
     muon_lr: float = 0.02,
     resume: str | None = None,
     profile: bool = False,
+    use_custom_kernels: bool = False,
 ):
     # Distributed setup & device detection
     ddp = int(os.environ.get('RANK', -1)) != -1
@@ -938,9 +960,10 @@ def train(
             pos_emb="rope",      # Rotary Positional Embeddings
             mlp_type="swiglu",   # SwiGLU Gated Feed-Forward Network
             bias=False,          # Bias-free linear layers
+            use_fused_kernels=use_custom_kernels,
         )
     else:
-        config = GPTConfig()
+        config = GPTConfig(use_fused_kernels=use_custom_kernels)
 
     model = GPT(config)
 
@@ -1164,6 +1187,7 @@ if __name__ == "__main__":
     parser.add_argument("--resume", nargs="?", const="checkpoints/model_latest.pt", default=None, help="Resume training from checkpoint file path (defaults to checkpoints/model_latest.pt if flag provided without path)")
     parser.add_argument("--benchmark", action="store_true", help="Run KV-cache vs Naive generation speed benchmark")
     parser.add_argument("--profile", action="store_true", help="Enable PyTorch profiler and export Chrome trace to log/profiler_trace")
+    parser.add_argument("--use_custom_kernels", action="store_true", help="Enable custom low-level fused GPU & ARM NEON SIMD kernels")
     args = parser.parse_args()
 
     if args.benchmark:
@@ -1180,6 +1204,7 @@ if __name__ == "__main__":
             pos_emb="rope" if args.arch == "modern" else "learned",
             mlp_type="swiglu" if args.arch == "modern" else "gelu",
             bias=False if args.arch == "modern" else True,
+            use_fused_kernels=args.use_custom_kernels,
         )
         bm_model = GPT(cfg).to(device)
         benchmark_generation_speed(bm_model, enc, device, prompt="Once upon a time", max_length=100)
@@ -1196,4 +1221,5 @@ if __name__ == "__main__":
             muon_lr=args.muon_lr,
             resume=args.resume,
             profile=args.profile,
+            use_custom_kernels=args.use_custom_kernels,
         )
