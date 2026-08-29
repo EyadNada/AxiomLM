@@ -8,6 +8,9 @@ ENV/
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+*.dylib
+scratch/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
