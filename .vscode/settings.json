@@ -10,11 +10,11 @@
     "${workspaceFolder}"
   ],
   "files.associations": {
-    "*.metal": "cpp",
+    "*.metal": "c",
     "*.cpp": "cpp"
   },
-  "C_Cpp.default.configurationProvider": "ms-vscode.cpptools",
-  "C_Cpp.errorSquiggles": "enabled",
+  "C_Cpp.errorSquiggles": "disabled",
+  "python.analysis.diagnosticMode": "openFilesOnly",
   "workbench.colorCustomizations": {
     "statusBar.background": "#5B21B6",
     "statusBar.foreground": "#FFFFFF",
