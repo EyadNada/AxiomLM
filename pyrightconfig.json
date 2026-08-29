@@ -3,6 +3,9 @@
   "venv": "venv",
   "pythonVersion": "3.12",
   "extraPaths": [
-    "./venv/lib/python3.12/site-packages"
-  ]
+    "./venv/lib/python3.12/site-packages",
+    "."
+  ],
+  "reportMissingImports": false,
+  "reportAttributeAccessIssue": false
 }
