@@ -4,7 +4,7 @@
 
 ---
 
-## 🌟 What is AxiomLM?
+##  What is AxiomLM?
 
 **AxiomLM** is a next-generation, high-throughput Transformer pretraining and inference engine. It is a **complete, ground-up redesign** of OpenAI's foundational 2019 GPT-2 (124M parameter) autoregressive architecture, rebuilt in **modern PyTorch 2.x** and modernized with 2026 state-of-the-art LLM advances (LLaMA-3, Mistral, and DeepSeek architectural paradigms).
 
