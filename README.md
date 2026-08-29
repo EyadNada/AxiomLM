@@ -187,6 +187,12 @@ jupyter notebook brain/performance_metrics.ipynb
 ├── brain/
 │   ├── train_gpt2.py       # Core model, data loader, Muon/AdamW optimizers, MFU tracker, and training loop
 │   └── performance_metrics.ipynb # Interactive metrics notebook with systems benchmarks
+├── kernels/                # Custom low-level GPU & ARM NEON SIMD kernels
+│   ├── cpu_neon_kernels.cpp # Vectorized ARM NEON C++ kernels for Apple Silicon M3 Pro
+│   ├── metal_kernels.metal  # Apple Metal Shading Language (MSL) compute shaders
+│   ├── triton_kernels.py    # OpenAI Triton JIT GPU kernels for CUDA hardware
+│   ├── ops.py               # Custom torch.autograd.Function bindings and modules
+│   └── benchmark_kernels.py # Microbenchmark test harness
 ├── data/
 │   ├── tinystories.py      # Streaming tokenizer and binary sharder
 │   ├── train.bin           # 19M token uint16 training binary shard
@@ -194,6 +200,8 @@ jupyter notebook brain/performance_metrics.ipynb
 ├── checkpoints/            # Model weight snapshots (.pt)
 ├── material/               # Mathematical formulations, papers, and systems guides (27 docs)
 ├── tests/                  # Automated unit and integration test suite
+│   ├── test_all.py         # Full integration & architecture test suite (20 tests)
+│   └── test_kernels.py     # Custom low-level kernel & gradcheck test suite (8 tests)
 ├── requirements.txt        # Minimal environment dependencies
 └── README.md
 ```
@@ -209,11 +217,11 @@ jupyter notebook brain/performance_metrics.ipynb
 - [x] **$O(1)$ KV-Cache Inference Engine**: Low-latency incremental autoregressive generation with exact greedy parity.
 - [x] **Real-Time MFU % Metric**: Live hardware compute utilization logging ($\text{MFU} = \frac{6P \times \text{tok/s}}{\text{Peak FLOPs}}$) during training.
 - [x] **PyTorch Profiler & Chrome Trace Exporter**: Single-flag `--profile` execution producing `trace.json` for kernel timeline inspection.
-- [x] **Automated Test Suite (`pytest` / `unittest`)**: 20/20 unit & integration tests covering all components and invariants.
+- [x] **Custom Low-Level Kernel Suite**: Fused RMSNorm & SwiGLU operators written in **Apple ARM NEON SIMD** (`-mcpu=apple-m3`), **Metal Shading Language (MSL)**, and **OpenAI Triton (CUDA)** with exact analytical backward passes.
+- [x] **Automated Test Suite (`pytest` / `unittest`)**: 28/28 unit & integration tests covering all architectural primitives, optimizers, and custom kernels.
 - [ ] **Standalone Inference CLI (`generate.py`)**: Dedicated prompt-testing tool supporting arbitrary checkpoints.
 - [ ] **Advanced Sampling Engine**: Top-$p$ (Nucleus Sampling) and Repetition Penalty ($\theta$) integration.
 - [ ] **Interactive Web Application (`app.py`)**: Browser-based interactive UI with temperature/top-p sliders and live KV-cache speed benchmarks.
-- [ ] **Custom Low-Level Kernel**: OpenAI Triton (CUDA) / Metal Shading Language (Apple Silicon) custom fused RMSNorm kernel.
 - [ ] **Hugging Face Hub Export**: One-click script to package `.safetensors` model weights and publish a model card.
 
 ---

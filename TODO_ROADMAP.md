@@ -4,7 +4,7 @@
 
 ---
 
-## 📊 Current Project Scorecard & Realistic Completion: ~85%
+## 📊 Current Project Scorecard & Realistic Completion: ~93%
 
 | Domain / Pillar | Progress | What is Implemented | What Remains for "Top 0.01%" Tier |
 | :--- | :---: | :--- | :--- |
@@ -16,8 +16,8 @@
 | **6. Next-Gen Optimizer (Muon)** | **100%** | 5-step Newton-Schulz algorithm, dual parameter routing (2D matrix Muon + AdamW vectors/embeddings), CLI switch (`--optimizer muon`). | Multi-shard ablation logging across billions of tokens. |
 | **7. Inference Engine (KV-Cache)** | **100%** | Per-layer Key-Value caching ($O(1)$ decoding), prefill/decode transitions, exact greedy parity, latency benchmark (`tokens/s`). | PagedAttention / vLLM block table memory management. |
 | **8. Systems Profiling & MFU Roofline** | **100%** | Auto hardware peak detection, live MFU % calculation, Roofline model, and PyTorch Profiler (`--profile`, `trace.json`). | Completed. |
-| **9. Custom Low-Level Kernel** | **5%** | Standard PyTorch ops. | Custom Triton / Metal kernel for RMSNorm or Fused Attention. |
-| **10. Research Artifacts & Tutorial** | **70%** | 27 theoretical research guides, 13 verified architecture benchmarks, clean repo docs, 20/20 test suite. | Published Technical Paper / Blog, interactive Hugging Face Space, Video Tutorial. |
+| **9. Custom Low-Level Kernel** | **100%** | Fused **RMSNorm** & **SwiGLU** forward/backward operators in **Apple ARM NEON SIMD** (`-mcpu=apple-m3`), **Metal MSL**, and **OpenAI Triton** for CUDA. | Custom Fused Attention / Tiled SDPA kernel. |
+| **10. Research Artifacts & Tutorial** | **75%** | 27 theoretical research guides, 13 verified architecture benchmarks, clean repo docs, 28/28 test suite. | Published Technical Paper / Blog, interactive Hugging Face Space, Video Tutorial. |
 
 ---
 
@@ -55,7 +55,7 @@ To transform this repository from a standard tutorial project into a **world-cla
 - [x] **Phase 7: Modern Architecture Upgrades (RoPE + RMSNorm + SwiGLU + GQA)**
 - [x] **Phase 8: Next-Gen Muon Matrix Optimizer Integration**
 - [x] **Phase 9: Systems Profiling, PyTorch Profiler & MFU Roofline Analysis**
-- [ ] **Phase 10: Custom Low-Level Kernel (Triton / Metal MSL)**
+- [x] **Phase 10: Custom Low-Level Kernel (Triton / Metal MSL / ARM NEON SIMD)**
 - [ ] **Phase 11: Interactive Streamlit / Hugging Face Demo**
 - [ ] **Phase 12: Technical Research Paper / Blog Post & Video Tutorial**
 
