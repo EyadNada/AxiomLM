@@ -26,6 +26,7 @@ from brain.train_gpt2 import (
     zeropower_via_newtonschulz5,
     Muon,
     DataLoaderLite,
+    sample_logits,
     generate_samples,
     generate_with_cache,
     get_raw_model,
@@ -528,6 +529,61 @@ class TestSystemsProfilingAndMFU(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             prof = create_profiler(tmpdir)
             self.assertIsNotNone(prof)
+
+
+class TestAdvancedSamplingAndCheckpointing(unittest.TestCase):
+    """Unit tests for advanced sampling strategies (Top-p, Min-p, Repetition Penalty) and Gradient Checkpointing."""
+
+    def test_sample_logits_temperature_zero(self):
+        """Test greedy argmax decoding when temperature <= 0."""
+        logits = torch.tensor([[1.0, 5.0, 2.0], [10.0, 2.0, 1.0]])
+        out = sample_logits(logits, temperature=0.0)
+        self.assertEqual(out[0].item(), 1)
+        self.assertEqual(out[1].item(), 0)
+
+    def test_sample_logits_top_k_and_top_p(self):
+        """Test Top-k and Top-p nucleus filtering behavior."""
+        torch.manual_seed(42)
+        logits = torch.randn(2, 100)
+        out = sample_logits(logits, temperature=1.0, top_k=5, top_p=0.8)
+        self.assertEqual(out.shape, (2, 1))
+        self.assertTrue((out >= 0).all() and (out < 100).all())
+
+    def test_sample_logits_min_p(self):
+        """Test Min-p dynamic probability thresholding."""
+        torch.manual_seed(42)
+        logits = torch.tensor([[10.0, 1.0, -10.0, -20.0]])
+        out = sample_logits(logits, temperature=1.0, min_p=0.1)
+        self.assertEqual(out[0].item(), 0)
+
+    def test_sample_logits_repetition_penalty(self):
+        """Test repetition penalty discounts previously seen tokens."""
+        logits = torch.tensor([[5.0, 4.9, 1.0]])
+        prev_tokens = torch.tensor([[0]])
+        out = sample_logits(logits, temperature=0.0, repetition_penalty=2.0, prev_tokens=prev_tokens)
+        self.assertEqual(out[0].item(), 1)
+
+    def test_gradient_checkpointing_forward_backward(self):
+        """Test that activation gradient checkpointing produces valid backward gradients."""
+        config = GPTConfig(
+            block_size=128,
+            vocab_size=1000,
+            n_layer=4,
+            n_head=4,
+            n_embd=128,
+            grad_checkpoint=True,
+        )
+        model = GPT(config)
+        model.train()
+        x = torch.randint(0, 1000, (2, 32))
+        y = torch.randint(0, 1000, (2, 32))
+        logits, loss = model(x, y)
+        self.assertIsNotNone(loss)
+        loss.backward()
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.assertIsNotNone(param.grad, f"Missing gradient for {name}")
+                self.assertFalse(torch.isnan(param.grad).any())
 
 
 if __name__ == "__main__":

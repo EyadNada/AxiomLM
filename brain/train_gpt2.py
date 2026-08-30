@@ -237,6 +237,7 @@ class GPTConfig:
     rope_theta: float = 10000.0           # Base frequency for RoPE
     bias: bool = True                     # Set False for modern architectures (LLaMA / Mistral)
     use_fused_kernels: bool = False       # Enable low-level fused GPU/SIMD kernels
+    grad_checkpoint: bool = False         # Trade compute for activation memory reduction
 
 
 class GPT(nn.Module):
@@ -311,13 +312,20 @@ class GPT(nn.Module):
         new_kv_caches = [] if (use_cache or kv_caches is not None) else None
         for i, block in enumerate(cast(nn.ModuleList, self.transformer['h'])):
             block_kv = kv_caches[i] if kv_caches is not None else None
-            x, updated_kv = block(
-                x,
-                freqs_cis=freqs_cis,
-                start_pos=past_len,
-                kv_cache=block_kv,
-                use_cache=(use_cache or kv_caches is not None),
-            )
+            if self.config.grad_checkpoint and self.training and block_kv is None:
+                def block_wrapper(t_in):
+                    out, _ = block(t_in, freqs_cis=freqs_cis, start_pos=past_len)
+                    return out
+                x = torch.utils.checkpoint.checkpoint(block_wrapper, x, use_reentrant=False)
+                updated_kv = None
+            else:
+                x, updated_kv = block(
+                    x,
+                    freqs_cis=freqs_cis,
+                    start_pos=past_len,
+                    kv_cache=block_kv,
+                    use_cache=(use_cache or kv_caches is not None),
+                )
             if new_kv_caches is not None:
                 new_kv_caches.append(updated_kv)
 
@@ -612,7 +620,82 @@ def get_raw_model(model: nn.Module) -> GPT:
     return cast(GPT, unwrapped)
 
 
-def generate_samples(model: GPT, enc, device, prompt="Once upon a time", num_samples=2, max_length=40):
+def sample_logits(
+    logits: torch.Tensor,
+    temperature: float = 1.0,
+    top_k: int | None = 50,
+    top_p: float | None = None,
+    min_p: float | None = None,
+    repetition_penalty: float = 1.0,
+    prev_tokens: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Vectorized logit sampling engine with support for:
+    - Temperature scaling
+    - Repetition penalty
+    - Top-k truncation
+    - Top-p (Nucleus) truncation
+    - Min-p dynamic thresholding
+    """
+    logits = logits.clone()
+
+    if repetition_penalty != 1.0 and prev_tokens is not None:
+        for b in range(logits.size(0)):
+            unique_tokens = torch.unique(prev_tokens[b])
+            for tok in unique_tokens:
+                if logits[b, tok] > 0:
+                    logits[b, tok] /= repetition_penalty
+                else:
+                    logits[b, tok] *= repetition_penalty
+
+    if temperature <= 0.0:
+        return torch.argmax(logits, dim=-1, keepdim=True)
+
+    logits = logits / temperature
+
+    if top_k is not None and top_k > 0:
+        k = min(top_k, logits.size(-1))
+        val, _ = torch.topk(logits, k)
+        logits[logits < val[:, [-1]]] = -float('Inf')
+
+    probs = F.softmax(logits, dim=-1)
+
+    if min_p is not None and min_p > 0.0:
+        p_max = probs.max(dim=-1, keepdim=True).values
+        cutoff = p_max * min_p
+        probs = torch.where(probs < cutoff, torch.zeros_like(probs), probs)
+        probs_sum = probs.sum(dim=-1, keepdim=True)
+        probs = torch.where(probs_sum > 0, probs / probs_sum, F.softmax(logits, dim=-1))
+
+    if top_p is not None and top_p < 1.0:
+        sorted_probs, sorted_indices = torch.sort(probs, descending=True, dim=-1)
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+        sorted_indices_to_remove = cumulative_probs > top_p
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = False
+
+        sorted_probs[sorted_indices_to_remove] = 0.0
+        probs = torch.scatter(torch.zeros_like(probs), -1, sorted_indices, sorted_probs)
+        probs_sum = probs.sum(dim=-1, keepdim=True)
+        probs = torch.where(probs_sum > 0, probs / probs_sum, F.softmax(logits, dim=-1))
+
+    next_tok = torch.multinomial(probs, 1)
+    return next_tok
+
+
+def generate_samples(
+    model: GPT,
+    enc,
+    device: str,
+    prompt: str = "Once upon a time",
+    num_samples: int = 2,
+    max_length: int = 40,
+    temperature: float = 1.0,
+    top_k: int | None = 50,
+    top_p: float | None = None,
+    min_p: float | None = None,
+    repetition_penalty: float = 1.0,
+):
     """Generates autoregressive text samples using standard eager re-computation (O(T^2))."""
     model.eval()
     tokens = enc.encode(prompt)
@@ -621,12 +704,16 @@ def generate_samples(model: GPT, enc, device, prompt="Once upon a time", num_sam
     while tokens.size(1) < max_length:
         with torch.no_grad():
             logits, _ = model(tokens)
-            logits = logits[:, -1, :]
-            probs = F.softmax(logits, dim=-1)
-            topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-            ix = torch.multinomial(topk_probs, 1)
-            xcol = torch.gather(topk_indices, -1, ix)
-            tokens = torch.cat((tokens, xcol), dim=1)
+            next_token = sample_logits(
+                logits[:, -1, :],
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                min_p=min_p,
+                repetition_penalty=repetition_penalty,
+                prev_tokens=tokens,
+            )
+            tokens = torch.cat((tokens, next_token), dim=1)
 
     samples = []
     for i in range(num_samples):
@@ -643,7 +730,10 @@ def generate_with_cache(
     num_samples: int = 1,
     max_length: int = 40,
     temperature: float = 1.0,
-    top_k: int = 50,
+    top_k: int | None = 50,
+    top_p: float | None = None,
+    min_p: float | None = None,
+    repetition_penalty: float = 1.0,
 ):
     """
     Accelerated autoregressive text generation using per-layer Key-Value caching.
@@ -654,32 +744,33 @@ def generate_with_cache(
     x = torch.tensor(prompt_tokens, dtype=torch.long, device=device).unsqueeze(0).repeat(num_samples, 1)
 
     with torch.no_grad():
-        # 1. Prefill phase: pass entire prompt to initialize KV caches
+        # Prefill phase: pass entire prompt to initialize KV caches
         kv_caches = [None] * model.config.n_layer
         logits, _, kv_caches = model(x, kv_caches=kv_caches)
 
-        next_token_logits = logits[:, -1, :]
-        if temperature > 0:
-            probs = F.softmax(next_token_logits / temperature, dim=-1)
-            topk_probs, topk_indices = torch.topk(probs, min(top_k, probs.size(-1)), dim=-1)
-            ix = torch.multinomial(topk_probs, 1)
-            next_token = torch.gather(topk_indices, -1, ix)
-        else:
-            next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
-
+        next_token = sample_logits(
+            logits[:, -1, :],
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
+            prev_tokens=x,
+        )
         generated_tokens = torch.cat((x, next_token), dim=1)
 
-        # 2. Decode phase: pass single token (T=1) on each step with cached past
+        # Decode phase: pass single token (T=1) on each step with cached past
         while generated_tokens.size(1) < max_length:
             logits, _, kv_caches = model(next_token, kv_caches=kv_caches)
-            next_token_logits = logits[:, -1, :]
-            if temperature > 0:
-                probs = F.softmax(next_token_logits / temperature, dim=-1)
-                topk_probs, topk_indices = torch.topk(probs, min(top_k, probs.size(-1)), dim=-1)
-                ix = torch.multinomial(topk_probs, 1)
-                next_token = torch.gather(topk_indices, -1, ix)
-            else:
-                next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+            next_token = sample_logits(
+                logits[:, -1, :],
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                min_p=min_p,
+                repetition_penalty=repetition_penalty,
+                prev_tokens=generated_tokens,
+            )
             generated_tokens = torch.cat((generated_tokens, next_token), dim=1)
 
     samples = []
@@ -871,6 +962,8 @@ def train(
     resume: str | None = None,
     profile: bool = False,
     use_custom_kernels: bool = False,
+    grad_checkpoint: bool = False,
+    svd_monitor: bool = False,
 ):
     # Distributed setup & device detection
     ddp = int(os.environ.get('RANK', -1)) != -1
@@ -955,15 +1048,16 @@ def train(
             n_layer=12,
             n_head=12,
             n_embd=768,
-            n_kv_head=4,         # 3x Grouped-Query Attention (GQA)
-            norm_type="rmsnorm", # Root Mean Square Normalization
-            pos_emb="rope",      # Rotary Positional Embeddings
-            mlp_type="swiglu",   # SwiGLU Gated Feed-Forward Network
-            bias=False,          # Bias-free linear layers
+            n_kv_head=4,
+            norm_type="rmsnorm",
+            pos_emb="rope",
+            mlp_type="swiglu",
+            bias=False,
             use_fused_kernels=use_custom_kernels,
+            grad_checkpoint=grad_checkpoint,
         )
     else:
-        config = GPTConfig(use_fused_kernels=use_custom_kernels)
+        config = GPTConfig(use_fused_kernels=use_custom_kernels, grad_checkpoint=grad_checkpoint)
 
     model = GPT(config)
 
@@ -1188,6 +1282,7 @@ if __name__ == "__main__":
     parser.add_argument("--benchmark", action="store_true", help="Run KV-cache vs Naive generation speed benchmark")
     parser.add_argument("--profile", action="store_true", help="Enable PyTorch profiler and export Chrome trace to log/profiler_trace")
     parser.add_argument("--use_custom_kernels", action="store_true", help="Enable custom low-level fused GPU & ARM NEON SIMD kernels")
+    parser.add_argument("--grad_checkpoint", action="store_true", help="Enable activation gradient checkpointing for 60-70% memory reduction")
     args = parser.parse_args()
 
     if args.benchmark:
@@ -1205,6 +1300,7 @@ if __name__ == "__main__":
             mlp_type="swiglu" if args.arch == "modern" else "gelu",
             bias=False if args.arch == "modern" else True,
             use_fused_kernels=args.use_custom_kernels,
+            grad_checkpoint=args.grad_checkpoint,
         )
         bm_model = GPT(cfg).to(device)
         benchmark_generation_speed(bm_model, enc, device, prompt="Once upon a time", max_length=100)
@@ -1222,4 +1318,5 @@ if __name__ == "__main__":
             resume=args.resume,
             profile=args.profile,
             use_custom_kernels=args.use_custom_kernels,
+            grad_checkpoint=args.grad_checkpoint,
         )
