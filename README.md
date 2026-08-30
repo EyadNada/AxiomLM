@@ -16,15 +16,15 @@ The engine upgrades every layer of the modeling and systems stack: replacing Lay
 
 AxiomLM has been rigorously benchmarked across 10 empirical systems dimensions comparing the baseline GPT-2 model against the modern AxiomLM engine.
 
-In simple, practical terms, here is what AxiomLM achieves when executing on an Apple Silicon MPS device compared to the baseline GPT-2 model:
+In potato terms, this is what's achieved when executing on an MPS device:
 
-* **Inference Generation Speed [27.5x Speedup]**: Text generation is up to **27.5 times faster** at long sequence lengths—meaning the model never freezes or slows down as the conversation gets longer.
-* **Pretraining Throughput [3.29x Faster Training]**: Training the model from scratch runs at **9,200 tokens/sec** compared to 2,800 tokens/sec in the baseline GPT-2 model, finishing entire training runs in one-third of the time.
-* **Optimization Step Latency [69.6% Reduction]**: Step calculation latency dropped from 1,462 ms down to **445 ms per step**, processing each batch update in a fraction of the time.
-* **Loss Convergence Rate [~42% Fewer Steps Needed]**: Powered by the Muon matrix optimizer, AxiomLM learns language patterns and reaches target intelligence in **almost half the training iterations** compared to standard AdamW.
-* **Inference Memory Footprint [66.7% Memory Reduction]**: Grouped-Query Attention (GQA) slashes memory consumption by **two-thirds**, freeing up crucial unified memory on Mac devices.
-* **Hardware Compute Saturation [3.28x Hardware Efficiency]**: Compute utilization jumps from 20.9% to **68.7% MFU (6.87 TFLOPs)**, fully maxing out the physical chip instead of idling while waiting for memory transfers.
-* **Flat Constant Latency [O(1) Steady ~6.0 ms / token]**: Word generation latency stays completely flat at **~6.0 ms per token** from token 1 to token 1024, eliminating the quadratic slowdown of the baseline GPT-2 model.
+* **Inference Generation Speed [27.5x Speedup]**
+* **Pretraining Throughput [3.29x Faster Training]**
+* **Optimization Step Latency [69.6% Reduction]**
+* **Loss Convergence Rate [~42% Fewer Steps Needed]**
+* **Inference Memory Footprint [66.7% Memory Reduction]**
+* **Hardware Compute Saturation [3.28x Hardware Efficiency]**
+* **Flat Constant Latency [O(1) Steady ~6.0 ms / token]**
 
 ---
 
