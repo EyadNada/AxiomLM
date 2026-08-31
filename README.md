@@ -225,7 +225,17 @@ python brain/generate.py --checkpoint checkpoints/model_latest.pt --prompt "Once
 python brain/generate.py --pretrained gpt2 --prompt "The theory of relativity states that"
 ```
 
-### 5. Generation Speed Benchmarking
+### 5. Minimalist Interactive Web Interface
+
+Launch the clean, low-latency browser interface with live token streaming and hardware telemetry:
+
+```bash
+python app.py
+```
+
+Access the interface locally at `http://localhost:7860` to configure architecture modes, adjust sampling hyper-parameters, and benchmark live KV-cache acceleration.
+
+### 6. Generation Speed Benchmarking
 
 Benchmark the $O(1)$ KV-Cache engine against naive $O(T^2)$ eager decoding:
 
@@ -233,7 +243,7 @@ Benchmark the $O(1)$ KV-Cache engine against naive $O(T^2)$ eager decoding:
 python brain/train_gpt2.py --benchmark
 ```
 
-### 6. Interactive Visual Analysis Notebook
+### 7. Interactive Visual Analysis Notebook
 
 Open the interactive benchmark notebook to inspect all metrics, loss curves, and hardware traces:
 
@@ -301,6 +311,7 @@ python tests/test_kernels.py
 │   └── test_kernels.py           # Custom low-level kernel & gradcheck test suite (8 tests)
 ├── pyproject.toml                # Standard PEP 517/621 package build configuration
 ├── requirements.txt              # Minimal environment dependencies
+├── app.py                        # Minimalist interactive web interface & streaming telemetry
 ├── CITATION.cff                  # Citation metadata for academic and research attribution
 ├── CONTRIBUTING.md               # Contribution guidelines and development workflow
 ├── LICENSE                       # MIT Open Source License
