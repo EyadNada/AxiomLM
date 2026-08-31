@@ -77,7 +77,8 @@ If you are exploring the codebase or mastering transformer systems engineering, 
 * **[Key-Value (KV) Cache Inference Engine](./kv_cache_inference_engine_guide.md)**: Prefill vs. decode phase state maintenance, memory footprint formulas, and latency benchmarks.
 * **[Generation & Sampling Strategies](./generation_and_sampling_strategies.md)**: Greedy decoding, temperature scaling, Top-$k$ truncation, and Top-$p$ (Nucleus) sampling dynamics.
 * **[TikToken & Byte-Pair Encoding (BPE)](./tiktokenizer_guide.md)**: Byte-level vocabulary construction, regex splitting rules, and tokenizing without out-of-vocabulary artifacts.
-* **[WebText vs. Modern Pretraining Datasets](./datasets_webtext_gpt2_vs_gpt3_guide.md)**: Evolution from WebText to FineWeb, RedPajama, and synthetic textbook corpora like TinyStories.
+* **[WebText vs. Modern Systems Datasets](./datasets_webtext_gpt2_vs_gpt3_guide.md)**: Evolution from WebText to FineWeb, RedPajama, Python-Edu, and multi-shard GPU kernel corpora.
+* **[AxiomLM Technical Report & Whitepaper](../AxiomLM_Technical_Report.md)**: Formal mathematical formulations, polar Newton-Schulz spectral proofs, and Roofline analysis.
 
 ---
 

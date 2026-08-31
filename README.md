@@ -179,77 +179,60 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Dataset Ingestion & Sharding
+### 2. Dataset Ingestion & Multi-Shard Systems Builder
 
-Download and shard the TinyStories dataset into compact, memory-mappable binary `uint16` arrays:
+Generate multi-shard binary uint16 datasets containing OpenAI Triton GPU kernels, Apple ARM NEON SIMD, FlashAttention, and Python-Edu streaming code intelligence:
 
 ```bash
-python data/tinystories.py --target_tokens 20000000 --val_ratio 0.05
+# 1. Build Multi-Shard Systems & Kernel Dataset (e.g. 15M, 50M, or 100M+ tokens)
+python data/build_systems_dataset.py --target_tokens 15000000 --shard_size 5000000 --output_dir data/systems_shards
 ```
 
 ### 3. Pretraining & Profiling Engine
 
-Train the model with auto-detected hardware backend (`mps`, `cuda`, or `cpu`), real-time MFU % logging, and optimizer choice (`adamw` or `muon`):
+Train the model with auto-detected hardware backend (`mps`, `cuda`, or `cpu`), real-time MFU % logging, automatic step-completion checkpointing, and optimizer choice (`muon` or `adamw`):
 
 ```bash
-# 1. Pretrain Modern Architecture with Next-Gen Muon Matrix Optimizer
-python brain/train_gpt2.py --arch modern --optimizer muon --muon_lr 0.02 --max_steps 4800
+# 1. 1-Click Launch (Modern LLaMA-3 + Muon Optimizer + Auto-Save every 25 steps)
+./train.sh
 
-# 2. Pretrain Modern Architecture with Standard AdamW Baseline
-python brain/train_gpt2.py --arch modern --optimizer adamw --max_steps 4800
+# 2. Or Run Directly via Python
+python brain/train_gpt2.py --arch modern --optimizer muon --data_dir data/systems_shards --batch_size 16384 --save_interval 25 --resume checkpoints/model_latest.pt
 
 # 3. Pretrain with Activation Gradient Checkpointing (for low VRAM systems)
 python brain/train_gpt2.py --arch modern --optimizer muon --grad_checkpoint
 
 # 4. Run PyTorch Profiler and Export Chrome / Perfetto Trace
 python brain/train_gpt2.py --profile
-
-# 5. Resume Training from Latest Checkpoint (or Graceful Ctrl+C Snapshot)
-python brain/train_gpt2.py --resume checkpoints/model_latest.pt
 ```
 
-> **Note:** Pressing `Ctrl+C` during training triggers an immediate graceful snapshot capture (weights, optimizer momentum buffers, step counter, and dataset offset) saved to `checkpoints/model_latest.pt`, allowing seamless resumption with `--resume`.
+> **Note:** Checkpoints automatically save to `checkpoints/model_latest.pt` every 25 steps and immediately upon pressing `Ctrl+C`, with automatic historical pruning (`max_step_ckpts=2`) to keep disk space clean.
 
-### 4. Interactive Text Generation CLI
+### 4. Automated Hugging Face Safetensors Exporter
 
-Run real-time autoregressive text generation with token streaming, latency metrics, and advanced sampling:
+Convert raw checkpoints into standard zero-copy Hugging Face format (`model.safetensors`, `config.json`, `generation_config.json`, `tokenizer_config.json`, and model card):
 
 ```bash
-# 1. Interactive Console (REPL) from trained checkpoint
-python brain/generate.py --checkpoint checkpoints/model_latest.pt
-
-# 2. Single Prompt Generation with Top-p and Min-p Sampling
-python brain/generate.py --checkpoint checkpoints/model_latest.pt --prompt "Once upon a time," --temperature 0.8 --top_p 0.9 --min_p 0.05
-
-# 3. Test Official Pretrained Hugging Face GPT-2 Weights
-python brain/generate.py --pretrained gpt2 --prompt "The theory of relativity states that"
+python brain/export_hf.py --checkpoint checkpoints/model_latest.pt --output_dir exports/AxiomLM-124M
 ```
 
-### 5. Minimalist Interactive Web Interface
+### 5. Interactive Web Interface & GPU Cloud Cost Calculator
 
-Launch the clean, low-latency browser interface with live token streaming and hardware telemetry:
+Launch the clean, low-latency browser interface featuring interactive generation, the live KV-Cache speed duel, and the GPU Cloud Cost Optimizer:
 
 ```bash
 python app.py
 ```
 
-Access the interface locally at `http://localhost:7860` to configure architecture modes, adjust sampling hyper-parameters, and benchmark live KV-cache acceleration.
+Access the interface locally at `http://127.0.0.1:7860` to:
+* **Tab 1 (Interactive Studio)**: Live token streaming with probability inspection and sampling controls.
+* **Tab 2 (Execution Duel)**: Real-time race between $O(1)$ KV-Cache and $O(T^2)$ Naive Eager decoding.
+* **Tab 3 (GPU & Cost Optimizer)**: Synthesize production-grade OpenAI Triton kernels and compute enterprise GPU fleet dollar savings.
 
-### 6. Generation Speed Benchmarking
+### 6. Technical Report & Architectural Whitepaper
 
-Benchmark the $O(1)$ KV-Cache engine against naive $O(T^2)$ eager decoding:
-
-```bash
-python brain/train_gpt2.py --benchmark
-```
-
-### 7. Interactive Visual Analysis Notebook
-
-Open the interactive benchmark notebook to inspect all metrics, loss curves, and hardware traces:
-
-```bash
-jupyter notebook brain/performance_metrics.ipynb
-```
+Read the formal mathematical and systems whitepaper:
+* **[AxiomLM_Technical_Report.md](AxiomLM_Technical_Report.md)**: RoPE orthogonal invariance, RMSNorm invariant scaling, SwiGLU gating, GQA memory compression, 5-step Newton-Schulz Polar Matrix Orthogonalization, and Roofline arithmetic intensity analysis.
 
 ---
 
@@ -271,10 +254,10 @@ kernels/
 
 ## Automated Verification & Test Suite
 
-Run the full automated test suite (33 unit and integration tests):
+Run the full automated test suite (39 unit and native kernel tests):
 
 ```bash
-# Run core architecture, optimizer, KV-cache, sampling, and data loader tests (25 tests)
+# Run core architecture, optimizer, KV-cache, sampling, safetensors, and data loader tests (31 tests)
 python tests/test_all.py
 
 # Run custom low-level SIMD, Metal, and Triton kernel tests (8 tests)
@@ -290,6 +273,7 @@ python tests/test_kernels.py
 ├── assets/                       # 13 publication-grade benchmark plots and architectural charts
 ├── brain/
 │   ├── train_gpt2.py             # Core model, data loader, Muon/AdamW optimizers, MFU tracker, training loop
+│   ├── export_hf.py              # Automated zero-copy Hugging Face .safetensors & config exporter
 │   ├── generate.py               # Interactive text generation CLI and token streaming engine
 │   ├── generate_new_metrics.py   # Systems roofline, spectral singular value, and KV scaling generator
 │   └── performance_metrics.ipynb # Interactive metrics notebook with systems benchmarks
@@ -301,17 +285,19 @@ python tests/test_kernels.py
 │   ├── build_kernels.py           # JIT/extension compilation harness
 │   └── benchmark_kernels.py       # Microbenchmark test harness
 ├── data/
-│   ├── tinystories.py            # Streaming tokenizer and binary sharder
-│   ├── train.bin                 # 19M token uint16 training binary shard
-│   └── val.bin                   # 1M token uint16 validation binary shard
-├── checkpoints/                  # Model weight snapshots (.pt)
+│   ├── build_systems_dataset.py  # Multi-shard GPU kernel, systems ML, and code intelligence builder
+│   └── systems_shards/           # Multi-shard uint16 binary dataset shards (train_*.bin, val_*.bin)
+├── checkpoints/                  # Model weight snapshots (model_latest.pt)
+├── exports/                      # Exported Hugging Face safetensors, configs, and tokenizer mappings
 ├── material/                     # 27 mathematical derivations, guides, and foundational papers
-├── tests/                        # Automated unit and integration test suite (33 tests)
-│   ├── test_all.py               # Full integration & architecture test suite (25 tests)
+├── tests/                        # Automated unit and integration test suite (39 tests)
+│   ├── test_all.py               # Full integration & architecture test suite (31 tests)
 │   └── test_kernels.py           # Custom low-level kernel & gradcheck test suite (8 tests)
+├── train.sh                      # 1-Click execution script with auto-resumption and step auto-save
+├── app.py                        # Minimalist interactive web interface, KV duel & GPU cost optimizer
+├── AxiomLM_Technical_Report.md   # Official mathematical whitepaper and systems technical report
 ├── pyproject.toml                # Standard PEP 517/621 package build configuration
 ├── requirements.txt              # Minimal environment dependencies
-├── app.py                        # Minimalist interactive web interface & streaming telemetry
 ├── CITATION.cff                  # Citation metadata for academic and research attribution
 ├── CONTRIBUTING.md               # Contribution guidelines and development workflow
 ├── LICENSE                       # MIT Open Source License
