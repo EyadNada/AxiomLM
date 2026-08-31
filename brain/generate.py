@@ -38,6 +38,23 @@ def load_model(
 
     if checkpoint_path and os.path.isfile(checkpoint_path):
         print(f"[AxiomLM] Loading model checkpoint from: {checkpoint_path}")
+        if checkpoint_path.endswith(".safetensors"):
+            from safetensors.torch import load_file
+            weights = load_file(checkpoint_path)
+            config = GPTConfig(
+                n_kv_head=4 if arch == "modern" else None,
+                norm_type="rmsnorm" if arch == "modern" else "layernorm",
+                pos_emb="rope" if arch == "modern" else "learned",
+                mlp_type="swiglu" if arch == "modern" else "gelu",
+                bias=False if arch == "modern" else True,
+            )
+            model = GPT(config)
+            model.load_state_dict(weights)
+            model.to(device)
+            model.eval()
+            print(f"[AxiomLM] Successfully restored safetensors model")
+            return model, config
+
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         if "config" in checkpoint:
             config = checkpoint["config"]

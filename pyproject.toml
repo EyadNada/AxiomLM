@@ -49,9 +49,8 @@ dependencies = [
     "datasets>=2.14.0",
     "matplotlib>=3.7.0",
     "gradio>=5.0.0,<6.0.0",
+    "safetensors>=0.4.0",
 ]
-
-
 
 [project.optional-dependencies]
 dev = [
@@ -66,6 +65,7 @@ notebook = [
 [project.scripts]
 axiom-train = "brain.train_gpt2:main"
 axiom-generate = "brain.generate:main"
+axiom-export = "brain.export_hf:main"
 
 [project.urls]
 Homepage = "https://github.com/EyadNada/AxiomLM"
