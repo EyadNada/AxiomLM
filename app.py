@@ -596,8 +596,8 @@ def build_app():
                                 )
                                 max_tok_slider = gr.Slider(
                                     minimum=10,
-                                    maximum=500,
-                                    value=100,
+                                    maximum=1024,
+                                    value=150,
                                     step=10,
                                     label="Max New Tokens",
                                 )
@@ -758,8 +758,8 @@ def build_app():
                     )
                     bm_tokens_slider = gr.Slider(
                         minimum=20,
-                        maximum=200,
-                        value=80,
+                        maximum=1024,
+                        value=120,
                         step=10,
                         label="Tokens to Decode",
                         scale=2,
