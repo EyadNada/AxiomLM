@@ -1041,7 +1041,7 @@ def train(
     total_batch_size: int = 4096,
     eval_interval: int = 50,
     sample_interval: int = 200,
-    save_interval: int = 200,
+    save_interval: int = 25,
     architecture: str = "classic",
     optimizer_type: str = "adamw",
     muon_lr: float = 0.02,
@@ -1255,19 +1255,7 @@ def train(
                     print(f"  [{idx}] {s}")
                 print("-" * 50, flush=True)
 
-            # 3. Model Checkpointing
-            if not profile and master_process and ((save_interval > 0 and step % save_interval == 0 and step > 0) or last_step):
-                latest_p, step_p = save_checkpoint(
-                    step=step,
-                    model=model,
-                    optimizers=optimizers,
-                    optimizer_type=optimizer_type,
-                    checkpoint_dir=checkpoint_dir,
-                    keep_step_ckpt=True,
-                )
-                print(f"[Axiom-LM] Saved checkpoint to {latest_p}" + (f" (archived {os.path.basename(step_p)})" if step_p else ""), flush=True)
-
-            # 4. Forward / Backward with Micro-Batching (Zero MPS Sync during accumulation)
+            # 3. Forward / Backward with Micro-Batching (Zero MPS Sync during accumulation)
             model.train()
             for opt in optimizers:
                 opt.zero_grad()
@@ -1302,6 +1290,8 @@ def train(
             for opt in optimizers:
                 opt.step()
 
+            completed_step = step + 1
+
             if device == "cuda":
                 torch.cuda.synchronize()
             elif device == "mps":
@@ -1326,11 +1316,25 @@ def train(
                     f"step {step:4d}/{max_steps} | loss: {loss_val:.6f} | {lr_str} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f} | MFU: {mfu_pct:.1f}% ({achieved_tflops:.2f} TF)",
                     flush=True,
                 )
-    except KeyboardInterrupt:
+
+            # 4. Model Checkpointing (Saved immediately upon completing step)
+            if not profile and master_process and ((save_interval > 0 and completed_step % save_interval == 0) or last_step):
+                latest_p, step_p = save_checkpoint(
+                    step=completed_step,
+                    model=model,
+                    optimizers=optimizers,
+                    optimizer_type=optimizer_type,
+                    checkpoint_dir=checkpoint_dir,
+                    keep_step_ckpt=True,
+                )
+                print(f"[Axiom-LM] Saved checkpoint to {latest_p} (step {completed_step})" + (f" (archived {os.path.basename(step_p)})" if step_p else ""), flush=True)
+
+    except (KeyboardInterrupt, SystemExit):
         if master_process:
-            print(f"\n[Axiom-LM] KeyboardInterrupt caught! Gracefully saving pause snapshot at step {current_step}...")
+            last_done = current_step + 1 if 'loss_val' in locals() else current_step
+            print(f"\n[Axiom-LM] Training paused/interrupted! Saving exact completed state at step {last_done}...")
             latest_p, step_p = save_checkpoint(
-                step=current_step,
+                step=last_done,
                 model=model,
                 optimizers=optimizers,
                 optimizer_type=optimizer_type,
@@ -1338,7 +1342,7 @@ def train(
                 is_pause=True,
                 keep_step_ckpt=True,
             )
-            print(f"[Axiom-LM] Successfully saved pause state to {latest_p}. Resume anytime with '--resume'.", flush=True)
+            print(f"[Axiom-LM] Successfully saved checkpoint to {latest_p} (Step: {last_done}). Resume anytime with '--resume'.", flush=True)
         if prof_ctx is not None:
             prof_ctx.__exit__(None, None, None)
         if ddp:
@@ -1364,7 +1368,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=4096, help="Total tokens per optimization step")
     parser.add_argument("--eval_interval", type=int, default=50, help="Validation evaluation step interval")
     parser.add_argument("--sample_interval", type=int, default=200, help="Live story sampling step interval")
-    parser.add_argument("--save_interval", type=int, default=200, help="Model checkpoint step interval")
+    parser.add_argument("--save_interval", type=int, default=25, help="Model checkpoint step interval (default: 25)")
     parser.add_argument("--resume", nargs="?", const="checkpoints/model_latest.pt", default=None, help="Resume training from checkpoint file path (defaults to checkpoints/model_latest.pt if flag provided without path)")
     parser.add_argument("--benchmark", action="store_true", help="Run KV-cache vs Naive generation speed benchmark")
     parser.add_argument("--profile", action="store_true", help="Enable PyTorch profiler and export Chrome trace to log/profiler_trace")
