@@ -664,6 +664,19 @@ class TestWebInterfaceAndApp(unittest.TestCase):
         self.assertIn("KV-Cache", md)
         self.assertIn("Faster", md)
 
+    def test_app_cloud_savings_calculator(self):
+        """Verify calculate_cloud_savings generates valid triton kernel, math notes, and cost markdown table."""
+        import app
+        triton_code, math_md, cost_md = app.calculate_cloud_savings(
+            num_gpus=64,
+            gpu_cost_hr=3.20,
+            operator_name="Fused RMSNorm (Root Mean Square Normalization)",
+        )
+        self.assertIn("@triton.jit", triton_code)
+        self.assertIn("RMSNorm", math_md)
+        self.assertIn("Enterprise Savings", cost_md)
+        self.assertIn("Monthly Cloud Bill", cost_md)
+
 
 class TestHuggingFaceExport(unittest.TestCase):
     """Unit tests for Hugging Face .safetensors model export and metadata generation."""
