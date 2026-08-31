@@ -403,6 +403,33 @@ class TestDataLoaderAndShards(unittest.TestCase):
         expected_pos = 10 * (B * T * 2)
         self.assertEqual(loader.current_position, expected_pos)
 
+    def test_multishard_streaming_and_rotation(self):
+        """Verify multi-shard dynamic rotation and cross-shard step synchronization."""
+        import tempfile
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create two synthetic binary shards of 500 tokens each
+            s1 = np.arange(0, 500, dtype=np.uint16)
+            s2 = np.arange(500, 1000, dtype=np.uint16)
+            s1.tofile(os.path.join(tmpdir, "train_0000.bin"))
+            s2.tofile(os.path.join(tmpdir, "train_0001.bin"))
+
+            B, T = 2, 8
+            loader = DataLoaderLite(B=B, T=T, split="train", data_dir=tmpdir)
+            self.assertEqual(len(loader.shards), 2)
+            self.assertEqual(loader.total_tokens, 1000)
+
+            # Draw batches across shard boundary
+            batches = [loader.next_batch() for _ in range(40)]
+            self.assertEqual(len(batches), 40)
+
+            # Test cross-shard set_step synchronization into shard 1
+            loader.set_step(step=40, grad_accum_steps=1)
+            # Step 40 with B=2, T=8 is offset 640 -> Shard 1 at local offset 140
+            self.assertEqual(loader.current_shard_idx, 1)
+            self.assertEqual(loader.current_position, 140)
+
 
 class TestCheckpointingAndResumption(unittest.TestCase):
     """Unit tests for saving and restoring training state dictionaries."""

@@ -557,55 +557,128 @@ class Muon(torch.optim.Optimizer):
 # -----------------------------------------------------------------------------
 
 class DataLoaderLite:
-    def __init__(self, B, T, process_rank=0, num_processes=1, split="train"):
+    """
+    High-Performance Multi-Shard Streaming Data Loader.
+    Supports single-shard and multi-shard binary uint16 datasets with zero-copy np.memmap,
+    deterministic step synchronization across shard boundaries, and multi-GPU DDP rank splitting.
+    """
+    def __init__(self, B: int, T: int, process_rank: int = 0, num_processes: int = 1, split: str = "train", data_dir: str = "data"):
         self.B = B
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
         self.split = split
+        self.data_dir = data_dir
         assert split in {"train", "val"}, "split must be 'train' or 'val'"
 
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        shard_path = os.path.join(project_root, "data", f"{split}.bin")
-        if os.path.exists(shard_path):
-            self.tokens = np.memmap(shard_path, dtype=np.uint16, mode='r')
-            print(f"[DataLoaderLite] Loaded {split} shard from {shard_path} ({len(self.tokens):,} tokens)")
+        abs_data_dir = data_dir if os.path.isabs(data_dir) else os.path.join(project_root, data_dir)
+
+        # Discover binary shards: check multi-shard pattern first (e.g. train_0000.bin), then single shard (train.bin)
+        import glob
+        shards = sorted(glob.glob(os.path.join(abs_data_dir, f"{split}_*.bin")))
+        if not shards:
+            single_path = os.path.join(abs_data_dir, f"{split}.bin")
+            if os.path.exists(single_path):
+                shards = [single_path]
+
+        self.shards = shards
+        self.is_fallback = False
+
+        if self.shards:
+            self.shard_lengths = []
+            for s_path in self.shards:
+                m = np.memmap(s_path, dtype=np.uint16, mode='r')
+                self.shard_lengths.append(len(m))
+            self.total_tokens = sum(self.shard_lengths)
+            print(f"[DataLoaderLite] Loaded {split} ({len(self.shards)} shard{'s' if len(self.shards) > 1 else ''}) from {abs_data_dir} ({self.total_tokens:,} tokens total)")
         else:
             input_path = os.path.join(project_root, "material", "input.txt")
             if not os.path.exists(input_path):
                 input_path = "input.txt"
-            with open(input_path, "r") as f:
+            with open(input_path, "r", encoding="utf-8") as f:
                 text = f.read()
             enc = tiktoken.get_encoding("gpt2")
             self.tokens = np.array(enc.encode(text), dtype=np.uint16)
-            print(f"[DataLoaderLite] Loaded fallback text with {len(self.tokens):,} tokens")
+            self.total_tokens = len(self.tokens)
+            self.shards = []
+            self.shard_lengths = [self.total_tokens]
+            self.is_fallback = True
+            print(f"[DataLoaderLite] Loaded fallback text with {self.total_tokens:,} tokens")
 
-        print(f"[DataLoaderLite] 1 epoch = {len(self.tokens) // (B * T * num_processes)} batches")
+        print(f"[DataLoaderLite] 1 epoch = {self.total_tokens // (B * T * num_processes)} batches")
+        self.current_shard_idx = 0
+        self._load_shard(0)
         self.reset()
 
+    def _load_shard(self, shard_idx: int):
+        """Loads and memory-maps a specific shard index."""
+        if self.is_fallback:
+            return
+        self.current_shard_idx = shard_idx % len(self.shards)
+        shard_path = self.shards[self.current_shard_idx]
+        self.tokens = np.memmap(shard_path, dtype=np.uint16, mode='r')
+
     def reset(self):
+        """Resets loader position to beginning of first shard."""
+        self.current_shard_idx = 0
+        self._load_shard(0)
         self.current_position = self.B * self.T * self.process_rank
 
     def set_step(self, step: int, grad_accum_steps: int = 1):
-        """Fast-forwards data loader position to match resumed training step."""
+        """Fast-forwards data loader position across shard boundaries to match resumed training step."""
         tokens_per_step = self.B * self.T * self.num_processes * grad_accum_steps
-        total_tokens = len(self.tokens)
-        max_valid_pos = total_tokens - (self.B * self.T * self.num_processes + 1)
-        if max_valid_pos > 0:
-            self.current_position = (step * tokens_per_step + self.B * self.T * self.process_rank) % max_valid_pos
-        else:
+        if self.total_tokens == 0:
             self.reset()
+            return
+
+        global_token_offset = (step * tokens_per_step + self.B * self.T * self.process_rank) % self.total_tokens
+
+        if self.is_fallback or len(self.shards) <= 1:
+            max_valid_pos = self.total_tokens - (self.B * self.T * self.num_processes + 1)
+            if max_valid_pos > 0:
+                self.current_position = global_token_offset % max_valid_pos
+            else:
+                self.reset()
+            return
+
+        # Find shard index and local offset within that shard
+        accum_tokens = 0
+        for idx, s_len in enumerate(self.shard_lengths):
+            if accum_tokens + s_len > global_token_offset:
+                self._load_shard(idx)
+                local_offset = global_token_offset - accum_tokens
+                max_shard_pos = s_len - (self.B * self.T * self.num_processes + 1)
+                self.current_position = min(local_offset, max(0, max_shard_pos))
+                return
+            accum_tokens += s_len
+
+        self.reset()
 
     def next_batch(self):
+        """Yields next (B, T) batch of input x and target y shifted by 1 token."""
         B, T = self.B, self.T
+        req_len = B * T * self.num_processes + 1
+
+        # Rotate to next shard if current shard cannot supply a full batch
+        if self.current_position + req_len > len(self.tokens):
+            if not self.is_fallback and len(self.shards) > 1:
+                next_shard = (self.current_shard_idx + 1) % len(self.shards)
+                self._load_shard(next_shard)
+            self.current_position = self.B * self.T * self.process_rank
+
         buf = self.tokens[self.current_position : self.current_position + B * T + 1]
         buf_torch = torch.from_numpy(buf.astype(np.int64))
         x = buf_torch[:-1].view(B, T)
         y = buf_torch[1:].view(B, T)
         self.current_position += B * T * self.num_processes
 
-        if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
-            self.reset()
+        if self.current_position + req_len > len(self.tokens):
+            if not self.is_fallback and len(self.shards) > 1:
+                next_shard = (self.current_shard_idx + 1) % len(self.shards)
+                self._load_shard(next_shard)
+            self.current_position = self.B * self.T * self.process_rank
+
         return x, y
 
 
@@ -977,6 +1050,7 @@ def train(
     use_custom_kernels: bool = False,
     grad_checkpoint: bool = False,
     svd_monitor: bool = False,
+    data_dir: str = "data",
 ):
     # Distributed setup & device detection
     ddp = int(os.environ.get('RANK', -1)) != -1
@@ -1021,9 +1095,9 @@ def train(
     if master_process:
         print(f"[Axiom-LM] Architecture: {architecture.upper()} | Optimizer: {optimizer_type.upper()} | Batch config: Total={total_batch_size:,} tok | Micro-B={B} | T={T} | GradAccum={grad_accum_steps}")
 
-    # Initialize data loaders
-    train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train")
-    val_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="val")
+    # Initialize data loaders with multi-shard support
+    train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="train", data_dir=data_dir)
+    val_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="val", data_dir=data_dir)
 
     # Checkpoint output directory
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1296,6 +1370,7 @@ def main():
     parser.add_argument("--profile", action="store_true", help="Enable PyTorch profiler and export Chrome trace to log/profiler_trace")
     parser.add_argument("--use_custom_kernels", action="store_true", help="Enable custom low-level fused GPU & ARM NEON SIMD kernels")
     parser.add_argument("--grad_checkpoint", action="store_true", help="Enable activation gradient checkpointing for 60-70%% memory reduction")
+    parser.add_argument("--data_dir", type=str, default="data", help="Directory containing binary dataset shards (default: 'data')")
     args = parser.parse_args()
 
     if args.benchmark:
@@ -1332,6 +1407,7 @@ def main():
             profile=args.profile,
             use_custom_kernels=args.use_custom_kernels,
             grad_checkpoint=args.grad_checkpoint,
+            data_dir=args.data_dir,
         )
 
 
