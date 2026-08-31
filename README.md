@@ -1,5 +1,11 @@
 # AxiomLM (124M)
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-EE4C2C.svg)](https://pytorch.org/)
+[![CI](https://github.com/EyadNada/GPT-2.0-124M/actions/workflows/ci.yml/badge.svg)](https://github.com/EyadNada/GPT-2.0-124M/actions)
+[![Hardware](https://img.shields.io/badge/Hardware-Apple%20Silicon%20%7C%20CUDA-black.svg)]()
+
 A high-performance pretraining engine and modern architectural overhaul of OpenAI's original GPT-2 (124M) in pure PyTorch, optimized from first principles for Apple Silicon (Metal / MPS / ARM NEON) and NVIDIA CUDA.
 
 ---
@@ -270,6 +276,7 @@ python tests/test_kernels.py
 ## Repository Structure
 
 ```text
+├── .github/                      # GitHub Actions CI workflow and issue templates
 ├── assets/                       # 13 publication-grade benchmark plots and architectural charts
 ├── brain/
 │   ├── train_gpt2.py             # Core model, data loader, Muon/AdamW optimizers, MFU tracker, training loop
@@ -288,16 +295,43 @@ python tests/test_kernels.py
 │   ├── train.bin                 # 19M token uint16 training binary shard
 │   └── val.bin                   # 1M token uint16 validation binary shard
 ├── checkpoints/                  # Model weight snapshots (.pt)
-├── material/                     # Mathematical derivations, guides, and foundational reference papers
-├── tests/                        # Automated unit and integration test suite
+├── material/                     # 27 mathematical derivations, guides, and foundational papers
+├── tests/                        # Automated unit and integration test suite (33 tests)
 │   ├── test_all.py               # Full integration & architecture test suite (25 tests)
 │   └── test_kernels.py           # Custom low-level kernel & gradcheck test suite (8 tests)
+├── pyproject.toml                # Standard PEP 517/621 package build configuration
 ├── requirements.txt              # Minimal environment dependencies
+├── CITATION.cff                  # Citation metadata for academic and research attribution
+├── CONTRIBUTING.md               # Contribution guidelines and development workflow
+├── LICENSE                       # MIT Open Source License
 └── README.md
+```
+
+---
+
+## Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on setting up the development environment, running unit tests, and submitting pull requests.
+
+---
+
+## Citation
+
+If you find AxiomLM or its benchmarks useful in your research or educational projects, please cite it using the following BibTeX:
+
+```bibtex
+@software{nada2026axiomlm,
+  author       = {Eyad Nada},
+  title        = {AxiomLM: High-Performance Pretraining Engine and Modern Architectural Overhaul of GPT-2 (124M)},
+  year         = {2026},
+  publisher    = {GitHub},
+  journal      = {GitHub repository},
+  howpublished = {\url{https://github.com/EyadNada/GPT-2.0-124M}}
+}
 ```
 
 ---
 
 ## License
 
-MIT License.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
