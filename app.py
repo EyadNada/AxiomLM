@@ -1,7 +1,7 @@
 """
 AxiomLM Minimalist Interactive Web Interface & Systems Benchmark Engine.
-Industrial-grade, clean, low-latency generation with real-time probability inspection
-and live streaming KV-Cache vs Naive Eager latency comparison.
+Industrial-grade, clean, low-latency generation with expanded real-time telemetry console,
+multi-candidate probability inspector, and live streaming duel benchmark.
 """
 
 import os
@@ -41,7 +41,7 @@ else:
 
 ENCODER = tiktoken.get_encoding("gpt2")
 
-# Model cache: key -> model
+# Model cache: key -> (model, config)
 _MODEL_CACHE = {}
 
 
@@ -64,8 +64,19 @@ def get_or_load_model(source_type: str, checkpoint_path: str, arch: str) -> Tupl
     return model, config
 
 
+def format_prob_inspector(logits_last: torch.Tensor, temp_scale: float) -> str:
+    """Formats top-5 candidate tokens into a clean multi-line probability view."""
+    probs = F.softmax(logits_last / temp_scale, dim=-1)
+    top_probs, top_indices = torch.topk(probs[0], k=5)
+    candidates = [
+        f"#{i+1}: {repr(ENCODER.decode([idx.item()]).replace(chr(10), '↵')):<14} ({p.item()*100.0:5.1f}%)"
+        for i, (p, idx) in enumerate(zip(top_probs, top_indices))
+    ]
+    return f"Rank 1-2:  {candidates[0]}  |  {candidates[1]}\nRank 3-5:  {candidates[2]}  |  {candidates[3]}  |  {candidates[4]}"
+
+
 # -----------------------------------------------------------------------------
-# 1. Interactive Streaming Generation with Live Probability Telemetry
+# 1. Interactive Streaming Generation with Expanded Live Telemetry Console
 # -----------------------------------------------------------------------------
 def stream_inference(
     prompt: str,
@@ -82,11 +93,11 @@ def stream_inference(
     pace_stream: bool,
 ) -> Generator[Tuple[str, str, str], None, None]:
     """
-    Generates autoregressive tokens and streams output with live latency telemetry
+    Generates autoregressive tokens and streams output with live multi-metric telemetry
     and next-token top-5 candidate probability distributions.
     """
     if not prompt or not prompt.strip():
-        yield "", "Ready", "Error: Prompt cannot be empty."
+        yield "", "Top Candidates:\n  Waiting for input...", "Error: Prompt cannot be empty."
         return
 
     checkpoint_target = custom_checkpoint if custom_checkpoint.strip() else "checkpoints/model_latest.pt"
@@ -105,11 +116,13 @@ def stream_inference(
     full_text = prompt
     tokens_generated = 0
     t_start = time.perf_counter()
+    engine_name = "KV-Cache O(1)" if use_kv_cache else "Naive Eager O(T^2)"
 
     k_val = int(top_k) if top_k > 0 else None
     p_val = float(top_p) if top_p < 1.0 else None
     min_p_val = float(min_p) if min_p > 0.0 else None
     rep_val = float(repetition_penalty) if repetition_penalty > 1.0 else None
+    temp_scale = max(temperature, 1e-5)
 
     # Prefill Phase
     with torch.no_grad():
@@ -117,15 +130,7 @@ def stream_inference(
             kv_caches = [None] * config.n_layer
             logits, _, kv_caches = model(x, kv_caches=kv_caches)
 
-            # Compute top-5 candidate probabilities for inspector
-            temp_scale = max(temperature, 1e-5)
-            probs = F.softmax(logits[:, -1, :] / temp_scale, dim=-1)
-            top_probs, top_indices = torch.topk(probs[0], k=5)
-            prob_candidates = [
-                f"{repr(ENCODER.decode([idx.item()]).replace(chr(10), '↵'))}: {p.item()*100.0:4.1f}%"
-                for p, idx in zip(top_probs, top_indices)
-            ]
-            prob_str = "  |  ".join(prob_candidates)
+            prob_str = format_prob_inspector(logits[:, -1, :], temp_scale)
 
             next_token = sample_logits(
                 logits[:, -1, :],
@@ -145,11 +150,11 @@ def stream_inference(
             dt = t_now - t_start
             throughput = tokens_generated / dt if dt > 0 else 0.0
             latency = (dt / tokens_generated) * 1000.0 if tokens_generated > 0 else 0.0
+            progress_pct = (tokens_generated / max_tokens) * 100.0
             telemetry = (
-                f"Generated: {tokens_generated:3d} tokens | "
-                f"Step Latency: {latency:5.1f} ms/token | "
-                f"Throughput: {throughput:5.1f} tokens/s | "
-                f"Engine: KV-Cache O(1)"
+                f"• Decoded Tokens:   {tokens_generated:3d} / {max_tokens} ({progress_pct:4.1f}%)   |  Step Latency: {latency:5.1f} ms/token\n"
+                f"• Generation Speed: {throughput:5.1f} tokens/second     |  Elapsed Time: {dt:5.2f} seconds\n"
+                f"• Execution Engine: {engine_name:<20}  |  Compute Device: {DEVICE_NAME}"
             )
             yield full_text, prob_str, telemetry
 
@@ -159,15 +164,7 @@ def stream_inference(
             # Decode Phase (O(1) sequential steps)
             while tokens_generated < max_tokens:
                 logits, _, kv_caches = model(next_token, kv_caches=kv_caches)
-
-                # Compute top-5 probabilities
-                probs = F.softmax(logits[:, -1, :] / temp_scale, dim=-1)
-                top_probs, top_indices = torch.topk(probs[0], k=5)
-                prob_candidates = [
-                    f"{repr(ENCODER.decode([idx.item()]).replace(chr(10), '↵'))}: {p.item()*100.0:4.1f}%"
-                    for p, idx in zip(top_probs, top_indices)
-                ]
-                prob_str = "  |  ".join(prob_candidates)
+                prob_str = format_prob_inspector(logits[:, -1, :], temp_scale)
 
                 next_token = sample_logits(
                     logits[:, -1, :],
@@ -187,11 +184,11 @@ def stream_inference(
                 dt = t_now - t_start
                 throughput = tokens_generated / dt if dt > 0 else 0.0
                 latency = (dt / tokens_generated) * 1000.0 if tokens_generated > 0 else 0.0
+                progress_pct = (tokens_generated / max_tokens) * 100.0
                 telemetry = (
-                    f"Generated: {tokens_generated:3d} tokens | "
-                    f"Step Latency: {latency:5.1f} ms/token | "
-                    f"Throughput: {throughput:5.1f} tokens/s | "
-                    f"Engine: KV-Cache O(1)"
+                    f"• Decoded Tokens:   {tokens_generated:3d} / {max_tokens} ({progress_pct:4.1f}%)   |  Step Latency: {latency:5.1f} ms/token\n"
+                    f"• Generation Speed: {throughput:5.1f} tokens/second     |  Elapsed Time: {dt:5.2f} seconds\n"
+                    f"• Execution Engine: {engine_name:<20}  |  Compute Device: {DEVICE_NAME}"
                 )
                 yield full_text, prob_str, telemetry
 
@@ -204,15 +201,7 @@ def stream_inference(
             # Naive Eager Phase (O(T^2) sequential steps)
             while tokens_generated < max_tokens:
                 logits, _ = model(generated_tokens)
-
-                temp_scale = max(temperature, 1e-5)
-                probs = F.softmax(logits[:, -1, :] / temp_scale, dim=-1)
-                top_probs, top_indices = torch.topk(probs[0], k=5)
-                prob_candidates = [
-                    f"{repr(ENCODER.decode([idx.item()]).replace(chr(10), '↵'))}: {p.item()*100.0:4.1f}%"
-                    for p, idx in zip(top_probs, top_indices)
-                ]
-                prob_str = "  |  ".join(prob_candidates)
+                prob_str = format_prob_inspector(logits[:, -1, :], temp_scale)
 
                 next_token = sample_logits(
                     logits[:, -1, :],
@@ -232,11 +221,11 @@ def stream_inference(
                 dt = t_now - t_start
                 throughput = tokens_generated / dt if dt > 0 else 0.0
                 latency = (dt / tokens_generated) * 1000.0 if tokens_generated > 0 else 0.0
+                progress_pct = (tokens_generated / max_tokens) * 100.0
                 telemetry = (
-                    f"Generated: {tokens_generated:3d} tokens | "
-                    f"Step Latency: {latency:5.1f} ms/token | "
-                    f"Throughput: {throughput:5.1f} tokens/s | "
-                    f"Engine: Naive Eager O(T^2)"
+                    f"• Decoded Tokens:   {tokens_generated:3d} / {max_tokens} ({progress_pct:4.1f}%)   |  Step Latency: {latency:5.1f} ms/token\n"
+                    f"• Generation Speed: {throughput:5.1f} tokens/second     |  Elapsed Time: {dt:5.2f} seconds\n"
+                    f"• Execution Engine: {engine_name:<20}  |  Compute Device: {DEVICE_NAME}"
                 )
                 yield full_text, prob_str, telemetry
 
@@ -251,13 +240,10 @@ def stream_inference(
     dt_total = t_end - t_start
     throughput_final = tokens_generated / dt_total if dt_total > 0 else 0.0
     latency_final = (dt_total / tokens_generated) * 1000.0 if tokens_generated > 0 else 0.0
-    engine_name = "KV-Cache O(1)" if use_kv_cache else "Naive Eager O(T^2)"
     telemetry_final = (
-        f"Completed: {tokens_generated} tokens in {dt_total:.2f}s | "
-        f"Avg Latency: {latency_final:.1f} ms/token | "
-        f"Throughput: {throughput_final:.1f} tokens/s | "
-        f"Engine: {engine_name} | "
-        f"Device: {DEVICE_NAME}"
+        f"• Status:           COMPLETED ({tokens_generated} tokens in {dt_total:.2f}s)\n"
+        f"• Average Latency:  {latency_final:5.1f} ms/token          |  Overall Throughput: {throughput_final:5.1f} tokens/second\n"
+        f"• Execution Engine: {engine_name:<20}  |  Compute Device:     {DEVICE_NAME}"
     )
     yield full_text, prob_str, telemetry_final
 
@@ -274,10 +260,10 @@ def stream_side_by_side_benchmark(
 ) -> Generator[Tuple[str, str, str, str, str], None, None]:
     """
     Executes a real-time live duel between O(1) KV-Cache and O(T^2) Naive Eager decoding,
-    streaming tokens into both display panels and outputting live telemetry.
+    streaming tokens into both display panels and outputting live multi-line telemetry.
     """
     if not prompt or not prompt.strip():
-        yield "", "", "Error: Prompt is empty.", "Error: Prompt is empty.", "Please provide a valid prompt."
+        yield "", "", "Status: Prompt is empty.", "Status: Prompt is empty.", "Please provide a valid prompt."
         return
 
     checkpoint_target = custom_checkpoint if custom_checkpoint.strip() else "checkpoints/model_latest.pt"
@@ -292,8 +278,8 @@ def stream_side_by_side_benchmark(
 
     text_cache = prompt
     text_naive = prompt
-    status_cache = "Status: Initializing..."
-    status_naive = "Status: WAITING (Queued for Phase 2)..."
+    status_cache = "• Status:       Initializing...\n• Step Latency: Ready\n• Throughput:   Ready"
+    status_naive = "• Status:       WAITING (Queued for Phase 2)...\n• Step Latency: Ready\n• Throughput:   Ready"
     summary_md = "Executing Phase 1: Hardware-Accelerated O(1) Key-Value Cache Engine..."
 
     yield text_cache, text_naive, status_cache, status_naive, summary_md
@@ -318,7 +304,13 @@ def stream_side_by_side_benchmark(
 
         t_now = time.perf_counter()
         dt_c_live = t_now - t0_cache
-        status_cache = f"Status: RUNNING | Token 1/{num_tokens} | Elapsed: {dt_c_live:.2f}s | Speed: {1.0/dt_c_live:.1f} tok/s"
+        tok_s_curr = 1.0 / dt_c_live if dt_c_live > 0 else 0.0
+        ms_tok_curr = dt_c_live * 1000.0
+        status_cache = (
+            f"• Status:       RUNNING (Token 1/{num_tokens})\n"
+            f"• Step Latency: {ms_tok_curr:5.1f} ms/token (Flat O(1))\n"
+            f"• Throughput:   {tok_s_curr:5.1f} tokens/s (Elapsed: {dt_c_live:.2f}s)"
+        )
         yield text_cache, text_naive, status_cache, status_naive, summary_md
 
         for step_i in range(1, num_tokens):
@@ -333,8 +325,9 @@ def stream_side_by_side_benchmark(
             tok_s_curr = toks_done / dt_c_live if dt_c_live > 0 else 0.0
             ms_tok_curr = (dt_c_live / toks_done) * 1000.0 if toks_done > 0 else 0.0
             status_cache = (
-                f"Status: RUNNING | Token {toks_done}/{num_tokens} | "
-                f"Latency: {ms_tok_curr:.1f} ms/tok (Flat O(1)) | Elapsed: {dt_c_live:.2f}s"
+                f"• Status:       RUNNING (Token {toks_done}/{num_tokens})\n"
+                f"• Step Latency: {ms_tok_curr:5.1f} ms/token (Flat O(1))\n"
+                f"• Throughput:   {tok_s_curr:5.1f} tokens/s (Elapsed: {dt_c_live:.2f}s)"
             )
             yield text_cache, text_naive, status_cache, status_naive, summary_md
 
@@ -349,10 +342,11 @@ def stream_side_by_side_benchmark(
     ms_tok_cache = (dt_cache / num_tokens) * 1000.0 if num_tokens > 0 else 0.0
 
     status_cache = (
-        f"Status: FINISHED (1st Place) | {num_tokens} tokens in {dt_cache:.2f}s | "
-        f"Latency: {ms_tok_cache:.1f} ms/tok | Throughput: {tok_s_cache:.1f} tok/s"
+        f"• Status:       FINISHED (1st Place)\n"
+        f"• Total Time:   {dt_cache:.3f} seconds ({tok_s_cache:.1f} tokens/s)\n"
+        f"• Avg Latency:  {ms_tok_cache:.1f} ms/token (Zero Redundant Attention FLOPs)"
     )
-    status_naive = "Status: RUNNING (Phase 2: Naive Eager Recompute)..."
+    status_naive = "• Status:       RUNNING (Phase 2: Naive Eager Recompute)...\n• Step Latency: Starting...\n• Throughput:   Starting..."
     summary_md = "Phase 1 Complete! Now Executing Phase 2: Naive Eager Recomputation (Watch latency degrade)..."
     yield text_cache, text_naive, status_cache, status_naive, summary_md
 
@@ -380,8 +374,9 @@ def stream_side_by_side_benchmark(
             tok_s_curr = toks_done / dt_n_live if dt_n_live > 0 else 0.0
             ms_tok_curr = (dt_n_live / toks_done) * 1000.0 if toks_done > 0 else 0.0
             status_naive = (
-                f"Status: RUNNING | Token {toks_done}/{num_tokens} | "
-                f"Latency: {ms_tok_curr:.1f} ms/tok (Degrading O(T²)) | Elapsed: {dt_n_live:.2f}s"
+                f"• Status:       RUNNING (Token {toks_done}/{num_tokens})\n"
+                f"• Step Latency: {ms_tok_curr:5.1f} ms/token (Degrading O(T²))\n"
+                f"• Throughput:   {tok_s_curr:5.1f} tokens/s (Elapsed: {dt_n_live:.2f}s)"
             )
             yield text_cache, text_naive, status_cache, status_naive, summary_md
 
@@ -396,8 +391,9 @@ def stream_side_by_side_benchmark(
     ms_tok_naive = (dt_naive / num_tokens) * 1000.0 if num_tokens > 0 else 0.0
 
     status_naive = (
-        f"Status: FINISHED | {num_tokens} tokens in {dt_naive:.2f}s | "
-        f"Latency: {ms_tok_naive:.1f} ms/tok | Throughput: {tok_s_naive:.1f} tok/s"
+        f"• Status:       FINISHED\n"
+        f"• Total Time:   {dt_naive:.3f} seconds ({tok_s_naive:.1f} tokens/s)\n"
+        f"• Avg Latency:  {ms_tok_naive:.1f} ms/token (Quadratic Degradation Overhead)"
     )
 
     speedup = dt_naive / dt_cache if dt_cache > 0 else 1.0
@@ -486,42 +482,50 @@ button.secondary-btn:hover {
 
 .telemetry-bar {
     font-family: "SF Mono", Menlo, Monaco, Consolas, monospace !important;
-    font-size: 11.5px !important;
-    color: #334155 !important;
+    font-size: 12.5px !important;
+    line-height: 1.55 !important;
+    color: #1e293b !important;
     background-color: #f8fafc !important;
-    border: 1px solid #e2e8f0 !important;
+    border: 1px solid #cbd5e1 !important;
     border-radius: 6px !important;
-    padding: 8px 12px !important;
+    padding: 10px 14px !important;
+    white-space: pre !important;
 }
 
 .prob-inspector {
     font-family: "SF Mono", Menlo, Monaco, Consolas, monospace !important;
-    font-size: 11.5px !important;
-    color: #0284c7 !important;
+    font-size: 12px !important;
+    line-height: 1.55 !important;
+    color: #0369a1 !important;
     background-color: #f0f9ff !important;
     border: 1px solid #bae6fd !important;
     border-radius: 6px !important;
-    padding: 8px 12px !important;
+    padding: 10px 14px !important;
+    white-space: pre !important;
 }
 
 .status-cache-box {
     font-family: "SF Mono", Menlo, Monaco, Consolas, monospace !important;
-    font-size: 11.5px !important;
-    color: #047857 !important;
+    font-size: 12px !important;
+    line-height: 1.55 !important;
+    color: #065f46 !important;
     background-color: #ecfdf5 !important;
     border: 1px solid #a7f3d0 !important;
     border-radius: 6px !important;
-    padding: 8px 12px !important;
+    padding: 10px 14px !important;
+    white-space: pre !important;
 }
 
 .status-naive-box {
     font-family: "SF Mono", Menlo, Monaco, Consolas, monospace !important;
-    font-size: 11.5px !important;
-    color: #b45309 !important;
+    font-size: 12px !important;
+    line-height: 1.55 !important;
+    color: #92400e !important;
     background-color: #fffbeb !important;
     border: 1px solid #fde68a !important;
     border-radius: 6px !important;
-    padding: 8px 12px !important;
+    padding: 10px 14px !important;
+    white-space: pre !important;
 }
 """
 
@@ -656,25 +660,28 @@ def build_app():
                             clear_btn = gr.Button("Clear", elem_classes=["secondary-btn"], scale=1)
 
                         output_box = gr.Textbox(
-                            label="Generated Output",
+                            label="Generated Output Stream",
                             lines=8,
+                            max_lines=15,
                             interactive=False,
                         )
 
                         prob_box = gr.Textbox(
-                            label="Live Next-Token Probabilities (Top 5 Candidates)",
-                            lines=1,
+                            label="Live Next-Token Probability Inspector (Top 5 Candidates)",
+                            lines=2,
+                            max_lines=3,
                             interactive=False,
                             elem_classes=["prob-inspector"],
-                            value="Waiting for generation...",
+                            value="Rank 1-2:  Waiting for generation...\nRank 3-5:  Waiting for generation...",
                         )
 
                         telemetry_box = gr.Textbox(
-                            label="Hardware & Step Telemetry",
-                            lines=1,
+                            label="Hardware & Generation Telemetry Console",
+                            lines=3,
+                            max_lines=4,
                             interactive=False,
                             elem_classes=["telemetry-bar"],
-                            value=f"Ready | Backend: {DEVICE_NAME}",
+                            value=f"• Status:           Ready\n• Execution Engine: Idle\n• Compute Device:   {DEVICE_NAME}",
                         )
 
                         gr.Examples(
@@ -723,7 +730,11 @@ def build_app():
 
                 stop_btn.click(fn=None, cancels=[gen_event])
                 clear_btn.click(
-                    fn=lambda: ("", "Waiting for generation...", f"Ready | Backend: {DEVICE_NAME}"),
+                    fn=lambda: (
+                        "",
+                        "Rank 1-2:  Waiting for generation...\nRank 3-5:  Waiting for generation...",
+                        f"• Status:           Ready\n• Execution Engine: Idle\n• Compute Device:   {DEVICE_NAME}",
+                    ),
                     outputs=[prompt_box, prob_box, telemetry_box],
                 )
 
@@ -763,30 +774,34 @@ def build_app():
                         gr.Markdown("#### 1. Hardware KV-Cache Engine (O(1) Flat Latency)")
                         bm_cache_out = gr.Textbox(
                             label="KV-Cache Generated Stream",
-                            lines=6,
+                            lines=8,
+                            max_lines=12,
                             interactive=False,
                         )
                         bm_status_cache = gr.Textbox(
                             label="KV-Cache Live Telemetry",
-                            lines=1,
+                            lines=3,
+                            max_lines=4,
                             interactive=False,
                             elem_classes=["status-cache-box"],
-                            value="Status: Ready",
+                            value="• Status:       Ready\n• Step Latency: Ready\n• Throughput:   Ready",
                         )
 
                     with gr.Column(scale=1):
                         gr.Markdown("#### 2. Naive Eager Engine (O(T²) Quadratic Degradation)")
                         bm_naive_out = gr.Textbox(
                             label="Naive Eager Generated Stream",
-                            lines=6,
+                            lines=8,
+                            max_lines=12,
                             interactive=False,
                         )
                         bm_status_naive = gr.Textbox(
                             label="Naive Eager Live Telemetry",
-                            lines=1,
+                            lines=3,
+                            max_lines=4,
                             interactive=False,
                             elem_classes=["status-naive-box"],
-                            value="Status: Ready",
+                            value="• Status:       Ready\n• Step Latency: Ready\n• Throughput:   Ready",
                         )
 
                 bm_summary_md = gr.Markdown("Click 'Start Live Execution Duel' to watch the real-time benchmark race.")
