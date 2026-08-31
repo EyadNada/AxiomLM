@@ -27,6 +27,7 @@ scratch/
 *.safetensors
 *.onnx
 checkpoints/
+exports/
 
 # System and IDE files
 .DS_Store

@@ -665,6 +665,52 @@ class TestWebInterfaceAndApp(unittest.TestCase):
         self.assertIn("Faster", md)
 
 
+class TestHuggingFaceExport(unittest.TestCase):
+    """Unit tests for Hugging Face .safetensors model export and metadata generation."""
+
+    def test_export_checkpoint_to_safetensors(self):
+        """Verify that export_checkpoint_to_hf generates valid .safetensors, config.json, and metadata."""
+        import tempfile
+        from safetensors.torch import load_file
+        from brain.export_hf import export_checkpoint_to_hf
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create dummy checkpoint
+            cfg = GPTConfig(n_layer=2, n_head=4, n_embd=64, vocab_size=500)
+            model = GPT(cfg)
+            ckpt_path = os.path.join(tmpdir, "test_model.pt")
+            torch.save({
+                "step": 100,
+                "model_state_dict": model.state_dict(),
+                "config": cfg,
+            }, ckpt_path)
+
+            export_dir = os.path.join(tmpdir, "hf_export")
+            export_checkpoint_to_hf(checkpoint_path=ckpt_path, output_dir=export_dir, model_name="TestAxiomLM")
+
+            # Check files exist
+            self.assertTrue(os.path.exists(os.path.join(export_dir, "model.safetensors")))
+            self.assertTrue(os.path.exists(os.path.join(export_dir, "config.json")))
+            self.assertTrue(os.path.exists(os.path.join(export_dir, "generation_config.json")))
+            self.assertTrue(os.path.exists(os.path.join(export_dir, "tokenizer_config.json")))
+            self.assertTrue(os.path.exists(os.path.join(export_dir, "README.md")))
+
+            # Verify safetensors weights can be loaded
+            weights = load_file(os.path.join(export_dir, "model.safetensors"))
+            self.assertIn("transformer.wte.weight", weights)
+            self.assertIn("lm_head.weight", weights)
+
+            # Load into fresh GPT instance
+            fresh_model = GPT(cfg)
+            fresh_model.load_state_dict(weights)
+            fresh_model.eval()
+
+            # Test forward pass
+            x = torch.randint(0, 500, (1, 8))
+            logits, _ = fresh_model(x)
+            self.assertEqual(logits.shape, (1, 8, 500))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
