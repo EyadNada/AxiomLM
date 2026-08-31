@@ -586,5 +586,58 @@ class TestAdvancedSamplingAndCheckpointing(unittest.TestCase):
                 self.assertFalse(torch.isnan(param.grad).any())
 
 
+class TestWebInterfaceAndApp(unittest.TestCase):
+    """Automated tests for app.py web interface, streaming generator, and live benchmark."""
+
+    def test_app_build_blocks(self):
+        """Verify Gradio blocks application instantiates with all components without errors."""
+        import app
+        demo = app.build_app()
+        self.assertIsNotNone(demo)
+        self.assertEqual(demo.title, "AxiomLM (124M)")
+
+    def test_app_stream_inference_generation(self):
+        """Verify stream_inference yields progressive text, probability inspector, and telemetry."""
+        import app
+        gen = app.stream_inference(
+            prompt="The quick brown fox",
+            source_type="local",
+            custom_checkpoint="checkpoints/model_latest.pt" if os.path.exists("checkpoints/model_latest.pt") else "",
+            arch="modern",
+            max_tokens=6,
+            temperature=0.8,
+            top_k=50,
+            top_p=0.9,
+            min_p=0.05,
+            repetition_penalty=1.1,
+            use_kv_cache=True,
+            pace_stream=False,
+        )
+        outputs = list(gen)
+        self.assertGreater(len(outputs), 0)
+        last_text, last_prob, last_telem = outputs[-1]
+        self.assertTrue(last_text.startswith("The quick brown fox"))
+        self.assertIn("tokens in", last_telem)
+
+    def test_app_side_by_side_benchmark_generator(self):
+        """Verify stream_side_by_side_benchmark yields dual stream and markdown summary table."""
+        import app
+        gen = app.stream_side_by_side_benchmark(
+            prompt="Hello world",
+            source_type="local",
+            custom_checkpoint="checkpoints/model_latest.pt" if os.path.exists("checkpoints/model_latest.pt") else "",
+            arch="modern",
+            num_tokens=6,
+        )
+        outputs = list(gen)
+        self.assertGreater(len(outputs), 0)
+        c_txt, n_txt, sc, sn, md = outputs[-1]
+        self.assertTrue(c_txt.startswith("Hello world"))
+        self.assertTrue(n_txt.startswith("Hello world"))
+        self.assertIn("KV-Cache", md)
+        self.assertIn("Faster", md)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

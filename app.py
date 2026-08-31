@@ -409,8 +409,8 @@ def stream_side_by_side_benchmark(
 | Metric / Dimension | Hardware KV-Cache (O(1)) | Naive Eager Recompute (O(T²)) | Hardware Multiplier |
 | :--- | :--- | :--- | :--- |
 | **Total Wall-Clock Time** | **{dt_cache:.3f} s** | {dt_naive:.3f} s | **{speedup:.2f}x Faster (1st Place)** |
-| **Average Step Latency** | **{ms_tok_cache:.1f} ms / token** | {ms_tok_naive:.1f} ms / token | **-{latency_reduction:.1f}% Step Latency** |
-| **Decoding Throughput** | **{tok_s_cache:.1f} tokens / s** | {tok_s_naive:.1f} tokens / s | **+{tok_s_cache - tok_s_naive:.1f} tok/s Gain** |
+| **Average Step Latency** | **{ms_tok_cache:.1f} ms / token** | {ms_tok_naive:.1f} ms / token | **{latency_reduction:+.1f}% Step Latency** |
+| **Decoding Throughput** | **{tok_s_cache:.1f} tokens / s** | {tok_s_naive:.1f} tokens / s | **{tok_s_cache - tok_s_naive:+.1f} tok/s Gain** |
 | **Algorithmic Complexity** | **O(1) Constant Memory Buffer** | O(T²) Quadratic Degradation | Zero Redundant Softmax Recomputations |
 | **Output Integrity** | {num_tokens} Tokens Decoded | {num_tokens} Tokens Decoded | 100.0% Exact Mathematical Parity |
 """
