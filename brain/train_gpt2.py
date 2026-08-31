@@ -1267,7 +1267,7 @@ def train(
         destroy_process_group()
 
 
-if __name__ == "__main__":
+def main():
     import argparse
     parser = argparse.ArgumentParser(description="Axiom-LM Pretraining Engine (Classic GPT-2 & Modern LLaMA-3)")
     parser.add_argument("--arch", type=str, default="classic", choices=["classic", "modern"], help="Architecture spec ('classic' GPT-2 or 'modern' LLaMA-3 with RoPE+RMSNorm+SwiGLU+GQA)")
@@ -1282,7 +1282,7 @@ if __name__ == "__main__":
     parser.add_argument("--benchmark", action="store_true", help="Run KV-cache vs Naive generation speed benchmark")
     parser.add_argument("--profile", action="store_true", help="Enable PyTorch profiler and export Chrome trace to log/profiler_trace")
     parser.add_argument("--use_custom_kernels", action="store_true", help="Enable custom low-level fused GPU & ARM NEON SIMD kernels")
-    parser.add_argument("--grad_checkpoint", action="store_true", help="Enable activation gradient checkpointing for 60-70% memory reduction")
+    parser.add_argument("--grad_checkpoint", action="store_true", help="Enable activation gradient checkpointing for 60-70%% memory reduction")
     args = parser.parse_args()
 
     if args.benchmark:
@@ -1320,3 +1320,7 @@ if __name__ == "__main__":
             use_custom_kernels=args.use_custom_kernels,
             grad_checkpoint=args.grad_checkpoint,
         )
+
+
+if __name__ == "__main__":
+    main()
