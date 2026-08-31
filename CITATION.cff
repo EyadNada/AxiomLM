@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software or its architectural benchmarks, please cite it as below."
+title: "AxiomLM: High-Performance Pretraining Engine and Modern Architectural Overhaul of GPT-2 (124M)"
+abstract: "A high-performance autoregressive transformer pretraining and inference engine modernizing GPT-2 with RoPE, RMSNorm, SwiGLU, GQA, next-gen Muon matrix optimization, and native hardware kernels."
+authors:
+  - family-names: "Nada"
+    given-names: "Eyad"
+date-released: 2026-08-31
+version: 0.1.0
+license: MIT
+repository-code: "https://github.com/EyadNada/GPT-2.0-124M"
+keywords:
+  - transformer
+  - gpt-2
+  - llama-3
+  - muon-optimizer
+  - grouped-query-attention
+  - rotary-position-embeddings
+  - rmsnorm
+  - swiglu
+  - kv-cache
+  - apple-silicon
+  - pytorch
