@@ -68,6 +68,6 @@ axiom-train = "brain.train_gpt2:main"
 axiom-generate = "brain.generate:main"
 
 [project.urls]
-Homepage = "https://github.com/EyadNada/GPT-2.0-124M"
-Repository = "https://github.com/EyadNada/GPT-2.0-124M"
-Issues = "https://github.com/EyadNada/GPT-2.0-124M/issues"
+Homepage = "https://github.com/EyadNada/AxiomLM"
+Repository = "https://github.com/EyadNada/AxiomLM"
+Issues = "https://github.com/EyadNada/AxiomLM/issues"

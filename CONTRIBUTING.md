@@ -8,8 +8,8 @@ Thank you for your interest in contributing to **AxiomLM**! We welcome contribut
 
 1. **Fork and clone the repository:**
    ```bash
-   git clone https://github.com/EyadNada/GPT-2.0-124M.git
-   cd GPT-2.0-124M
+   git clone https://github.com/EyadNada/AxiomLM.git
+   cd AxiomLM
    ```
 
 2. **Create a virtual environment:**

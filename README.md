@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-EE4C2C.svg)](https://pytorch.org/)
-[![CI](https://github.com/EyadNada/GPT-2.0-124M/actions/workflows/ci.yml/badge.svg)](https://github.com/EyadNada/GPT-2.0-124M/actions)
+[![CI](https://github.com/EyadNada/AxiomLM/actions/workflows/ci.yml/badge.svg)](https://github.com/EyadNada/AxiomLM/actions)
 [![Hardware](https://img.shields.io/badge/Hardware-Apple%20Silicon%20%7C%20CUDA-black.svg)]()
 
 A high-performance pretraining engine and modern architectural overhaul of OpenAI's original GPT-2 (124M) in pure PyTorch, optimized from first principles for Apple Silicon (Metal / MPS / ARM NEON) and NVIDIA CUDA.
@@ -172,8 +172,8 @@ As sequence length scales to 8K and 16K tokens, Grouped-Query Attention preserve
 ### 1. Installation
 
 ```bash
-git clone https://github.com/EyadNada/GPT-2.0-124M.git
-cd GPT-2.0-124M
+git clone https://github.com/EyadNada/AxiomLM.git
+cd AxiomLM
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -337,7 +337,7 @@ If you find AxiomLM or its benchmarks useful in your research or educational pro
   year         = {2026},
   publisher    = {GitHub},
   journal      = {GitHub repository},
-  howpublished = {\url{https://github.com/EyadNada/GPT-2.0-124M}}
+  howpublished = {\url{https://github.com/EyadNada/AxiomLM}}
 }
 ```
 

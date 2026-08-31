@@ -2,7 +2,7 @@
 
 > **Author**: Eyad Nada  
 > **Topic**: High-Performance Deep Learning Systems Engineering & GPU/CPU Kernel Optimization  
-> **Repository**: `EyadNada/GPT-2.0-124M`  
+> **Repository**: `EyadNada/AxiomLM`  
 > **Scope**: OpenAI Triton (CUDA), Apple Silicon Metal (MSL), and Apple ARM NEON SIMD (C++)
 
 ---
