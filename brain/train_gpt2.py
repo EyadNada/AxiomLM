@@ -902,10 +902,12 @@ def save_checkpoint(
     checkpoint_dir: str,
     is_pause: bool = False,
     keep_step_ckpt: bool = True,
+    max_step_ckpts: int = 2,
 ) -> tuple[str, str | None]:
     """
     Safely saves checkpoint atomically with .bak fallback and step-stamped archiving.
     Prevents file corruption and accidental loss of training progress.
+    Retains up to `max_step_ckpts` historical step snapshots to conserve disk space.
     """
     raw_model = get_raw_model(model)
     checkpoint = {
@@ -933,7 +935,7 @@ def save_checkpoint(
 
     os.rename(tmp_path, latest_path)
 
-    # 3. Save permanent step snapshot for archiving
+    # 3. Save permanent step snapshot for archiving and prune older step snapshots
     step_path = None
     if keep_step_ckpt and (step > 0 or is_pause):
         step_path = os.path.join(checkpoint_dir, f"model_step_{step:04d}.pt")
@@ -942,6 +944,17 @@ def save_checkpoint(
             shutil.copy2(latest_path, step_path)
         except Exception:
             torch.save(checkpoint, step_path)
+
+        # Prune older step checkpoints beyond max_step_ckpts
+        if max_step_ckpts > 0:
+            import glob
+            all_step_ckpts = sorted(glob.glob(os.path.join(checkpoint_dir, "model_step_*.pt")))
+            if len(all_step_ckpts) > max_step_ckpts:
+                for old_ckpt in all_step_ckpts[:-max_step_ckpts]:
+                    try:
+                        os.remove(old_ckpt)
+                    except OSError:
+                        pass
 
     return latest_path, step_path
 
