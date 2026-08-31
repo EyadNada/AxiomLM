@@ -123,9 +123,9 @@ class Block(nn.Module):
 
 ## 5. Related Project Materials
 
-* 📖 [cross_attention_vs_self_attention_guide.md](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/cross_attention_vs_self_attention_guide.md) — Detailed code, mathematical tensor shapes, and PyTorch module for Cross-Attention.
-* 📖 [automatic_mixed_precision_amp_guide.md](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/automatic_mixed_precision_amp_guide.md) — Mixed precision training recipe for GPU speedup.
-* 📖 [torch_set_float32_matmul_precision_guide.md](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/torch_set_float32_matmul_precision_guide.md) — Tensor Core TF32 acceleration guide.
-* 📖 [the_unreasonable_effectiveness_of_rnns.md](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/the_unreasonable_effectiveness_of_rnns.md) — Karpathy's classic pre-transformer sequence modeling guide.
-* 📄 [gpt2_paper.pdf](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/gpt2_paper.pdf) — OpenAI GPT-2 Paper.
-* 📄 [attention_is_all_you_need.pdf](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/attention_is_all_you_need.pdf) — Original 2017 Transformer Paper (Vaswani et al.).
+* 📖 [cross_attention_vs_self_attention_guide.md](./cross_attention_vs_self_attention_guide.md) — Detailed code, mathematical tensor shapes, and PyTorch module for Cross-Attention.
+* 📖 [automatic_mixed_precision_amp_guide.md](./automatic_mixed_precision_amp_guide.md) — Mixed precision training recipe for GPU speedup.
+* 📖 [torch_set_float32_matmul_precision_guide.md](./torch_set_float32_matmul_precision_guide.md) — Tensor Core TF32 acceleration guide.
+* 📖 [the_unreasonable_effectiveness_of_rnns.md](./the_unreasonable_effectiveness_of_rnns.md) — Karpathy's classic pre-transformer sequence modeling guide.
+* 📄 [gpt2_paper.pdf](./gpt2_paper.pdf) — OpenAI GPT-2 Paper.
+* 📄 [attention_is_all_you_need.pdf](./attention_is_all_you_need.pdf) — Original 2017 Transformer Paper (Vaswani et al.).

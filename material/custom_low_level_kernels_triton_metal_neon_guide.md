@@ -117,7 +117,7 @@ Let $g = \frac{\partial L}{\partial \text{out}} \in \mathbb{R}^d$ be the incomin
 ## 4. Architecture & Implementation Across 3 Platforms
 
 ### Platform 1: OpenAI Triton (NVIDIA CUDA)
-[kernels/triton_kernels.py](file:///Users/apple/Desktop/Projects/gpt-2(124M)/kernels/triton_kernels.py) utilizes OpenAI Triton's Pythonic GPU programming model:
+[kernels/triton_kernels.py](../kernels/triton_kernels.py) utilizes OpenAI Triton's Pythonic GPU programming model:
 * **Block-level vectorization**: Grid dimensions map across batch-sequence rows $M = B \times T$.
 * **SRAM coalescing**: Power-of-2 tile blocks (`BLOCK_SIZE = triton.next_power_of_2(D)`).
 * **Pointer Arithmetic**: `tl.load` with boundary masking `mask = cols < D`.
@@ -154,7 +154,7 @@ def _fused_rmsnorm_fwd_kernel(
 ---
 
 ### Platform 2: Apple Silicon Metal Shading Language (MSL)
-[kernels/metal_kernels.metal](file:///Users/apple/Desktop/Projects/gpt-2(124M)/kernels/metal_kernels.metal) executes natively on Apple M-Series GPUs using unified compute pipelines:
+[kernels/metal_kernels.metal](../kernels/metal_kernels.metal) executes natively on Apple M-Series GPUs using unified compute pipelines:
 * **SIMDgroup Reductions**: Uses Apple's hardware `simd_sum()` intrinsic across 32-wide SIMD lanes.
 * **Threadgroup Memory Barriers**: Fast on-chip local memory reduction across threadgroups.
 * **Unified Memory Optimization**: Zero-copy pointer sharing directly between CPU and GPU.
@@ -192,7 +192,7 @@ kernel void fused_rmsnorm_forward(
 ---
 
 ### Platform 3: Apple ARM NEON SIMD C++ (CPU)
-[kernels/cpu_neon_kernels.cpp](file:///Users/apple/Desktop/Projects/gpt-2(124M)/kernels/cpu_neon_kernels.cpp) delivers ultra-low-latency CPU vectorization:
+[kernels/cpu_neon_kernels.cpp](../kernels/cpu_neon_kernels.cpp) delivers ultra-low-latency CPU vectorization:
 * **128-bit Vector Registers**: `float32x4_t` processing 4 FP32 elements per instruction cycle.
 * **Fused Multiply-Accumulate (FMA)**: `vfmaq_f32(acc, a, b)` executes $a \cdot b + c$ in 1 clock cycle without rounding error.
 * **Clang Target Optimizations**: Compiled with `-O3 -march=armv8-a+simd+fp -mcpu=apple-m3 -ffast-math`.
@@ -240,7 +240,7 @@ void fused_rmsnorm_forward_neon(
 
 ## 5. Seamless PyTorch Autograd Integration & Dynamic Dispatch
 
-The Python dispatch layer in [kernels/ops.py](file:///Users/apple/Desktop/Projects/gpt-2(124M)/kernels/ops.py) defines custom `torch.autograd.Function` classes:
+The Python dispatch layer in [kernels/ops.py](../kernels/ops.py) defines custom `torch.autograd.Function` classes:
 
 ```mermaid
 graph TD

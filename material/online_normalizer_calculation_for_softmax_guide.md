@@ -9,7 +9,7 @@ A deep-dive technical reference on the seminal NVIDIA paper **"Online normalizer
 * **Title:** *Online normalizer calculation for softmax*
 * **Authors:** Maxim Milakov & Natalia Gimelshein (NVIDIA)
 * **Publication:** [arXiv:1805.02867](https://arxiv.org/abs/1805.02867) (July 2018)
-* **Local PDF:** [`material/online_normalizer_calculation_for_softmax_paper.pdf`](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/online_normalizer_calculation_for_softmax_paper.pdf)
+* **Local PDF:** [`material/online_normalizer_calculation_for_softmax_paper.pdf`](./online_normalizer_calculation_for_softmax_paper.pdf)
 
 ---
 

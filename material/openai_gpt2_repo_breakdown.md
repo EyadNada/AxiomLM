@@ -4,7 +4,7 @@
 > **Key Architecture Note**:
 > The original [OpenAI GPT-2 repository (`openai/gpt-2`)](https://github.com/openai/gpt-2) released in 2019 was written **EXPLICITLY in TensorFlow 1.x** (specifically using static computation graphs, `tf.variable_scope`, `tf.Session`, and custom 1D convolutions).
 >
-> In our project ([`train_gpt2.py`](file:///Users/apple/Desktop/Projects/gpt-2(124M)/train_gpt2.py)), we are recreating and training GPT-2 (124M) in **modern PyTorch 2.x** with eager execution, modern vectorized operations, dynamic GPU/MPS/CPU dispatch, and `tiktoken`.
+> In our project ([`train_gpt2.py`](../brain/train_gpt2.py)), we are recreating and training GPT-2 (124M) in **modern PyTorch 2.x** with eager execution, modern vectorized operations, dynamic GPU/MPS/CPU dispatch, and `tiktoken`.
 
 This document breaks down every single file in the original OpenAI repository, explains the inline comments and design choices OpenAI made, and maps each TensorFlow concept directly to its modern PyTorch equivalent so you understand the whole system without needing to read the legacy TensorFlow codebase from scratch.
 
@@ -73,17 +73,17 @@ openai/gpt-2/
      $$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}} + M\right)V$$
      where $M$ is the lower-triangular causal mask with $-\infty$ in upper positions to prevent tokens from looking into the future.
    - Outputs through `c_proj` linear layer.
-   - **PyTorch Equivalent:** [`CausalSelfAttention`](file:///Users/apple/Desktop/Projects/gpt-2(124M)/train_gpt2.py#L18-L51) in our `train_gpt2.py`.
+   - **PyTorch Equivalent:** [`CausalSelfAttention`](../brain/train_gpt2.py#L18-L51) in our `train_gpt2.py`.
 
 5. **`mlp(x, scope, n_state, *, hparams)` (Feed-Forward Network):**
    - Expands the embedding dimension $4\times$ from $768 \to 3072$ via `c_fc`, applies `gelu`, then projects back from $3072 \to 768$ via `c_proj`.
-   - **PyTorch Equivalent:** [`MLP`](file:///Users/apple/Desktop/Projects/gpt-2(124M)/train_gpt2.py#L55-L69) in our `train_gpt2.py`.
+   - **PyTorch Equivalent:** [`MLP`](../brain/train_gpt2.py#L55-L69) in our `train_gpt2.py`.
 
 6. **`block(x, scope, *, past, hparams)` (Transformer Block):**
    - Implements the Pre-LayerNorm Transformer residual connection:
      $$x = x + \text{Attention}(\text{LayerNorm}_1(x))$$
      $$x = x + \text{MLP}(\text{LayerNorm}_2(x))$$
-   - **PyTorch Equivalent:** [`Block`](file:///Users/apple/Desktop/Projects/gpt-2(124M)/train_gpt2.py#L73-L88) in our `train_gpt2.py`.
+   - **PyTorch Equivalent:** [`Block`](../brain/train_gpt2.py#L73-L88) in our `train_gpt2.py`.
 
 7. **`model(hparams, X, past=None, scope='model')` (Full GPT-2 Container):**
    - Looks up Token Embeddings: `wte = tf.get_variable('wte', [hparams.n_vocab, hparams.n_embd])`.
@@ -126,7 +126,7 @@ openai/gpt-2/
      4. Applies top-$k$ filtering.
      5. Draws a sample from categorical distribution: $x \sim \text{softmax}(\text{logits})$.
      6. Appends $x$ to the sequence and repeats.
-- **PyTorch Modern Equivalent:** Our generation loop at the bottom of [`train_gpt2.py`](file:///Users/apple/Desktop/Projects/gpt-2(124M)/train_gpt2.py#L259-L295) using `torch.topk` and `torch.multinomial`.
+- **PyTorch Modern Equivalent:** Our generation loop at the bottom of [`train_gpt2.py`](../brain/train_gpt2.py#L259-L295) using `torch.topk` and `torch.multinomial`.
 
 ---
 
@@ -135,7 +135,7 @@ openai/gpt-2/
 
 - Tokenizes raw UTF-8 text into a single flat array of 1D token IDs.
 - Chunks the flat array into non-overlapping context windows of size `block_size` ($1024$ tokens).
-- **PyTorch Modern Equivalent:** Our clean `DataLoaderLite` class in [`train_gpt2.py`](file:///Users/apple/Desktop/Projects/gpt-2(124M)/train_gpt2.py#L210-L235) that loads Shakespeare/text into a 1D tensor and slices batches $(B, T)$.
+- **PyTorch Modern Equivalent:** Our clean `DataLoaderLite` class in [`train_gpt2.py`](../brain/train_gpt2.py#L210-L235) that loads Shakespeare/text into a 1D tensor and slices batches $(B, T)$.
 
 ---
 
@@ -157,7 +157,7 @@ openai/gpt-2/
 
 ## 3. Side-by-Side Comparison: TensorFlow 1.x vs. Modern PyTorch
 
-| Feature | Original OpenAI Repo (TensorFlow 1.x) | Our Project ([`train_gpt2.py`](file:///Users/apple/Desktop/Projects/gpt-2(124M)/train_gpt2.py) in PyTorch 2.x) |
+| Feature | Original OpenAI Repo (TensorFlow 1.x) | Our Project ([`train_gpt2.py`](../brain/train_gpt2.py) in PyTorch 2.x) |
 |:---|:---|:---|
 | **Execution Paradigm** | Static computation graph (`tf.Graph()`, `tf.Session()`, `sess.run()`) | Eager execution (`model(x)`, automatic gradients `loss.backward()`) |
 | **Variable Scoping** | `with tf.variable_scope('transformer'):` | Object-oriented `nn.ModuleDict`, `nn.ModuleList`, `nn.Module` |

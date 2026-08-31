@@ -249,7 +249,7 @@ Reading raw `.jsonl` or `.txt` files in Python during training causes:
 3. Disk I/O bottlenecks.
 
 ### 💡 The Solution: Pre-tokenized Memory-Mapped Binary Shards
-[data/tinystories.py](file:///Users/apple/Desktop/Projects/gpt-2(124M)/data/tinystories.py) tokenizes the entire corpus once into contiguous **`np.uint16`** binary files:
+[data/tinystories.py](../data/tinystories.py) tokenizes the entire corpus once into contiguous **`np.uint16`** binary files:
 * Vocabulary size is $50,257 < 65,535$, so each token fits perfectly into **2 bytes (`uint16`)**.
 * `20,000,000` tokens consume exactly **$38.15\text{ MB}$** on disk.
 * Loaded directly into memory or mapped with zero serialization overhead:
@@ -281,12 +281,12 @@ Repeated 5 times using only fast matrix multiplications, converging to pure orth
 
 | Technique | Where in Repo | Primary Purpose | Real-World Impact |
 | :--- | :--- | :--- | :--- |
-| **RoPE** | [train_gpt2.py](file:///Users/apple/Desktop/Projects/gpt-2(124M)/brain/train_gpt2.py) | Position encoding via complex rotation | Length generalization & zero param overhead |
-| **RMSNorm** | [train_gpt2.py](file:///Users/apple/Desktop/Projects/gpt-2(124M)/brain/train_gpt2.py) | Variance-only layer normalization | ~30% faster norm step with identical loss |
-| **SwiGLU** | [train_gpt2.py](file:///Users/apple/Desktop/Projects/gpt-2(124M)/brain/train_gpt2.py) | Bilinear gated activation MLP | Significantly faster loss convergence |
-| **GQA** | [train_gpt2.py](file:///Users/apple/Desktop/Projects/gpt-2(124M)/brain/train_gpt2.py) | 4 KV heads shared across 12 Q heads | 66.7% reduction in KV cache memory |
-| **KV-Cache** | [train_gpt2.py](file:///Users/apple/Desktop/Projects/gpt-2(124M)/brain/train_gpt2.py), [play.ipynb](file:///Users/apple/Desktop/Projects/gpt-2(124M)/brain/play.ipynb) | $O(1)$ token generation | Constant ~6.0ms per-token latency |
-| **SDPA / FlashAttn** | [train_gpt2.py](file:///Users/apple/Desktop/Projects/gpt-2(124M)/brain/train_gpt2.py) | Fused on-chip SRAM attention | $3.2\times$ speedup, sub-2.3GB memory |
-| **BF16 Autocast** | [train_gpt2.py](file:///Users/apple/Desktop/Projects/gpt-2(124M)/brain/train_gpt2.py) | 16-bit mixed precision execution | 2x arithmetic throughput |
-| **Binary uint16** | [tinystories.py](file:///Users/apple/Desktop/Projects/gpt-2(124M)/data/tinystories.py) | Pre-tokenized memory-mapped shards | Zero runtime tokenization overhead |
-| **Zero-Sync Accum** | [train_gpt2.py](file:///Users/apple/Desktop/Projects/gpt-2(124M)/brain/train_gpt2.py) | Asynchronous GPU execution | Prevents CPU-GPU lockstep stalls |
+| **RoPE** | [train_gpt2.py](../brain/train_gpt2.py) | Position encoding via complex rotation | Length generalization & zero param overhead |
+| **RMSNorm** | [train_gpt2.py](../brain/train_gpt2.py) | Variance-only layer normalization | ~30% faster norm step with identical loss |
+| **SwiGLU** | [train_gpt2.py](../brain/train_gpt2.py) | Bilinear gated activation MLP | Significantly faster loss convergence |
+| **GQA** | [train_gpt2.py](../brain/train_gpt2.py) | 4 KV heads shared across 12 Q heads | 66.7% reduction in KV cache memory |
+| **KV-Cache** | [train_gpt2.py](../brain/train_gpt2.py), [play.ipynb](../brain/play.ipynb) | $O(1)$ token generation | Constant ~6.0ms per-token latency |
+| **SDPA / FlashAttn** | [train_gpt2.py](../brain/train_gpt2.py) | Fused on-chip SRAM attention | $3.2\times$ speedup, sub-2.3GB memory |
+| **BF16 Autocast** | [train_gpt2.py](../brain/train_gpt2.py) | 16-bit mixed precision execution | 2x arithmetic throughput |
+| **Binary uint16** | [tinystories.py](../data/tinystories.py) | Pre-tokenized memory-mapped shards | Zero runtime tokenization overhead |
+| **Zero-Sync Accum** | [train_gpt2.py](../brain/train_gpt2.py) | Asynchronous GPU execution | Prevents CPU-GPU lockstep stalls |

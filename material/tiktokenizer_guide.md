@@ -75,7 +75,7 @@ Hello, I'm a language model,
 
 ## 3. Python Implementation with `tiktoken`
 
-In your Python code ([train_gpt2.py](file:///Users/apple/Desktop/Projects/gpt-2(124M)/train_gpt2.py)), you can reproduce this exact tokenization using OpenAI's `tiktoken`:
+In your Python code ([train_gpt2.py](../brain/train_gpt2.py)), you can reproduce this exact tokenization using OpenAI's `tiktoken`:
 
 ```python
 import tiktoken

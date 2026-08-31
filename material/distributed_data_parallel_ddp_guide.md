@@ -6,7 +6,7 @@ A technical reference and system guide for **PyTorch Distributed Data Parallel (
 
 > [!NOTE]
 > **Single-GPU vs Multi-GPU Architecture in this Repository:**
-> The default reference implementation in [`brain/train_gpt2.py`](file:///Users/apple/Desktop/Projects/gpt-2(124M)/brain/train_gpt2.py) is intentionally streamlined and optimized for **a single MPS GPU** (Apple Silicon M-series) or a single CUDA GPU for interactive local development and experimentation.
+> The default reference implementation in [`brain/train_gpt2.py`](../brain/train_gpt2.py) is intentionally streamlined and optimized for **a single MPS GPU** (Apple Silicon M-series) or a single CUDA GPU for interactive local development and experimentation.
 >
 > If you fork this repository and wish to scale training across **multiple GPUs** (e.g. 8x A100 or H100 nodes on cloud services like Lambda Labs, RunPod, AWS, GCP, or Azure), this guide provides the exact theoretical principles, communication mechanisms, and drop-in code blueprints to scale the GPT-2 training pipeline seamlessly with PyTorch DDP.
 
@@ -15,7 +15,7 @@ A technical reference and system guide for **PyTorch Distributed Data Parallel (
 ## 1. Academic Paper & Primary References
 
 * **Primary Paper:** *PyTorch Distributed: Experiences on Accelerating Data Parallel Training* — Shen Li, Yanli Zhao, Rohan Varma, Omkar Salpekar, Pieter Noordhuis, Teng Li, Adam Paszke, Jeff Smith, Soumith Chintala (VLDB 2020 / arXiv:2006.15704).
-  * Local PDF: [`material/pytorch_distributed_ddp_paper.pdf`](file:///Users/apple/Desktop/Projects/gpt-2(124M)/material/pytorch_distributed_ddp_paper.pdf)
+  * Local PDF: [`material/pytorch_distributed_ddp_paper.pdf`](./pytorch_distributed_ddp_paper.pdf)
   * arXiv Link: [arXiv:2006.15704](https://arxiv.org/abs/2006.15704)
 * **Official PyTorch API Documentation:** [`torch.nn.parallel.DistributedDataParallel`](https://pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html)
 * **PyTorch Distributed Overview:** [`torch.distributed`](https://pytorch.org/docs/stable/distributed.html)
