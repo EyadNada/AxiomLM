@@ -582,6 +582,18 @@ class DataLoaderLite:
             if os.path.exists(single_path):
                 shards = [single_path]
 
+        # If shards not found directly in abs_data_dir, check systems_shards subfolder
+        if not shards and os.path.exists(os.path.join(abs_data_dir, "systems_shards")):
+            sub_dir = os.path.join(abs_data_dir, "systems_shards")
+            sub_shards = sorted(glob.glob(os.path.join(sub_dir, f"{split}_*.bin")))
+            if not sub_shards:
+                single_sub = os.path.join(sub_dir, f"{split}.bin")
+                if os.path.exists(single_sub):
+                    sub_shards = [single_sub]
+            if sub_shards:
+                abs_data_dir = sub_dir
+                shards = sub_shards
+
         self.shards = shards
         self.is_fallback = False
 
