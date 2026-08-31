@@ -48,8 +48,9 @@ dependencies = [
     "tqdm>=4.65.0",
     "datasets>=2.14.0",
     "matplotlib>=3.7.0",
-    "gradio>=4.0.0",
+    "gradio>=5.0.0,<6.0.0",
 ]
+
 
 
 [project.optional-dependencies]

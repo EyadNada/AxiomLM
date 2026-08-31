@@ -308,7 +308,11 @@ button.secondary-btn:hover {
 # Gradio Interface Definition
 # -----------------------------------------------------------------------------
 def build_app():
-    with gr.Blocks(title="AxiomLM (124M)", css=CUSTOM_CSS) as demo:
+    theme = gr.themes.Default(
+        primary_hue="slate",
+        neutral_hue="slate",
+    )
+    with gr.Blocks(title="AxiomLM (124M)", css=CUSTOM_CSS, theme=theme) as demo:
         # Header
         gr.HTML(
             """
