@@ -110,6 +110,11 @@ def stream_inference(
 
     # Encode prompt
     input_ids = ENCODER.encode(prompt)
+    if len(input_ids) >= config.block_size:
+        yield prompt, "Error", f"Error: Prompt length ({len(input_ids)}) exceeds model context window ({config.block_size})."
+        return
+
+    effective_max_tokens = min(max_tokens, config.block_size - len(input_ids))
     x = torch.tensor(input_ids, dtype=torch.long, device=DEVICE).unsqueeze(0)
     generated_tokens = x.clone()
 
@@ -150,9 +155,9 @@ def stream_inference(
             dt = t_now - t_start
             throughput = tokens_generated / dt if dt > 0 else 0.0
             latency = (dt / tokens_generated) * 1000.0 if tokens_generated > 0 else 0.0
-            progress_pct = (tokens_generated / max_tokens) * 100.0
+            progress_pct = (tokens_generated / effective_max_tokens) * 100.0
             telemetry = (
-                f"• Decoded Tokens:   {tokens_generated:3d} / {max_tokens} ({progress_pct:4.1f}%)   |  Step Latency: {latency:5.1f} ms/token\n"
+                f"• Decoded Tokens:   {tokens_generated:3d} / {effective_max_tokens} ({progress_pct:4.1f}%)   |  Step Latency: {latency:5.1f} ms/token\n"
                 f"• Generation Speed: {throughput:5.1f} tokens/second     |  Elapsed Time: {dt:5.2f} seconds\n"
                 f"• Execution Engine: {engine_name:<20}  |  Compute Device: {DEVICE_NAME}"
             )
@@ -162,7 +167,7 @@ def stream_inference(
                 time.sleep(0.025)
 
             # Decode Phase (O(1) sequential steps)
-            while tokens_generated < max_tokens:
+            while tokens_generated < effective_max_tokens:
                 logits, _, kv_caches = model(next_token, kv_caches=kv_caches)
                 prob_str = format_prob_inspector(logits[:, -1, :], temp_scale)
 
@@ -184,9 +189,9 @@ def stream_inference(
                 dt = t_now - t_start
                 throughput = tokens_generated / dt if dt > 0 else 0.0
                 latency = (dt / tokens_generated) * 1000.0 if tokens_generated > 0 else 0.0
-                progress_pct = (tokens_generated / max_tokens) * 100.0
+                progress_pct = (tokens_generated / effective_max_tokens) * 100.0
                 telemetry = (
-                    f"• Decoded Tokens:   {tokens_generated:3d} / {max_tokens} ({progress_pct:4.1f}%)   |  Step Latency: {latency:5.1f} ms/token\n"
+                    f"• Decoded Tokens:   {tokens_generated:3d} / {effective_max_tokens} ({progress_pct:4.1f}%)   |  Step Latency: {latency:5.1f} ms/token\n"
                     f"• Generation Speed: {throughput:5.1f} tokens/second     |  Elapsed Time: {dt:5.2f} seconds\n"
                     f"• Execution Engine: {engine_name:<20}  |  Compute Device: {DEVICE_NAME}"
                 )
@@ -199,7 +204,7 @@ def stream_inference(
                     break
         else:
             # Naive Eager Phase (O(T^2) sequential steps)
-            while tokens_generated < max_tokens:
+            while tokens_generated < effective_max_tokens:
                 logits, _ = model(generated_tokens)
                 prob_str = format_prob_inspector(logits[:, -1, :], temp_scale)
 
@@ -221,9 +226,9 @@ def stream_inference(
                 dt = t_now - t_start
                 throughput = tokens_generated / dt if dt > 0 else 0.0
                 latency = (dt / tokens_generated) * 1000.0 if tokens_generated > 0 else 0.0
-                progress_pct = (tokens_generated / max_tokens) * 100.0
+                progress_pct = (tokens_generated / effective_max_tokens) * 100.0
                 telemetry = (
-                    f"• Decoded Tokens:   {tokens_generated:3d} / {max_tokens} ({progress_pct:4.1f}%)   |  Step Latency: {latency:5.1f} ms/token\n"
+                    f"• Decoded Tokens:   {tokens_generated:3d} / {effective_max_tokens} ({progress_pct:4.1f}%)   |  Step Latency: {latency:5.1f} ms/token\n"
                     f"• Generation Speed: {throughput:5.1f} tokens/second     |  Elapsed Time: {dt:5.2f} seconds\n"
                     f"• Execution Engine: {engine_name:<20}  |  Compute Device: {DEVICE_NAME}"
                 )
@@ -274,132 +279,146 @@ def stream_side_by_side_benchmark(
         return
 
     input_ids = ENCODER.encode(prompt)
+    if len(input_ids) >= config.block_size:
+        yield prompt, prompt, "Error: Prompt exceeds context window limit (1024 tokens).", "Error", "Prompt length exceeds context window."
+        return
+
+    # Bound actual tokens to remaining context capacity
+    actual_num_tokens = min(num_tokens, config.block_size - len(input_ids))
+    clamped_notice = f" (Clamped to {actual_num_tokens} tokens for context window)" if actual_num_tokens < num_tokens else ""
+
     x_init = torch.tensor(input_ids, dtype=torch.long, device=DEVICE).unsqueeze(0)
 
     text_cache = prompt
     text_naive = prompt
     status_cache = "• Status:       Initializing...\n• Step Latency: Ready\n• Throughput:   Ready"
     status_naive = "• Status:       WAITING (Queued for Phase 2)...\n• Step Latency: Ready\n• Throughput:   Ready"
-    summary_md = "Executing Phase 1: Hardware-Accelerated O(1) Key-Value Cache Engine..."
+    summary_md = f"Executing Phase 1: Hardware-Accelerated O(1) Key-Value Cache Engine ({actual_num_tokens} tokens){clamped_notice}..."
 
     yield text_cache, text_naive, status_cache, status_naive, summary_md
 
-    # =========================================================================
-    # Phase 1: Execute KV-Cache Engine (Streaming Live)
-    # =========================================================================
-    if DEVICE == "mps" and hasattr(torch.mps, "synchronize"):
-        torch.mps.synchronize()
-    elif DEVICE == "cuda":
-        torch.cuda.synchronize()
+    # Adaptive yield stride to ensure fluid 60fps browser rendering without SSE queue lag
+    yield_stride = 1 if actual_num_tokens <= 120 else (2 if actual_num_tokens <= 300 else 4)
 
-    t0_cache = time.perf_counter()
-    gen_cache = x_init.clone()
+    try:
+        # =========================================================================
+        # Phase 1: Execute KV-Cache Engine (Streaming Live)
+        # =========================================================================
+        if DEVICE == "mps" and hasattr(torch.mps, "synchronize"):
+            torch.mps.synchronize()
+        elif DEVICE == "cuda":
+            torch.cuda.synchronize()
 
-    with torch.no_grad():
-        kv_caches = [None] * config.n_layer
-        logits, _, kv_caches = model(gen_cache, kv_caches=kv_caches)
-        next_tok = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
-        gen_cache = torch.cat((gen_cache, next_tok), dim=1)
-        text_cache += ENCODER.decode([next_tok.item()])
+        t0_cache = time.perf_counter()
+        gen_cache = x_init.clone()
 
-        t_now = time.perf_counter()
-        dt_c_live = t_now - t0_cache
-        tok_s_curr = 1.0 / dt_c_live if dt_c_live > 0 else 0.0
-        ms_tok_curr = dt_c_live * 1000.0
-        status_cache = (
-            f"• Status:       RUNNING (Token 1/{num_tokens})\n"
-            f"• Step Latency: {ms_tok_curr:5.1f} ms/token (Flat O(1))\n"
-            f"• Throughput:   {tok_s_curr:5.1f} tokens/s (Elapsed: {dt_c_live:.2f}s)"
-        )
-        yield text_cache, text_naive, status_cache, status_naive, summary_md
-
-        for step_i in range(1, num_tokens):
-            logits, _, kv_caches = model(next_tok, kv_caches=kv_caches)
+        with torch.no_grad():
+            kv_caches = [None] * config.n_layer
+            logits, _, kv_caches = model(gen_cache, kv_caches=kv_caches)
             next_tok = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
             gen_cache = torch.cat((gen_cache, next_tok), dim=1)
             text_cache += ENCODER.decode([next_tok.item()])
 
             t_now = time.perf_counter()
             dt_c_live = t_now - t0_cache
-            toks_done = step_i + 1
-            tok_s_curr = toks_done / dt_c_live if dt_c_live > 0 else 0.0
-            ms_tok_curr = (dt_c_live / toks_done) * 1000.0 if toks_done > 0 else 0.0
+            tok_s_curr = 1.0 / dt_c_live if dt_c_live > 0 else 0.0
+            ms_tok_curr = dt_c_live * 1000.0
             status_cache = (
-                f"• Status:       RUNNING (Token {toks_done}/{num_tokens})\n"
+                f"• Status:       RUNNING (Token 1/{actual_num_tokens})\n"
                 f"• Step Latency: {ms_tok_curr:5.1f} ms/token (Flat O(1))\n"
                 f"• Throughput:   {tok_s_curr:5.1f} tokens/s (Elapsed: {dt_c_live:.2f}s)"
             )
             yield text_cache, text_naive, status_cache, status_naive, summary_md
 
-    if DEVICE == "mps" and hasattr(torch.mps, "synchronize"):
-        torch.mps.synchronize()
-    elif DEVICE == "cuda":
-        torch.cuda.synchronize()
+            for step_i in range(1, actual_num_tokens):
+                logits, _, kv_caches = model(next_tok, kv_caches=kv_caches)
+                next_tok = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
+                gen_cache = torch.cat((gen_cache, next_tok), dim=1)
+                text_cache += ENCODER.decode([next_tok.item()])
 
-    t1_cache = time.perf_counter()
-    dt_cache = t1_cache - t0_cache
-    tok_s_cache = num_tokens / dt_cache if dt_cache > 0 else 0.0
-    ms_tok_cache = (dt_cache / num_tokens) * 1000.0 if num_tokens > 0 else 0.0
+                if step_i % yield_stride == 0 or step_i == actual_num_tokens - 1:
+                    t_now = time.perf_counter()
+                    dt_c_live = t_now - t0_cache
+                    toks_done = step_i + 1
+                    tok_s_curr = toks_done / dt_c_live if dt_c_live > 0 else 0.0
+                    ms_tok_curr = (dt_c_live / toks_done) * 1000.0 if toks_done > 0 else 0.0
+                    status_cache = (
+                        f"• Status:       RUNNING (Token {toks_done}/{actual_num_tokens})\n"
+                        f"• Step Latency: {ms_tok_curr:5.1f} ms/token (Flat O(1))\n"
+                        f"• Throughput:   {tok_s_curr:5.1f} tokens/s (Elapsed: {dt_c_live:.2f}s)"
+                    )
+                    yield text_cache, text_naive, status_cache, status_naive, summary_md
 
-    status_cache = (
-        f"• Status:       FINISHED (1st Place)\n"
-        f"• Total Time:   {dt_cache:.3f} seconds ({tok_s_cache:.1f} tokens/s)\n"
-        f"• Avg Latency:  {ms_tok_cache:.1f} ms/token (Zero Redundant Attention FLOPs)"
-    )
-    status_naive = "• Status:       RUNNING (Phase 2: Naive Eager Recompute)...\n• Step Latency: Starting...\n• Throughput:   Starting..."
-    summary_md = "Phase 1 Complete! Now Executing Phase 2: Naive Eager Recomputation (Watch latency degrade)..."
-    yield text_cache, text_naive, status_cache, status_naive, summary_md
+        if DEVICE == "mps" and hasattr(torch.mps, "synchronize"):
+            torch.mps.synchronize()
+        elif DEVICE == "cuda":
+            torch.cuda.synchronize()
 
-    # =========================================================================
-    # Phase 2: Execute Naive Eager Recompute Engine (Streaming Live)
-    # =========================================================================
-    if DEVICE == "mps" and hasattr(torch.mps, "synchronize"):
-        torch.mps.synchronize()
-    elif DEVICE == "cuda":
-        torch.cuda.synchronize()
+        t1_cache = time.perf_counter()
+        dt_cache = t1_cache - t0_cache
+        tok_s_cache = actual_num_tokens / dt_cache if dt_cache > 0 else 0.0
+        ms_tok_cache = (dt_cache / actual_num_tokens) * 1000.0 if actual_num_tokens > 0 else 0.0
 
-    t0_naive = time.perf_counter()
-    gen_naive = x_init.clone()
+        status_cache = (
+            f"• Status:       FINISHED (1st Place)\n"
+            f"• Total Time:   {dt_cache:.3f} seconds ({tok_s_cache:.1f} tokens/s)\n"
+            f"• Avg Latency:  {ms_tok_cache:.1f} ms/token (Zero Redundant Attention FLOPs)"
+        )
+        status_naive = "• Status:       RUNNING (Phase 2: Naive Eager Recompute)...\n• Step Latency: Starting...\n• Throughput:   Starting..."
+        summary_md = "Phase 1 Complete! Now Executing Phase 2: Naive Eager Recomputation (Watch latency degrade)..."
+        yield text_cache, text_naive, status_cache, status_naive, summary_md
 
-    with torch.no_grad():
-        for step_j in range(num_tokens):
-            logits, _ = model(gen_naive)
-            next_tok = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
-            gen_naive = torch.cat((gen_naive, next_tok), dim=1)
-            text_naive += ENCODER.decode([next_tok.item()])
+        # =========================================================================
+        # Phase 2: Execute Naive Eager Recompute Engine (Streaming Live)
+        # =========================================================================
+        if DEVICE == "mps" and hasattr(torch.mps, "synchronize"):
+            torch.mps.synchronize()
+        elif DEVICE == "cuda":
+            torch.cuda.synchronize()
 
-            t_now = time.perf_counter()
-            dt_n_live = t_now - t0_naive
-            toks_done = step_j + 1
-            tok_s_curr = toks_done / dt_n_live if dt_n_live > 0 else 0.0
-            ms_tok_curr = (dt_n_live / toks_done) * 1000.0 if toks_done > 0 else 0.0
-            status_naive = (
-                f"• Status:       RUNNING (Token {toks_done}/{num_tokens})\n"
-                f"• Step Latency: {ms_tok_curr:5.1f} ms/token (Degrading O(T²))\n"
-                f"• Throughput:   {tok_s_curr:5.1f} tokens/s (Elapsed: {dt_n_live:.2f}s)"
-            )
-            yield text_cache, text_naive, status_cache, status_naive, summary_md
+        t0_naive = time.perf_counter()
+        gen_naive = x_init.clone()
 
-    if DEVICE == "mps" and hasattr(torch.mps, "synchronize"):
-        torch.mps.synchronize()
-    elif DEVICE == "cuda":
-        torch.cuda.synchronize()
+        with torch.no_grad():
+            for step_j in range(actual_num_tokens):
+                logits, _ = model(gen_naive)
+                next_tok = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
+                gen_naive = torch.cat((gen_naive, next_tok), dim=1)
+                text_naive += ENCODER.decode([next_tok.item()])
 
-    t1_naive = time.perf_counter()
-    dt_naive = t1_naive - t0_naive
-    tok_s_naive = num_tokens / dt_naive if dt_naive > 0 else 0.0
-    ms_tok_naive = (dt_naive / num_tokens) * 1000.0 if num_tokens > 0 else 0.0
+                if step_j % yield_stride == 0 or step_j == actual_num_tokens - 1:
+                    t_now = time.perf_counter()
+                    dt_n_live = t_now - t0_naive
+                    toks_done = step_j + 1
+                    tok_s_curr = toks_done / dt_n_live if dt_n_live > 0 else 0.0
+                    ms_tok_curr = (dt_n_live / toks_done) * 1000.0 if toks_done > 0 else 0.0
+                    status_naive = (
+                        f"• Status:       RUNNING (Token {toks_done}/{actual_num_tokens})\n"
+                        f"• Step Latency: {ms_tok_curr:5.1f} ms/token (Degrading O(T²))\n"
+                        f"• Throughput:   {tok_s_curr:5.1f} tokens/s (Elapsed: {dt_n_live:.2f}s)"
+                    )
+                    yield text_cache, text_naive, status_cache, status_naive, summary_md
 
-    status_naive = (
-        f"• Status:       FINISHED\n"
-        f"• Total Time:   {dt_naive:.3f} seconds ({tok_s_naive:.1f} tokens/s)\n"
-        f"• Avg Latency:  {ms_tok_naive:.1f} ms/token (Quadratic Degradation Overhead)"
-    )
+        if DEVICE == "mps" and hasattr(torch.mps, "synchronize"):
+            torch.mps.synchronize()
+        elif DEVICE == "cuda":
+            torch.cuda.synchronize()
 
-    speedup = dt_naive / dt_cache if dt_cache > 0 else 1.0
-    latency_reduction = (1.0 - ms_tok_cache / ms_tok_naive) * 100.0 if ms_tok_naive > 0 else 0.0
+        t1_naive = time.perf_counter()
+        dt_naive = t1_naive - t0_naive
+        tok_s_naive = actual_num_tokens / dt_naive if dt_naive > 0 else 0.0
+        ms_tok_naive = (dt_naive / actual_num_tokens) * 1000.0 if actual_num_tokens > 0 else 0.0
 
-    summary_md = f"""
+        status_naive = (
+            f"• Status:       FINISHED\n"
+            f"• Total Time:   {dt_naive:.3f} seconds ({tok_s_naive:.1f} tokens/s)\n"
+            f"• Avg Latency:  {ms_tok_naive:.1f} ms/token (Quadratic Degradation Overhead)"
+        )
+
+        speedup = dt_naive / dt_cache if dt_cache > 0 else 1.0
+        latency_reduction = (1.0 - ms_tok_cache / ms_tok_naive) * 100.0 if ms_tok_naive > 0 else 0.0
+
+        summary_md = f"""
 ### Empirical Benchmark Results: KV-Cache Engine is {speedup:.2f}x Faster!
 
 | Metric / Dimension | Hardware KV-Cache (O(1)) | Naive Eager Recompute (O(T²)) | Hardware Multiplier |
@@ -408,9 +427,12 @@ def stream_side_by_side_benchmark(
 | **Average Step Latency** | **{ms_tok_cache:.1f} ms / token** | {ms_tok_naive:.1f} ms / token | **{latency_reduction:+.1f}% Step Latency** |
 | **Decoding Throughput** | **{tok_s_cache:.1f} tokens / s** | {tok_s_naive:.1f} tokens / s | **{tok_s_cache - tok_s_naive:+.1f} tok/s Gain** |
 | **Algorithmic Complexity** | **O(1) Constant Memory Buffer** | O(T²) Quadratic Degradation | Zero Redundant Softmax Recomputations |
-| **Output Integrity** | {num_tokens} Tokens Decoded | {num_tokens} Tokens Decoded | 100.0% Exact Mathematical Parity |
+| **Output Integrity** | {actual_num_tokens} Tokens Decoded | {actual_num_tokens} Tokens Decoded | 100.0% Exact Mathematical Parity |
 """
-    yield text_cache, text_naive, status_cache, status_naive, summary_md
+        yield text_cache, text_naive, status_cache, status_naive, summary_md
+
+    except Exception as run_err:
+        yield text_cache, text_naive, f"Error: {run_err}", f"Error: {run_err}", f"Runtime Error during benchmark: {run_err}"
 
 
 # -----------------------------------------------------------------------------
