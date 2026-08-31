@@ -6,6 +6,7 @@ and configures fallback pathways.
 
 import os
 import sys
+import platform
 import subprocess
 import sysconfig
 import importlib.util
@@ -16,12 +17,19 @@ KERNEL_DIR = os.path.dirname(os.path.abspath(__file__))
 CPP_SOURCE = os.path.join(KERNEL_DIR, "cpu_neon_kernels.cpp")
 SO_OUTPUT = os.path.join(KERNEL_DIR, "axiom_neon_kernels.so")
 
+IS_ARM = platform.machine().lower() in ["arm64", "aarch64"]
+
 
 def compile_neon_extension(force: bool = False, verbose: bool = False) -> str:
     """
     Compiles cpu_neon_kernels.cpp into a native shared library (.so)
-    using clang++ with Apple Silicon M3/ARM optimizations.
+    using clang++ with architecture-specific ARM SIMD optimizations.
     """
+    if not IS_ARM:
+        raise RuntimeError(
+            f"ARM NEON kernels require an ARM64/aarch64 architecture (detected: {platform.machine()})"
+        )
+
     if os.path.exists(SO_OUTPUT) and not force:
         # Check timestamp
         src_mtime = os.path.getmtime(CPP_SOURCE)
@@ -41,7 +49,6 @@ def compile_neon_extension(force: bool = False, verbose: bool = False) -> str:
         "-shared",
         "-std=c++20",
         "-fPIC",
-        "-mcpu=apple-m3",
         "-ffast-math",
         "-DTORCH_EXTENSION_NAME=axiom_neon_kernels",
         f"-I{py_inc}",
@@ -52,12 +59,15 @@ def compile_neon_extension(force: bool = False, verbose: bool = False) -> str:
         "-ltorch_cpu",
         "-lc10",
         "-ltorch_python",
-        "-undefined",
-        "dynamic_lookup",
-        CPP_SOURCE,
-        "-o",
-        SO_OUTPUT,
     ]
+
+    # Platform-specific compiler & linker flags
+    if sys.platform == "darwin":
+        cmd.extend(["-mcpu=apple-m3", "-undefined", "dynamic_lookup"])
+    else:
+        cmd.extend(["-march=armv8-a+simd"])
+
+    cmd.extend([CPP_SOURCE, "-o", SO_OUTPUT])
 
     if verbose:
         print("Compiling NEON kernels with command:", " ".join(cmd))
@@ -74,8 +84,11 @@ def compile_neon_extension(force: bool = False, verbose: bool = False) -> str:
 def load_neon_module() -> Optional[Any]:
     """
     Compiles (if needed) and dynamically imports the native NEON extension.
-    Returns the module or None if compilation/import fails.
+    Returns the module or None if compilation/import fails or not on ARM.
     """
+    if not IS_ARM:
+        return None
+
     try:
         so_path = compile_neon_extension(force=False)
         spec = importlib.util.spec_from_file_location("axiom_neon_kernels", so_path)
@@ -90,8 +103,11 @@ def load_neon_module() -> Optional[Any]:
 
 
 if __name__ == "__main__":
-    print(f"Building Axiom-LM Apple Silicon Kernels...")
-    so = compile_neon_extension(force=True, verbose=True)
-    print(f"Successfully compiled: {so}")
-    mod = load_neon_module()
-    print("Exported module symbols:", dir(mod))
+    if not IS_ARM:
+        print(f"Skipping NEON kernel build: Host architecture ({platform.machine()}) is not ARM64/aarch64.")
+    else:
+        print(f"Building Axiom-LM Apple Silicon Kernels...")
+        so = compile_neon_extension(force=True, verbose=True)
+        print(f"Successfully compiled: {so}")
+        mod = load_neon_module()
+        print("Exported module symbols:", dir(mod))

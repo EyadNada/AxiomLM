@@ -1,5 +1,6 @@
 import os
 import sys
+import platform
 import unittest
 import torch
 import torch.nn as nn
@@ -18,6 +19,8 @@ from kernels import (
 )
 from brain.train_gpt2 import RMSNorm, SwiGLUMLP, GPTConfig
 
+IS_ARM64 = platform.machine().lower() in ["arm64", "aarch64"]
+
 
 class TestCustomKernels(unittest.TestCase):
     """Rigorous mathematical correctness and gradient tests for custom fused kernels."""
@@ -28,6 +31,7 @@ class TestCustomKernels(unittest.TestCase):
         if torch.backends.mps.is_available():
             self.devices.append("mps")
 
+    @unittest.skipUnless(IS_ARM64, "Native ARM NEON SIMD kernels require ARM64 / Apple Silicon architecture")
     def test_neon_module_loaded(self):
         """Verify native ARM NEON C++ extension is loaded and functional."""
         self.assertIsNotNone(_NEON_MOD, "Native NEON kernel module should be compiled and loaded.")
