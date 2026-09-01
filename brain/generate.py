@@ -36,44 +36,81 @@ def load_model(
         model.eval()
         return model, model.config
 
-    if checkpoint_path and os.path.isfile(checkpoint_path):
-        print(f"[AxiomLM] Loading model checkpoint from: {checkpoint_path}")
-        if checkpoint_path.endswith(".safetensors"):
+    if checkpoint_path:
+        actual_path = checkpoint_path.strip()
+        safetensors_file = None
+        config_file = None
+
+        if os.path.isdir(actual_path):
+            st_candidate = os.path.join(actual_path, "model.safetensors")
+            cfg_candidate = os.path.join(actual_path, "config.json")
+            if os.path.isfile(st_candidate):
+                safetensors_file = st_candidate
+            if os.path.isfile(cfg_candidate):
+                config_file = cfg_candidate
+        elif os.path.isfile(actual_path) and actual_path.endswith(".safetensors"):
+            safetensors_file = actual_path
+            cfg_candidate = os.path.join(os.path.dirname(actual_path), "config.json")
+            if os.path.isfile(cfg_candidate):
+                config_file = cfg_candidate
+
+        if safetensors_file:
+            print(f"[AxiomLM] Loading safetensors model from: {safetensors_file}")
             from safetensors.torch import load_file
-            weights = load_file(checkpoint_path)
-            config = GPTConfig(
-                n_kv_head=4 if arch == "modern" else None,
-                norm_type="rmsnorm" if arch == "modern" else "layernorm",
-                pos_emb="rope" if arch == "modern" else "learned",
-                mlp_type="swiglu" if arch == "modern" else "gelu",
-                bias=False if arch == "modern" else True,
-            )
+            import json
+            weights = load_file(safetensors_file)
+
+            if config_file and os.path.isfile(config_file):
+                with open(config_file, "r", encoding="utf-8") as f:
+                    cfg_data = json.load(f)
+                config = GPTConfig(
+                    block_size=cfg_data.get("n_positions", 1024),
+                    vocab_size=cfg_data.get("vocab_size", 50304),
+                    n_layer=cfg_data.get("n_layer", 12),
+                    n_head=cfg_data.get("n_head", 12),
+                    n_embd=cfg_data.get("n_embd", 768),
+                    n_kv_head=cfg_data.get("n_kv_head", 4 if arch == "modern" else None),
+                    norm_type=cfg_data.get("norm_type", "rmsnorm" if arch == "modern" else "layernorm"),
+                    pos_emb=cfg_data.get("pos_emb", "rope" if arch == "modern" else "learned"),
+                    mlp_type=cfg_data.get("mlp_type", "swiglu" if arch == "modern" else "gelu"),
+                    bias=cfg_data.get("bias", False if arch == "modern" else True),
+                )
+            else:
+                config = GPTConfig(
+                    n_kv_head=4 if arch == "modern" else None,
+                    norm_type="rmsnorm" if arch == "modern" else "layernorm",
+                    pos_emb="rope" if arch == "modern" else "learned",
+                    mlp_type="swiglu" if arch == "modern" else "gelu",
+                    bias=False if arch == "modern" else True,
+                )
             model = GPT(config)
             model.load_state_dict(weights)
             model.to(device)
             model.eval()
-            print(f"[AxiomLM] Successfully restored safetensors model")
+            print(f"[AxiomLM] Successfully restored safetensors model ({sum(p.numel() for p in model.parameters()):,} parameters)")
             return model, config
 
-        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        if "config" in checkpoint:
-            config = checkpoint["config"]
-        else:
-            config = GPTConfig(
-                n_kv_head=4 if arch == "modern" else None,
-                norm_type="rmsnorm" if arch == "modern" else "layernorm",
-                pos_emb="rope" if arch == "modern" else "learned",
-                mlp_type="swiglu" if arch == "modern" else "gelu",
-                bias=False if arch == "modern" else True,
-            )
-        model = GPT(config)
-        if "model_state_dict" in checkpoint:
-            model.load_state_dict(checkpoint["model_state_dict"])
-        model.to(device)
-        model.eval()
-        step = checkpoint.get("step", "N/A")
-        print(f"[AxiomLM] Successfully restored checkpoint (Trained step: {step})")
-        return model, config
+        if os.path.isfile(actual_path):
+            print(f"[AxiomLM] Loading model checkpoint from: {actual_path}")
+            checkpoint = torch.load(actual_path, map_location=device, weights_only=False)
+            if "config" in checkpoint:
+                config = checkpoint["config"]
+            else:
+                config = GPTConfig(
+                    n_kv_head=4 if arch == "modern" else None,
+                    norm_type="rmsnorm" if arch == "modern" else "layernorm",
+                    pos_emb="rope" if arch == "modern" else "learned",
+                    mlp_type="swiglu" if arch == "modern" else "gelu",
+                    bias=False if arch == "modern" else True,
+                )
+            model = GPT(config)
+            if "model_state_dict" in checkpoint:
+                model.load_state_dict(checkpoint["model_state_dict"])
+            model.to(device)
+            model.eval()
+            step = checkpoint.get("step", "N/A")
+            print(f"[AxiomLM] Successfully restored checkpoint (Trained step: {step})")
+            return model, config
 
     # Fallback to randomly initialized model
     print(f"[AxiomLM] Initializing un-trained {arch} architecture for demonstration...")

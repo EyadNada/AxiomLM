@@ -55,7 +55,7 @@ def get_or_load_model(source_type: str, checkpoint_path: str, arch: str) -> Tupl
         model, config = load_model(checkpoint_path=None, pretrained="gpt2", arch="classic", device=DEVICE)
     else:
         actual_path = checkpoint_path.strip()
-        if actual_path and os.path.isfile(actual_path):
+        if actual_path and (os.path.isfile(actual_path) or os.path.isdir(actual_path)):
             model, config = load_model(checkpoint_path=actual_path, pretrained=None, arch=arch, device=DEVICE)
         else:
             # Fallback for fresh clones / CI runners where checkpoint weights are not stored in git

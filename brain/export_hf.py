@@ -114,9 +114,56 @@ def export_checkpoint_to_hf(
         json.dump(tok_dict, f, indent=2)
     print(f"  ✓ Exported: {tok_path}")
 
+    # Attempt to export full tokenizer vocabulary files (vocab.json, merges.txt, tokenizer.json)
+    try:
+        from transformers import GPT2TokenizerFast
+        tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+        tokenizer.save_pretrained(output_dir)
+        print(f"  ✓ Exported: Complete Hugging Face tokenizer assets (vocab.json, merges.txt, tokenizer.json)")
+    except Exception as e:
+        print(f"  [Note] Tokenizer fast export fallback: {e}")
+
     readme_path = os.path.join(output_dir, "README.md")
     with open(readme_path, "w", encoding="utf-8") as f:
-        f.write(f"---\nlanguage:\n- en\nlicense: mit\npipeline_tag: text-generation\n---\n\n# 🧠 {model_name}\n\nTrained AxiomLM 124M parameter autoregressive model.\n")
+        f.write(f"""---
+language:
+- en
+- python
+license: mit
+pipeline_tag: text-generation
+tags:
+- axiomlm
+- llama-3
+- muon-optimizer
+- triton-kernels
+- pytorch
+---
+
+# 🧠 {model_name}
+
+Trained **AxiomLM 124M parameter** modern autoregressive Transformer model.
+
+## Architecture Specifications
+- **Model Type**: Modern LLaMA-3 Transformer Spec
+- **Normalization**: Root Mean Square Normalization (RMSNorm)
+- **Position Embeddings**: Rotary Position Embeddings (RoPE, $\\theta=10000.0$)
+- **Activation Function**: SwiGLU Gated Activation
+- **Attention**: Grouped-Query Attention (GQA, 12 Query Heads, 4 KV Heads)
+- **Parameters**: 114M (Active representations with tied embeddings)
+- **Trained Steps**: {step}
+
+## Quickstart via AxiomLM Engine
+
+```bash
+# Clone and install AxiomLM
+git clone https://github.com/EyadNada/AxiomLM.git
+cd AxiomLM
+pip install -e .
+
+# Run inference with O(1) Key-Value Cache
+axiom-generate --checkpoint {output_dir} --prompt "def triton_rmsnorm(x, weight):"
+```
+""")
     print(f"  ✓ Exported: {readme_path}")
 
     print(f"\n🎉 Successfully exported Hugging Face artifacts to {output_dir}!")
