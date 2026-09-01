@@ -178,14 +178,25 @@ def train(
         if os.path.isfile(resume):
             if master_process:
                 print(f"[AxiomLM] Resuming training from checkpoint: {resume}")
+            
+            # Compatibility for legacy checkpoints that pickled GPTConfig in __main__
+            import __main__
+            if not hasattr(__main__, 'GPTConfig'):
+                setattr(__main__, 'GPTConfig', ModelConfig)
+                
             ckpt = torch.load(resume, map_location=device, weights_only=False)
             start_step = ckpt.get("step", 0)
             raw_model = get_raw_model(model)
-            cleaned_sd = {k.replace("_orig_mod.", "").replace("module.", ""): v for k, v in ckpt["model"].items()}
+            
+            # Support both new ('model', 'optimizers') and legacy ('model_state_dict', 'optimizer_state_dicts') keys
+            model_key = "model" if "model" in ckpt else "model_state_dict"
+            opt_key = "optimizers" if "optimizers" in ckpt else "optimizer_state_dicts"
+            
+            cleaned_sd = {k.replace("_orig_mod.", "").replace("module.", ""): v for k, v in ckpt[model_key].items()}
             raw_model.load_state_dict(cleaned_sd, strict=False)
 
-            if "optimizers" in ckpt and len(ckpt["optimizers"]) == len(optimizers):
-                for opt, s_dict in zip(optimizers, ckpt["optimizers"]):
+            if opt_key in ckpt and len(ckpt[opt_key]) == len(optimizers):
+                for opt, s_dict in zip(optimizers, ckpt[opt_key]):
                     try:
                         opt.load_state_dict(s_dict)
                     except Exception:
