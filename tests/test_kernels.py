@@ -10,14 +10,14 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from kernels import (
+from axiomlm.kernels import (
     fused_rmsnorm,
     FusedRMSNorm,
     fused_swiglu,
     FusedSwiGLUMLP,
     _NEON_MOD,
 )
-from brain.train_gpt2 import RMSNorm, SwiGLUMLP, GPTConfig
+from axiomlm.models import RMSNorm, SwiGLUMLP, GPTConfig, ModelConfig
 
 IS_ARM64 = platform.machine().lower() in ["arm64", "aarch64"]
 

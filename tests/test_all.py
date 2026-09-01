@@ -12,7 +12,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from brain.train_gpt2 import (
+from axiomlm import (
     RMSNorm,
     precompute_rope_frequencies,
     apply_rope,
@@ -21,7 +21,9 @@ from brain.train_gpt2 import (
     MLP,
     CausalSelfAttention,
     Block,
+    ModelConfig,
     GPTConfig,
+    Transformer,
     GPT,
     zeropower_via_newtonschulz5,
     Muon,
@@ -30,11 +32,13 @@ from brain.train_gpt2 import (
     generate_samples,
     generate_with_cache,
     get_lr,
-    get_raw_model,
     estimate_hardware_peak_tflops,
     calculate_mfu,
     create_profiler,
+    export_checkpoint_to_hf,
+    load_model,
 )
+from axiomlm.train import get_raw_model
 
 
 class TestModernArchitectureComponents(unittest.TestCase):
@@ -686,7 +690,7 @@ class TestHuggingFaceExport(unittest.TestCase):
         """Verify that export_checkpoint_to_hf generates valid .safetensors, config.json, and metadata."""
         import tempfile
         from safetensors.torch import load_file
-        from brain.export_hf import export_checkpoint_to_hf
+        from axiomlm.engine import export_checkpoint_to_hf
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create dummy checkpoint
@@ -807,8 +811,7 @@ class TestAdvancedSamplingAndInference(unittest.TestCase):
     def test_directory_safetensors_and_config_loading(self):
         """Verify generate.py load_model correctly loads exported directories."""
         import tempfile
-        from brain.export_hf import export_checkpoint_to_hf
-        from brain.generate import load_model
+        from axiomlm.engine import export_checkpoint_to_hf, load_model
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = GPTConfig(n_layer=2, n_head=4, n_kv_head=2, n_embd=64, vocab_size=300, norm_type="rmsnorm", pos_emb="rope", mlp_type="swiglu")
@@ -838,7 +841,7 @@ class TestOptimizerSchedulingAndInvariants(unittest.TestCase):
 
     def test_cosine_learning_rate_schedule(self):
         """Verify learning rate schedule correctly executes warmup, cosine decay, and min_lr floor."""
-        from brain.train_gpt2 import get_lr
+        from axiomlm.optim import get_lr
         max_lr = 6e-4
         min_lr = max_lr * 0.1
         warmup_steps = 100

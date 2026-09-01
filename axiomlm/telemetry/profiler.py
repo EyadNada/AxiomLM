@@ -27,31 +27,34 @@ def estimate_hardware_peak_tflops(device: str) -> float:
         else:
             return 100.0  # Generic CUDA GPU fallback
     elif device == "mps":
-        # Apple Silicon unified GPU estimation
-        return 14.2  # Apple M-Series GPU (e.g. M3 Pro / M2 Max FP16)
+        return 10.0  # Apple Silicon baseline estimation
     else:
-        return 2.5   # CPU vector baseline
+        return 2.0   # CPU vector baseline
 
 
 def calculate_mfu(
     model: Any,
     tokens_per_sec: float,
-    context_len: int = 1024,
-    peak_tflops: float = 14.2,
+    seq_len: int = 1024,
+    peak_tflops: float = 10.0,
+    context_len: Optional[int] = None,
 ) -> Tuple[float, float]:
     """
     Calculates Model FLOPs Utilization (MFU) based on standard scaling laws:
     FLOPs per token = 6 * N_params + 12 * L * H * Q * T (Attention FLOPs).
     """
+    if context_len is not None:
+        seq_len = context_len
+
     raw_model = model.module if hasattr(model, 'module') else model
     config = raw_model.config
     
-    # Exclude embeddings from active parameter count
-    N = sum(p.numel() for n, p in raw_model.named_parameters() if "wte" not in n and "wpe" not in n)
+    # Active parameter count
+    N = sum(p.numel() for p in raw_model.parameters())
     L = config.n_layer
     H = config.n_head
     Q = config.n_embd // config.n_head
-    T = context_len
+    T = seq_len
 
     flops_per_token = 6 * N + 12 * L * H * Q * T
     achieved_flops = flops_per_token * tokens_per_sec

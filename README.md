@@ -120,29 +120,28 @@ pip install git+https://github.com/EyadNada/AxiomLM.git
 
 ---
 
-## Python API Usage
+### Python API Usage
 
 ### 1. Model Instantiation & Forward Pass
 
 ```python
 import torch
-from brain.train_gpt2 import GPT, GPTConfig
+import axiomlm as ax
 
-# Configure modern architecture specification
-config = GPTConfig(
+# Configure modern architecture specification (LLaMA-3 spec)
+config = ax.ModelConfig(
+    arch="modern",       # RoPE + RMSNorm + SwiGLU + GQA
     block_size=1024,
     vocab_size=50304,
     n_layer=12,
     n_head=12,
     n_embd=768,
-    n_kv_head=4,         # Grouped-Query Attention
-    norm_type="rmsnorm", # Root Mean Square Normalization
-    pos_emb="rope",      # Rotary Position Embeddings
-    mlp_type="swiglu",   # SwiGLU Gated Activation
+    n_kv_head=4,
+    use_fused_kernels=True,
 )
 
 # Instantiate model
-model = GPT(config)
+model = ax.Transformer(config)
 
 # Forward pass with cross-entropy loss computation
 input_ids = torch.randint(0, 50304, (2, 64))
@@ -154,15 +153,14 @@ print(f"Loss: {loss.item():.4f}")
 ### 2. Muon Matrix Optimizer Configuration
 
 ```python
-from brain.train_gpt2 import configure_optimizers
+import axiomlm as ax
 
 # Automatically routes 2D weights to Muon and 1D/embeddings to AdamW
-optimizers = configure_optimizers(
-    model=model,
+optimizers = model.configure_optimizers(
     weight_decay=0.1,
     learning_rate=0.0006,
     muon_lr=0.02,
-    device_type="mps",
+    device="mps",
     optimizer_type="muon",
 )
 ```
@@ -171,16 +169,22 @@ optimizers = configure_optimizers(
 
 ```python
 import torch
-from kernels.ops import FusedRMSNorm, FusedSwiGLU
+import axiomlm as ax
 
-# Fused RMSNorm layer
-norm = FusedRMSNorm(dim=768, eps=1e-6)
-x = torch.randn(2, 64, 768)
-out = norm(x)
+# Drop-in bare-metal fused RMSNorm
+fused_norm = ax.kernels.FusedRMSNorm(dim=768)
+x = torch.randn(4, 1024, 768, requires_grad=True)
+y = fused_norm(x)
+```
 
-# Fused SwiGLU feed-forward layer
-swiglu = FusedSwiGLU(dim=768, hidden_dim=2048)
-ffn_out = swiglu(out)
+### 4. High-Level Inference Engine
+
+```python
+import axiomlm as ax
+
+engine = ax.InferenceEngine(model)
+for token in engine.stream("import torch\n", max_tokens=50):
+    print(token, end="", flush=True)
 ```
 
 ---
@@ -256,10 +260,10 @@ kernels/
 
 ## Automated Verification & Test Suite
 
-The library includes a test suite with 47 automated tests covering core modeling components, optimizers, inference parity, multi-shard streaming, and native kernels:
+The library includes a test suite with 51 automated tests covering core modeling components, optimizers, inference parity, multi-shard streaming, and native kernels:
 
 ```bash
-# Run core architecture, optimizer, KV-cache, sampling, shards, and export tests (39 tests)
+# Run core architecture, optimizer, KV-cache, sampling, shards, and export tests (43 tests)
 python tests/test_all.py
 
 # Run low-level SIMD, Metal, and Triton kernel parity tests (8 tests)
@@ -280,26 +284,22 @@ For mathematical derivations, convergence proofs, and hardware Roofline analysis
 ```text
 ├── .github/                      # CI/CD workflows and issue templates
 ├── assets/                       # Benchmark charts and architecture diagrams
-├── brain/
-│   ├── train_gpt2.py             # Model definitions, optimizers, DataLoader, training loop
-│   ├── export_hf.py              # Zero-copy Hugging Face Safetensors exporter
-│   ├── generate.py               # Interactive CLI text generation engine
-│   └── generate_new_metrics.py   # Systems roofline and spectral analysis generator
-├── kernels/                      # Custom low-level GPU and CPU SIMD kernels
-│   ├── cpu_neon_kernels.cpp       # ARM NEON C++ SIMD implementations
-│   ├── metal_kernels.metal        # Apple Metal MSL compute shaders
-│   ├── triton_kernels.py          # OpenAI Triton JIT GPU kernels
-│   ├── ops.py                     # Autograd function bindings
-│   ├── build_kernels.py           # Build configuration
-│   └── benchmark_kernels.py       # Kernel microbenchmarks
+├── axiomlm/                      # Core AxiomLM Python Library Package
+│   ├── models/                   # Transformer, Block, RoPE, RMSNorm, SwiGLU, GQA
+│   ├── optim/                    # Muon (5-step Newton-Schulz) & LR schedules
+│   ├── kernels/                  # Fused Metal MSL, Triton JIT, ARM NEON SIMD
+│   ├── engine/                   # O(1) KV-Cache InferenceEngine & Safetensors exporter
+│   ├── data/                     # Multi-shard memory-mapped DataLoaderLite
+│   ├── telemetry/                # Model FLOPs Utilization (MFU %) & Roofline Profiler
+│   └── train.py                  # Pretraining CLI and training engine
 ├── data/
 │   ├── dSCRAPPER.py              # Multi-shard systems dataset builder & scraper
 │   └── systems_shards/           # Sharded binary uint16 token arrays
 ├── checkpoints/                  # Model weight snapshots (model_latest.pt)
 ├── exports/                      # Exported Safetensors and Hugging Face artifacts
 ├── material/                     # 27 technical reference guides and mathematical notes
-├── tests/                        # Automated test suite (47 tests)
-│   ├── test_all.py               # Architecture and integration tests
+├── tests/                        # Automated test suite (51 tests)
+│   ├── test_all.py               # Architecture, API, and integration tests
 │   └── test_kernels.py           # Native kernel parity tests
 ├── train.sh                      # Pretraining runner script
 ├── app.py                        # Interactive dashboard and GPU cost calculator

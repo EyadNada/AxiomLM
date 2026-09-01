@@ -34,6 +34,7 @@ jobs:
 
       - name: Verify CLI Tools & Entry Points
         run: |
+          axiom-train --help
           axiom-generate --help
           axiom-export --help
 
@@ -49,8 +50,8 @@ jobs:
         run: |
           python -c "
           import os, torch
-          from brain.train_gpt2 import train
-          from brain.export_hf import export_checkpoint_to_hf
+          from axiomlm.train import train
+          from axiomlm.engine import export_checkpoint_to_hf
           
           # Run 2 micro-steps to verify training loop execution
           train(max_steps=2, total_batch_size=4096, eval_interval=10, sample_interval=10, save_interval=1, architecture='modern', optimizer_type='muon')

@@ -16,15 +16,18 @@ import gradio as gr
 # Ensure repo root is on sys.path and alias GPTConfig for robust unpickling
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import __main__
-from brain.train_gpt2 import (
+from axiomlm import (
+    Transformer,
+    ModelConfig,
     GPT,
     GPTConfig,
     sample_logits,
+    load_model,
 )
 if not hasattr(__main__, "GPTConfig"):
     setattr(__main__, "GPTConfig", GPTConfig)
-
-from brain.generate import load_model
+if not hasattr(__main__, "ModelConfig"):
+    setattr(__main__, "ModelConfig", ModelConfig)
 
 # -----------------------------------------------------------------------------
 # Global State & Device Auto-Detection

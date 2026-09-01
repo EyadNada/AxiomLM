@@ -62,13 +62,21 @@ def export_checkpoint_to_hf(
             bias=False,
         )
 
-    raw_state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
+    if "model_state_dict" in checkpoint:
+        raw_state_dict = checkpoint["model_state_dict"]
+    elif "model" in checkpoint:
+        raw_state_dict = checkpoint["model"]
+    else:
+        raw_state_dict = checkpoint
+
     cleaned_state_dict: Dict[str, torch.Tensor] = {}
 
     for k, v in raw_state_dict.items():
+        if not isinstance(v, torch.Tensor):
+            continue
         clean_key = k.replace("_orig_mod.", "").replace("module.", "")
         if not clean_key.endswith(".attn.bias") and not clean_key.endswith(".freqs_cis"):
-            cleaned_state_dict[clean_key] = v.contiguous()
+            cleaned_state_dict[clean_key] = v.clone().contiguous()
 
     # 1. Export model.safetensors
     safetensors_path = os.path.join(output_dir, "model.safetensors")

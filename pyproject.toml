@@ -72,4 +72,4 @@ Repository = "https://github.com/EyadNada/AxiomLM"
 Issues = "https://github.com/EyadNada/AxiomLM/issues"
 
 [tool.setuptools.packages.find]
-include = ["axiomlm*", "brain*", "kernels*"]
+include = ["axiomlm*"]

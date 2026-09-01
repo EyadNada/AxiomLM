@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-venv/bin/python brain/train_gpt2.py \
+venv/bin/axiom-train \
   --arch modern \
   --optimizer muon \
   --data_dir data/systems_shards \

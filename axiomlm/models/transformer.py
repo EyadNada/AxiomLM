@@ -42,7 +42,7 @@ class ModelConfig:
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
-    n_kv_head: Optional[int] = 4 # GQA: 4 KV heads for 12 Query heads (3x memory reduction)
+    n_kv_head: Optional[int] = None # GQA: None for full MHA, or int (e.g. 4)
     norm_type: str = "rmsnorm"   # "rmsnorm" (modern) or "layernorm" (classic)
     pos_emb: str = "rope"        # "rope" (modern) or "learned" (classic)
     mlp_type: str = "swiglu"     # "swiglu" (modern) or "gelu" (classic)
@@ -115,8 +115,9 @@ class Block(nn.Module):
         x: torch.Tensor,
         freqs_cis: Optional[torch.Tensor] = None,
         kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        attn_out, new_kv_cache = self.attn(self.ln_1(x), freqs_cis=freqs_cis, kv_cache=kv_cache)
+        attn_out, new_kv_cache = self.attn(self.ln_1(x), freqs_cis=freqs_cis, kv_cache=kv_cache, use_cache=use_cache)
         x = x + attn_out
         x = x + self.mlp(self.ln_2(x))
         return x, new_kv_cache
@@ -195,7 +196,7 @@ class Transformer(nn.Module):
         new_kv_caches: List[Tuple[torch.Tensor, torch.Tensor]] = []
 
         for i, block in enumerate(self.transformer.h):
-            block_kv = kv_caches[i] if kv_caches is not None else None
+            block_kv = kv_caches[i] if (kv_caches is not None and i < len(kv_caches)) else None
             if self.config.grad_checkpoint and self.training:
                 # Custom gradient checkpointing forward
                 def create_custom_forward(module):
@@ -210,7 +211,7 @@ class Transformer(nn.Module):
                     use_reentrant=False,
                 )
             else:
-                x, new_kv = block(x, freqs_cis=self.freqs_cis, kv_cache=block_kv)
+                x, new_kv = block(x, freqs_cis=self.freqs_cis, kv_cache=block_kv, use_cache=(kv_caches is not None))
             if new_kv is not None:
                 new_kv_caches.append(new_kv)
 
@@ -220,8 +221,10 @@ class Transformer(nn.Module):
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
-            # During single-token inference, compute logits only for the last position
-            logits = self.lm_head(x[:, [-1], :])
+            if kv_caches is not None:
+                logits = self.lm_head(x[:, [-1], :])
+            else:
+                logits = self.lm_head(x)
             loss = None
 
         if kv_caches is not None:

@@ -86,8 +86,13 @@ class SwiGLUMLP(nn.Module):
     SwiGLU Gated Feed-Forward Network.
     Computes: SwiGLU(x) = (SiLU(x @ W_gate) * (x @ W_up)) @ W_down
     """
-    def __init__(self, n_embd: int, hidden_dim: Optional[int] = None, bias: bool = False):
+    def __init__(self, config: Any, hidden_dim: Optional[int] = None, bias: bool = False):
         super().__init__()
+        if hasattr(config, "n_embd"):
+            n_embd = config.n_embd
+            bias = getattr(config, "bias", False)
+        else:
+            n_embd = int(config)
         if hidden_dim is None:
             hidden_dim = int(2 * (4 * n_embd) / 3)
             hidden_dim = 64 * ((hidden_dim + 64 - 1) // 64)

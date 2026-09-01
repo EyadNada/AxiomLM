@@ -4,12 +4,13 @@ import time
 import torch
 import torch.nn.functional as F
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from brain.train_gpt2 import RMSNorm, SwiGLUMLP, GPTConfig
-from kernels import fused_rmsnorm, fused_swiglu, FusedRMSNorm, FusedSwiGLUMLP
+from axiomlm.models.modules import RMSNorm, SwiGLUMLP
+from axiomlm.models.transformer import ModelConfig, GPTConfig
+from axiomlm.kernels import fused_rmsnorm, fused_swiglu, FusedRMSNorm, FusedSwiGLUMLP
 
 
 def benchmark_rmsnorm(device: str = "cpu", B: int = 8, T: int = 1024, D: int = 768, num_iters: int = 100):

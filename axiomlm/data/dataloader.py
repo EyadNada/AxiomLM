@@ -57,17 +57,36 @@ class DataLoaderLite:
             shards = [synth_path]
 
         self.shards = shards
+        self.total_tokens = sum(os.path.getsize(s) // 2 for s in self.shards)
         self.reset()
 
-        total_tokens = sum(os.path.getsize(s) // 2 for s in self.shards)
         if process_rank == 0:
-            print(f"[DataLoaderLite] Loaded {split} ({len(self.shards)} shard{'s' if len(self.shards)>1 else ''}) from {data_dir} ({total_tokens:,} tokens total)")
-            print(f"[DataLoaderLite] 1 epoch = {total_tokens // (B * T * num_processes)} batches")
+            print(f"[DataLoaderLite] Loaded {split} ({len(self.shards)} shard{'s' if len(self.shards)>1 else ''}) from {data_dir} ({self.total_tokens:,} tokens total)")
+            print(f"[DataLoaderLite] 1 epoch = {self.total_tokens // (B * T * num_processes)} batches")
 
     def reset(self) -> None:
         self.current_shard = 0
         self.tokens = np.memmap(self.shards[self.current_shard], dtype=np.uint16, mode='r')
         self.current_position = self.B * self.T * self.process_rank
+
+    @property
+    def current_shard_idx(self) -> int:
+        return self.current_shard
+
+    def set_step(self, step: int, grad_accum_steps: int = 1) -> None:
+        """Fast-forwards data loader position to match a specific training step."""
+        tokens_per_step = self.B * self.T * self.num_processes * grad_accum_steps
+        target_token_offset = (step * tokens_per_step) % self.total_tokens
+
+        cum_tokens = 0
+        for i, shard_path in enumerate(self.shards):
+            shard_size = os.path.getsize(shard_path) // 2
+            if cum_tokens + shard_size > target_token_offset:
+                self.current_shard = i
+                self.tokens = np.memmap(self.shards[self.current_shard], dtype=np.uint16, mode='r')
+                self.current_position = (target_token_offset - cum_tokens) + self.B * self.T * self.process_rank
+                return
+            cum_tokens += shard_size
 
     def next_batch(self) -> Tuple[torch.Tensor, torch.Tensor]:
         B, T = self.B, self.T
