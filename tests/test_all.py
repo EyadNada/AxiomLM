@@ -871,6 +871,63 @@ class TestOptimizerSchedulingAndInvariants(unittest.TestCase):
         self.assertFalse(torch.isnan(model.transformer.wte.weight.grad).any())
 
 
+class TestTopLevelAxiomLMPackageAPI(unittest.TestCase):
+    """Automated verification for top-level axiomlm public package API."""
+
+    def test_top_level_package_imports(self):
+        """Verify import axiomlm as ax and version inspection."""
+        import axiomlm as ax
+        self.assertTrue(hasattr(ax, "__version__"))
+        self.assertEqual(ax.__version__, "0.1.0")
+        self.assertTrue(hasattr(ax, "Transformer"))
+        self.assertTrue(hasattr(ax, "ModelConfig"))
+        self.assertTrue(hasattr(ax, "InferenceEngine"))
+        self.assertTrue(hasattr(ax, "Muon"))
+        self.assertTrue(hasattr(ax, "DataLoaderLite"))
+        self.assertTrue(hasattr(ax, "export_checkpoint_to_hf"))
+
+    def test_transformer_instantiation_via_package(self):
+        """Verify Transformer forward and loss computation via top-level ax."""
+        import axiomlm as ax
+        config = ax.ModelConfig(arch="modern", n_layer=2, n_head=4, n_embd=64, vocab_size=500)
+        model = ax.Transformer(config)
+        self.assertEqual(model.config.norm_type, "rmsnorm")
+        self.assertEqual(model.config.pos_emb, "rope")
+
+        x = torch.randint(0, 500, (2, 16))
+        y = torch.randint(0, 500, (2, 16))
+        logits, loss = model(x, y)
+        self.assertIsNotNone(loss)
+        self.assertEqual(logits.shape, (2, 16, 500))
+
+    def test_inference_engine_via_package(self):
+        """Verify InferenceEngine generation and streaming via top-level ax."""
+        import axiomlm as ax
+        config = ax.ModelConfig(arch="modern", n_layer=2, n_head=4, n_embd=64, vocab_size=50304)
+        model = ax.Transformer(config)
+        engine = ax.InferenceEngine(model, device="cpu")
+
+        # Test generation
+        out_text = engine.generate("import torch", max_tokens=5, temperature=0.7)
+        self.assertIsInstance(out_text, str)
+        self.assertTrue(len(out_text) > 0)
+
+        # Test streaming
+        tokens = list(engine.stream("import torch", max_tokens=5))
+        self.assertEqual(len(tokens), 5)
+
+    def test_muon_optimizer_via_package(self):
+        """Verify ax.optim.Muon dual routing via top-level ax."""
+        import axiomlm as ax
+        config = ax.ModelConfig(arch="modern", n_layer=2, n_head=4, n_embd=64, vocab_size=500)
+        model = ax.Transformer(config)
+        optimizers = model.configure_optimizers(optimizer_type="muon", muon_lr=0.02)
+        self.assertEqual(len(optimizers), 2)
+        self.assertIsInstance(optimizers[0], ax.optim.Muon)
+        self.assertIsInstance(optimizers[1], torch.optim.AdamW)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 

@@ -62,9 +62,9 @@ notebook = [
 ]
 
 [project.scripts]
-axiom-train = "brain.train_gpt2:main"
-axiom-generate = "brain.generate:main"
-axiom-export = "brain.export_hf:main"
+axiom-train = "axiomlm.train:main"
+axiom-generate = "axiomlm.engine.inference:main"
+axiom-export = "axiomlm.engine.export:main"
 
 [project.urls]
 Homepage = "https://github.com/EyadNada/AxiomLM"
@@ -72,4 +72,4 @@ Repository = "https://github.com/EyadNada/AxiomLM"
 Issues = "https://github.com/EyadNada/AxiomLM/issues"
 
 [tool.setuptools.packages.find]
-include = ["brain*", "kernels*"]
+include = ["axiomlm*", "brain*", "kernels*"]
