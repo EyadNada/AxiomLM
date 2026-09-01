@@ -172,16 +172,12 @@ def build_systems_dataset(
         except Exception as e:
             print(f"[Warning] Streaming error: {e}. Using fallback...")
 
-    # If stream ended or offline, use tinystories or text fallback
+    # If stream ended or offline, use curated snippets as the pure code fallback
     if len(all_tokens) < target_tokens:
-        input_path = os.path.join(REPO_ROOT, "material", "input.txt")
-        if os.path.exists(input_path):
-            with open(input_path, "r", encoding="utf-8") as f:
-                fb_text = f.read()
-            fb_toks = enc.encode_ordinary(fb_text)
-            while len(all_tokens) < target_tokens:
-                all_tokens.extend(fb_toks)
-                pbar.update(min(len(fb_toks), target_tokens - len(all_tokens)))
+        print("[Warning] Could not reach target tokens from HuggingFace. Duplicating curated systems kernels to fill the remaining quota to ensure a pure code dataset...")
+        while len(all_tokens) < target_tokens:
+            all_tokens.extend(curated_tokens)
+            pbar.update(min(len(curated_tokens), target_tokens - len(all_tokens)))
 
     pbar.close()
     all_tokens = all_tokens[:target_tokens]
