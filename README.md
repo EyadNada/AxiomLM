@@ -215,12 +215,12 @@ axiom-export --checkpoint checkpoints/model_latest.pt --output_dir exports/Axiom
 
 ---
 
-## Multi-Shard Systems Dataset Builder
+## Multi-Shard Systems Dataset Builder & Scraper
 
 Generate multi-shard binary uint16 datasets containing GPU kernel implementations, systems derivations, and code intelligence:
 
 ```bash
-python data/build_systems_dataset.py --target_tokens 15000000 --shard_size 5000000 --output_dir data/systems_shards
+python data/dSCRAPPER.py --target_tokens 15000000 --shard_size 5000000 --output_dir data/systems_shards
 ```
 
 ---
@@ -256,10 +256,10 @@ kernels/
 
 ## Automated Verification & Test Suite
 
-The library includes a test suite with 39 automated tests covering core modeling components, optimizers, inference parity, and native kernels:
+The library includes a test suite with 47 automated tests covering core modeling components, optimizers, inference parity, multi-shard streaming, and native kernels:
 
 ```bash
-# Run core architecture, optimizer, KV-cache, sampling, and export tests (31 tests)
+# Run core architecture, optimizer, KV-cache, sampling, shards, and export tests (39 tests)
 python tests/test_all.py
 
 # Run low-level SIMD, Metal, and Triton kernel parity tests (8 tests)
@@ -293,12 +293,12 @@ For mathematical derivations, convergence proofs, and hardware Roofline analysis
 │   ├── build_kernels.py           # Build configuration
 │   └── benchmark_kernels.py       # Kernel microbenchmarks
 ├── data/
-│   ├── build_systems_dataset.py  # Multi-shard systems dataset builder
+│   ├── dSCRAPPER.py              # Multi-shard systems dataset builder & scraper
 │   └── systems_shards/           # Sharded binary uint16 token arrays
 ├── checkpoints/                  # Model weight snapshots (model_latest.pt)
 ├── exports/                      # Exported Safetensors and Hugging Face artifacts
 ├── material/                     # 27 technical reference guides and mathematical notes
-├── tests/                        # Automated test suite (39 tests)
+├── tests/                        # Automated test suite (47 tests)
 │   ├── test_all.py               # Architecture and integration tests
 │   └── test_kernels.py           # Native kernel parity tests
 ├── train.sh                      # Pretraining runner script
