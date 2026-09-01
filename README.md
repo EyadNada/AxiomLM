@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-EE4C2C.svg)](https://pytorch.org/)
 [![CI](https://github.com/EyadNada/AxiomLM/actions/workflows/ci.yml/badge.svg)](https://github.com/EyadNada/AxiomLM/actions)
-[![Hardware](https://img.shields.io/badge/Hardware-Apple%20Silicon%20%7C%20CUDA-black.svg)]()
+[![Hardware](https://img.shields.io/badge/Hardware-Apple%20Silicon%20%7C%20CUDA-green.svg)]()
 
 AxiomLM is a high-performance PyTorch library for modern autoregressive Transformer modeling, custom hardware kernel acceleration, and spectral matrix optimization. Built from first principles, it modernizes standard Transformer architectures with LLaMA-3 architectural enhancements, the Muon Newton-Schulz matrix optimizer, and bare-metal kernels for Apple Silicon (Metal MSL and ARM NEON SIMD) and NVIDIA CUDA (OpenAI Triton).
 
@@ -38,9 +38,10 @@ Summary of empirical hardware performance on Apple Silicon (MPS):
 
 ## Empirical Systems Benchmarks
 
+> 📊 **Interactive Visualizations Available:** All systems and architectural performance metrics are consolidated in an interactive Jupyter Notebook. Open [`assets/vizMetrics.ipynb`](assets/vizMetrics.ipynb) to view the complete charts detailing throughput gains, MFU rooflines, Muon convergence, and KV-cache scaling.
+
 ### 1. Architectural & Systems Paradigm Comparison
 
-![Systems & Architecture Efficiency Multiplier](assets/10_baseline_vs_modern_comparison.png)
 
 AxiomLM demonstrates significant operational gains across throughput, latency, memory consumption, and hardware compute utilization relative to the classic GPT-2 baseline.
 
@@ -48,7 +49,6 @@ AxiomLM demonstrates significant operational gains across throughput, latency, m
 
 ### 2. Empirical Loss Convergence (AdamW vs. Muon Optimizer)
 
-![Training Loss Convergence](assets/9_baseline_vs_modern_convergence.png)
 
 The Muon matrix optimizer accelerates empirical loss convergence by replacing coordinate-wise gradient updates with polar orthogonalization via 5-step Newton-Schulz iterations.
 
@@ -61,15 +61,12 @@ The Muon matrix optimizer accelerates empirical loss convergence by replacing co
 | **Baseline (Unoptimized FP32)** | 2,800 tokens/sec | 1,462 ms/step | 2.09 TFLOPs (20.9% MFU) |
 | **AxiomLM (BF16 + Fused Kernels)** | **9,200 tokens/sec** | **445 ms/step** | **6.87 TFLOPs (68.7% MFU)** |
 
-![Training Throughput](assets/1_training_throughput.png)
 
-![Step Latency](assets/2_step_latency.png)
 
 ---
 
 ### 4. Hardware Roofline & Model FLOPs Utilization (MFU)
 
-![Hardware Roofline MFU Analysis](assets/12_hardware_roofline_mfu_analysis.png)
 
 Autocast BF16 execution and fused kernel memory tiling shift the operational boundary from the memory-bandwidth bound regime into compute saturation on unified memory architectures.
 
@@ -77,9 +74,7 @@ Autocast BF16 execution and fused kernel memory tiling shift the operational bou
 
 ### 5. Key-Value Cache Scaling & GQA Memory Footprint
 
-![KV Cache Memory](assets/8_kv_cache_memory.png)
 
-![Long Context KV Cache Scaling](assets/13_long_context_kv_cache_scaling.png)
 
 Grouped-Query Attention (4 KV heads) reduces context cache growth by 66.7% relative to standard Multi-Head Attention (12 KV heads), enabling linear memory scaling across extended context windows.
 
