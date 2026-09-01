@@ -289,7 +289,7 @@ For mathematical derivations, convergence proofs, and hardware Roofline analysis
 │   ├── optim/                    # Muon (5-step Newton-Schulz) & LR schedules
 │   ├── kernels/                  # Fused Metal MSL, Triton JIT, ARM NEON SIMD
 │   ├── engine/                   # O(1) KV-Cache InferenceEngine & Safetensors exporter
-│   ├── data/                     # Multi-shard memory-mapped DataLoaderLite
+│   ├── dengine/                  # Multi-shard memory-mapped DataLoaderLite
 │   ├── telemetry/                # Model FLOPs Utilization (MFU %) & Roofline Profiler
 │   └── train.py                  # Pretraining CLI and training engine
 ├── data/

@@ -31,15 +31,17 @@ from .engine.inference import (
     load_model,
 )
 from .engine.export import export_checkpoint_to_hf
-from .data.dataloader import DataLoaderLite
+from .dengine.dataloader import DataLoaderLite
 from .telemetry.profiler import calculate_mfu, estimate_hardware_peak_tflops, create_profiler
 from .train import train
 
 from . import models
 from . import optim
 from . import engine
-from . import data
+from . import dengine
 from . import telemetry
+
+dENGINE = dengine  # type: ignore
 
 try:
     from . import kernels
@@ -79,7 +81,8 @@ __all__ = [
     "optim",
     "kernels",
     "engine",
-    "data",
+    "dengine",
+    "dENGINE",
     "telemetry",
     "__version__",
 ]

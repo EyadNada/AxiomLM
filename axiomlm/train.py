@@ -19,7 +19,7 @@ import numpy as np
 from .models.transformer import Transformer, ModelConfig, GPT, GPTConfig
 from .optim.muon import Muon
 from .optim.schedule import get_lr
-from .data.dataloader import DataLoaderLite
+from .dengine.dataloader import DataLoaderLite
 from .telemetry.profiler import calculate_mfu, estimate_hardware_peak_tflops, create_profiler
 from .engine.inference import generate_with_cache, benchmark_generation_speed, sample_logits
 
