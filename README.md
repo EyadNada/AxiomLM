@@ -1,4 +1,4 @@
-# AxiomLM (124M)
+# AxiomLM
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -6,39 +6,43 @@
 [![CI](https://github.com/EyadNada/AxiomLM/actions/workflows/ci.yml/badge.svg)](https://github.com/EyadNada/AxiomLM/actions)
 [![Hardware](https://img.shields.io/badge/Hardware-Apple%20Silicon%20%7C%20CUDA-black.svg)]()
 
-A high-performance pretraining engine and modern architectural overhaul of OpenAI's original GPT-2 (124M) in pure PyTorch, optimized from first principles for Apple Silicon (Metal / MPS / ARM NEON) and NVIDIA CUDA.
+AxiomLM is a high-performance PyTorch library for modern autoregressive Transformer modeling, custom hardware kernel acceleration, and spectral matrix optimization. Built from first principles, it modernizes standard Transformer architectures with LLaMA-3 architectural enhancements, the Muon Newton-Schulz matrix optimizer, and bare-metal kernels for Apple Silicon (Metal MSL and ARM NEON SIMD) and NVIDIA CUDA (OpenAI Triton).
 
 ---
 
-## Overview
+## Key Features
 
-**AxiomLM** is a next-generation, high-throughput autoregressive Transformer pretraining and inference engine. It provides a complete, ground-up redesign of OpenAI's foundational GPT-2 (124M parameter) baseline architecture, rebuilt in modern PyTorch 2.x and modernized with state-of-the-art LLM advances (LLaMA-3, Mistral, and modern systems engineering paradigms).
+* **Modern Architecture Suite**: Native implementations of Rotary Position Embeddings (RoPE), Root Mean Square Normalization (RMSNorm), SwiGLU Gated Linear Units, and Grouped-Query Attention (GQA).
+* **Spectral Matrix Optimization**: Implementation of the Muon optimizer utilizing quintic Newton-Schulz iterations for polar decomposition and orthogonal parameter updates in 2D weight space.
+* **Low-Level Hardware Kernels**: Fused compute kernels with analytical backward passes written in OpenAI Triton (CUDA), Apple Metal Shading Language (MSL), and ARM NEON C++ SIMD intrinsics.
+* **Zero-Overhead Inference**: State-cached Key-Value (KV) decode engine achieving O(1) step latency, paired with advanced sampling strategies (Top-p Nucleus, Min-p dynamic thresholding, and Repetition Penalty).
+* **Multi-Shard Streaming Data Loader**: Memory-mapped binary ingestion (`np.memmap`) with sub-200 MB RAM utilization and cross-shard step synchronization.
+* **Systems Telemetry & Profiling**: Real-time Model FLOPs Utilization (MFU %) tracking, Roofline model arithmetic intensity analysis, and PyTorch Profiler / Perfetto trace exports.
+* **Model Serialization**: Zero-copy conversion and export to standard Hugging Face Safetensors format (`model.safetensors`, `config.json`).
 
-The engine upgrades every layer of the modeling and systems stack: replacing LayerNorm with **RMSNorm**, absolute positional embeddings with **Rotary Position Embeddings (RoPE)**, standard GELU MLPs with **SwiGLU gated linear units**, and Multi-Head Attention with **Grouped-Query Attention (GQA)**. It integrates the next-generation **Muon (Momentum Orthogonalized by Newton-Schulz)** matrix optimizer for accelerated convergence, native fused hardware kernels (Apple ARM NEON C++ SIMD, Metal MSL, and OpenAI Triton), an $O(1)$ Key-Value (KV) cache inference engine with advanced sampling (Top-p, Min-p, Repetition Penalty), activation gradient checkpointing, and real-time Model FLOPs Utilization (MFU) roofline profiling.
+---
+
+## Performance Summary
+
+Summary of empirical hardware performance on Apple Silicon (MPS):
+
+* **Inference Generation Throughput**: Up to 27.5x speedup via per-layer KV-cache state preservation.
+* **Pretraining Throughput**: 3.29x higher token processing rate (2,800 to 9,200 tokens/sec).
+* **Optimization Step Latency**: 69.6% reduction in step execution time (1,462 ms to 445 ms per 4,096 tokens).
+* **Loss Convergence Rate**: Approximately 42% fewer optimization steps to reach target validation loss via Muon.
+* **KV-Cache Memory Footprint**: 66.7% reduction in VRAM allocation through 4-head Grouped-Query Attention.
+* **Hardware Compute Utilization**: 3.28x increase in attained compute (2.09 TFLOPs to 6.87 TFLOPs, 68.7% MFU).
+* **Decoding Latency**: Constant O(1) latency (~6.0 ms/token) compared to quadratic degradation in naive autoregression.
 
 ---
 
-## Performance Benchmarks & Systems Visualizations
-
-AxiomLM has been rigorously benchmarked across 10 empirical systems dimensions comparing the baseline GPT-2 model against the modern AxiomLM engine.
-
-In potato terms, this is what's achieved when executing on an MPS device:
-
-* **Inference Generation Speed [27.5x Speedup]**
-* **Pretraining Throughput [3.29x Faster Training]**
-* **Optimization Step Latency [69.6% Reduction]**
-* **Loss Convergence Rate [~42% Fewer Steps Needed]**
-* **Inference Memory Footprint [66.7% Memory Reduction]**
-* **Hardware Compute Saturation [3.28x Hardware Efficiency]**
-* **Flat Constant Latency [O(1) Steady ~6.0 ms / token]**
-
----
+## Empirical Systems Benchmarks
 
 ### 1. Architectural & Systems Paradigm Comparison
 
 ![Systems & Architecture Efficiency Multiplier](assets/10_baseline_vs_modern_comparison.png)
 
-AxiomLM achieves up to a **27.5x inference speedup**, **3.29x higher pretraining throughput**, and a **66.7% reduction in KV-cache memory** over the baseline GPT-2 model.
+AxiomLM demonstrates significant operational gains across throughput, latency, memory consumption, and hardware compute utilization relative to the classic GPT-2 baseline.
 
 ---
 
@@ -46,280 +50,276 @@ AxiomLM achieves up to a **27.5x inference speedup**, **3.29x higher pretraining
 
 ![Training Loss Convergence](assets/9_baseline_vs_modern_convergence.png)
 
-The Muon matrix optimizer reaches target validation perplexity in **~42% fewer optimization steps** compared to coordinate-wise scalar AdamW by performing orthogonal parameter updates in activation space via quintic Newton-Schulz polar iterations.
+The Muon matrix optimizer accelerates empirical loss convergence by replacing coordinate-wise gradient updates with polar orthogonalization via 5-step Newton-Schulz iterations.
 
 ---
 
-### 3. Training Speed Progression & Step Latency Reduction
+### 3. Training Speed & Latency Scaling
 
-| Metric | Baseline (Unoptimized FP32) | Modern AxiomLM (BF16 + Fused Kernels) | Net Improvement |
+| Configuration | Throughput | Step Latency (4K tokens) | Attained Compute (MPS) |
 | :--- | :--- | :--- | :--- |
-| **Throughput** | 2,800 tokens / sec | **9,200 tokens / sec** | **+228% (3.29x)** |
-| **Step Latency (4K tok)** | 1,462 ms / step | **445 ms / step** | **-69.6% latency** |
+| **Baseline (Unoptimized FP32)** | 2,800 tokens/sec | 1,462 ms/step | 2.09 TFLOPs (20.9% MFU) |
+| **AxiomLM (BF16 + Fused Kernels)** | **9,200 tokens/sec** | **445 ms/step** | **6.87 TFLOPs (68.7% MFU)** |
 
 ![Training Throughput](assets/1_training_throughput.png)
 
 ![Step Latency](assets/2_step_latency.png)
 
-Training throughput scaled from 2,800 tokens/sec in the unoptimized baseline to 9,200 tokens/sec across key systems optimizations, while step latency for 4,096 tokens dropped from 1,462 ms down to 445 ms per step.
-
 ---
 
-### 4. Compute Throughput & Hardware Efficiency
-
-![Compute TFLOPs](assets/3_compute_tflops.png)
-
-Effective compute throughput scaled from 2.09 TFLOPs to **6.87 TFLOPs** through fused Metal attention tiling, zero-sync gradient accumulation, and BF16 execution on Apple Silicon MPS.
-
----
-
-### 5. Parameter Distribution & Training Memory Footprint
-
-![Parameter Distribution](assets/4_parameter_distribution.png)
-
-![Training Memory](assets/5_training_memory.png)
-
-Parameter allocation is concentrated in the feed-forward MLP (45.5%) and token embeddings (31.0%). Training VRAM footprint is kept under 2.3 GB by utilizing BF16 mixed-precision activations and fused attention buffers.
-
----
-
-### 6. Inference Acceleration (KV-Cache vs. Naive Decoding)
-
-![Inference Throughput](assets/6_inference_throughput.png)
-
-![Token Latency](assets/7_token_latency.png)
-
-Per-layer Key-Value caching eliminates quadratic token recomputation, maintaining steady **~165 tokens/sec** generation speed and a flat **~6.0 ms / token** decode latency compared to the rapidly degrading quadratic baseline (55+ ms/token).
-
----
-
-### 7. Grouped-Query Attention (GQA) Memory Savings
-
-![KV Cache Memory](assets/8_kv_cache_memory.png)
-
-Switching from Multi-Head Attention (12 KV heads) to Grouped-Query Attention (4 KV heads) reduces inference memory consumption by **66.7%** with zero loss in validation perplexity.
-
----
-
-### 8. Muon Matrix Optimizer Spectral Convergence (Newton-Schulz Iteration)
-
-$$\mathbf{X}_{k+1} = a \mathbf{X}_k + \left(b \mathbf{X}_k \mathbf{X}_k^T + c (\mathbf{X}_k \mathbf{X}_k^T)^2\right) \mathbf{X}_k$$
-
-![Newton-Schulz Spectral Flattening](assets/11_newton_schulz_spectral_flattening.png)
-
-The 5-step quintic Newton-Schulz iteration rapidly compresses an ill-conditioned gradient spectrum ($\kappa > 100$) into an isotropic sphere with singular values centered at $\approx 1.0$, producing orthogonal parameter updates in activation space.
-
----
-
-### 9. Hardware Roofline Model & Model FLOPs Utilization (MFU)
+### 4. Hardware Roofline & Model FLOPs Utilization (MFU)
 
 ![Hardware Roofline MFU Analysis](assets/12_hardware_roofline_mfu_analysis.png)
 
-AxiomLM shifts the operational boundary from the memory-bandwidth bound regime (2.09 TFLOPs, 20.9% MFU) into the hardware compute saturation ceiling (**6.87 TFLOPs, 68.7% MFU**) on Apple Silicon MPS via fused attention tiling and BF16 autocast.
+Autocast BF16 execution and fused kernel memory tiling shift the operational boundary from the memory-bandwidth bound regime into compute saturation on unified memory architectures.
 
 ---
 
-### 10. Long-Context KV-Cache VRAM Scaling (GQA vs. MHA vs. MQA)
+### 5. Key-Value Cache Scaling & GQA Memory Footprint
+
+![KV Cache Memory](assets/8_kv_cache_memory.png)
 
 ![Long Context KV Cache Scaling](assets/13_long_context_kv_cache_scaling.png)
 
-As sequence length scales to 8K and 16K tokens, Grouped-Query Attention preserves hundreds of megabytes of VRAM per concurrent stream compared to quadratic standard Multi-Head Attention.
+Grouped-Query Attention (4 KV heads) reduces context cache growth by 66.7% relative to standard Multi-Head Attention (12 KV heads), enabling linear memory scaling across extended context windows.
 
 ---
 
-## Technical Specifications
+## Architectural Specifications
 
-| Parameter | Symbol | Classic GPT-2 Baseline | Modern AxiomLM Spec | Engineering Rationale |
-| :--- | :---: | :---: | :---: | :--- |
-| **Layers** | $L$ | 12 | 12 | Stacked decoder transformer blocks |
-| **Hidden Dimension** | $d_{\text{model}}$ | 768 | 768 | Internal representation dimension |
-| **Query Heads** | $N_h$ | 12 | 12 | Query projection heads ($d_k = 64$) |
-| **Key/Value Heads** | $N_{kv}$ | 12 (MHA) | **4 (GQA)** | 3x Grouped-Query Attention for low VRAM footprint |
-| **MLP Hidden Dim** | $d_{\text{ffn}}$ | 3,072 ($4d$) | **2,048 ($\frac{8}{3}d$)** | Dimension aligned to multiple of 64 |
-| **Position Encoding** | - | Learned Absolute ($W_{pe}$) | **Rotary (RoPE)** | Complex frequency phasors ($\theta = 10,000$) |
-| **Normalization** | - | LayerNorm ($\epsilon = 10^{-5}$) | **RMSNorm ($\epsilon = 10^{-6}$)** | Zero mean overhead, unit root-mean-square |
-| **Context Length** | $T$ | 1024 | 1024 | Maximum sequence block size |
-| **Vocabulary Size** | $V$ | 50,257 | **50,304** | Padded for Apple Silicon / NVIDIA SIMD tile alignment |
-| **Total Parameters** | $P$ | 124,475,904 | **114,147,840** | Tied input/output embeddings (GQA modern spec) |
-
----
-
-## Architectural & Systems Evolution Matrix
-
-| Dimension / Component | Baseline GPT-2 Model (OpenAI TensorFlow 1.x) | Modern AxiomLM Spec (PyTorch 2.x Engine) | Engineering Impact & Multiplier |
+| Parameter | Baseline GPT-2 | AxiomLM Modern Spec | Technical Rationale |
 | :--- | :--- | :--- | :--- |
-| **Framework & Runtime** | TensorFlow 1.15 Static Graph / `tf.Session` | Pure PyTorch 2.x Eager + Fused MSL/NEON/Triton Kernels | Dynamic hardware dispatch & near-metal kernel control |
-| **Execution Precision** | Eager FP32 (Full 32-bit floating point) | BF16 / FP16 Mixed-Precision Autocast | 2.0x ALU Speed & 50% Reduced Memory Traffic |
-| **Attention Kernel** | Naive $O(T^2)$ Materialized Softmax | Fused FlashAttention / SDPA Tiling | Zero SRAM -> HBM roundtrips, $O(T)$ Memory |
-| **Training Throughput** | ~2,800 tokens / sec | **~9,200 tokens / sec** | **3.29x Higher Pretraining Throughput** |
-| **Step Latency (4K tok)** | 1,462 ms / step | **445 ms / step** | **69.6% Reduction in Step Latency** |
-| **Attained Compute (MPS)**| 2.09 TFLOPs (20.9% MFU) | **6.87 TFLOPs (68.7% MFU)** | **3.28x Hardware Saturation** |
-| **Positional Encoding** | Learned Absolute Positional Embeddings ($W_{pe}$) | Complex Rotary Embeddings (**RoPE**) | Relative distance awareness & length extrapolation |
-| **Layer Normalization** | LayerNorm (Mean Centering $\mu$ + Variance $\sigma^2$) | **RMSNorm** (Root Mean Square only) | Zero mean overhead, 7–10% faster kernel execution |
-| **Feed-Forward Network** | Standard 2-Layer GELU MLP ($4d_{\text{model}}$) | **SwiGLU** Gated Linear Unit ($\frac{8}{3}d_{\text{model}}$) | Significantly better empirical loss convergence per FLOP |
-| **Attention Head Layout** | Multi-Head Attention (12 Query, 12 KV Heads) | Grouped-Query Attention (**GQA**, 4 KV Heads) | 66.7% KV-Cache VRAM memory reduction |
-| **Matrix Optimizer** | Coordinate-wise Scalar AdamW | **Muon** (5-step Newton-Schulz Polar Update) | Orthogonal gradient updates, ~42% faster loss descent |
-| **Inference Generation** | Naive Quadratic $O(T^2)$ Recomputation | Hardware-Accelerated $O(1)$ **KV-Cache** Engine | Up to 27.5x Speedup at $T=1024$ Context Limit |
-| **Sampling Engine** | Basic greedy / temperature | **Top-p (Nucleus), Min-p, Repetition Penalty** | Vectorized probabilistic tail filtering |
-| **Memory Management** | Full forward activation retention | **Activation Gradient Checkpointing** | 60–70% activation memory reduction |
-| **Vocabulary Alignment** | Unpadded 50,257 tokens | Padded **50,304** tokens | Perfect 64-element SIMD / Tensor Core warp tiling alignment |
-| **Data Streaming** | Python text tokenization overhead | Zero-overhead memory-mapped **`uint16` binary shards** | Zero-copy direct memory-mapped batch ingestion |
+| **Layers** | 12 | 12 | Standard decoder transformer depth |
+| **Hidden Dimension ($d_{\text{model}}$)** | 768 | 768 | Internal representation width |
+| **Query Heads ($N_h$)** | 12 | 12 | Query projection heads ($d_k = 64$) |
+| **Key/Value Heads ($N_{kv}$)** | 12 (MHA) | **4 (GQA)** | 3x KV memory reduction during decoding |
+| **FFN Dimension ($d_{\text{ffn}}$)** | 3,072 ($4d$) | **2,048 ($\frac{8}{3}d$)** | Dimension aligned to multiples of 64 |
+| **Positional Encoding** | Learned Absolute | **Rotary (RoPE)** | Relative distance awareness and length extrapolation |
+| **Normalization** | LayerNorm | **RMSNorm** | Elimination of mean-centering overhead |
+| **Context Length** | 1024 | 1024 | Sequence block size |
+| **Vocabulary Size** | 50,257 | **50,304** | Padded for SIMD / Tensor Core tile alignment |
+| **Total Parameters** | 124,475,904 | **114,147,840** | Tied input/output embedding representations |
 
 ---
 
-## Quickstart
+## Installation
 
-### 1. Installation
+### From Source
 
 ```bash
 git clone https://github.com/EyadNada/AxiomLM.git
 cd AxiomLM
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 ```
 
-### 2. Dataset Ingestion & Multi-Shard Systems Builder
-
-Generate multi-shard binary uint16 datasets containing OpenAI Triton GPU kernels, Apple ARM NEON SIMD, FlashAttention, and Python-Edu streaming code intelligence:
+### Direct via pip
 
 ```bash
-# 1. Build Multi-Shard Systems & Kernel Dataset (e.g. 15M, 50M, or 100M+ tokens)
+pip install git+https://github.com/EyadNada/AxiomLM.git
+```
+
+---
+
+## Python API Usage
+
+### 1. Model Instantiation & Forward Pass
+
+```python
+import torch
+from brain.train_gpt2 import GPT, GPTConfig
+
+# Configure modern architecture specification
+config = GPTConfig(
+    block_size=1024,
+    vocab_size=50304,
+    n_layer=12,
+    n_head=12,
+    n_embd=768,
+    n_kv_head=4,         # Grouped-Query Attention
+    norm_type="rmsnorm", # Root Mean Square Normalization
+    pos_emb="rope",      # Rotary Position Embeddings
+    mlp_type="swiglu",   # SwiGLU Gated Activation
+)
+
+# Instantiate model
+model = GPT(config)
+
+# Forward pass with cross-entropy loss computation
+input_ids = torch.randint(0, 50304, (2, 64))
+targets = torch.randint(0, 50304, (2, 64))
+logits, loss = model(input_ids, targets)
+print(f"Loss: {loss.item():.4f}")
+```
+
+### 2. Muon Matrix Optimizer Configuration
+
+```python
+from brain.train_gpt2 import configure_optimizers
+
+# Automatically routes 2D weights to Muon and 1D/embeddings to AdamW
+optimizers = configure_optimizers(
+    model=model,
+    weight_decay=0.1,
+    learning_rate=0.0006,
+    muon_lr=0.02,
+    device_type="mps",
+    optimizer_type="muon",
+)
+```
+
+### 3. Fused Low-Level Kernels
+
+```python
+import torch
+from kernels.ops import FusedRMSNorm, FusedSwiGLU
+
+# Fused RMSNorm layer
+norm = FusedRMSNorm(dim=768, eps=1e-6)
+x = torch.randn(2, 64, 768)
+out = norm(x)
+
+# Fused SwiGLU feed-forward layer
+swiglu = FusedSwiGLU(dim=768, hidden_dim=2048)
+ffn_out = swiglu(out)
+```
+
+---
+
+## Command Line Interface (CLI)
+
+AxiomLM provides command-line utilities installed directly into your environment:
+
+### Pretraining Engine
+
+```bash
+# 1-Click execution with default modern spec and automatic checkpointing
+./train.sh
+
+# Or via Python CLI
+axiom-train --arch modern --optimizer muon --data_dir data/systems_shards --batch_size 16384 --save_interval 25 --resume checkpoints/model_latest.pt
+```
+
+### Interactive Text Generation
+
+```bash
+# Launch interactive generation CLI with KV-cache acceleration
+axiom-generate --checkpoint checkpoints/model_latest.pt --prompt "import torch\nimport triton" --temperature 0.8 --top_p 0.9 --min_p 0.05
+```
+
+### Hugging Face Safetensors Exporter
+
+```bash
+# Export trained checkpoint to Hugging Face format
+axiom-export --checkpoint checkpoints/model_latest.pt --output_dir exports/AxiomLM-124M
+```
+
+---
+
+## Multi-Shard Systems Dataset Builder
+
+Generate multi-shard binary uint16 datasets containing GPU kernel implementations, systems derivations, and code intelligence:
+
+```bash
 python data/build_systems_dataset.py --target_tokens 15000000 --shard_size 5000000 --output_dir data/systems_shards
 ```
 
-### 3. Pretraining & Profiling Engine
+---
 
-Train the model with auto-detected hardware backend (`mps`, `cuda`, or `cpu`), real-time MFU % logging, automatic step-completion checkpointing, and optimizer choice (`muon` or `adamw`):
+## Interactive Dashboard & GPU Cost Calculator
 
-```bash
-# 1. 1-Click Launch (Modern LLaMA-3 + Muon Optimizer + Auto-Save every 25 steps)
-./train.sh
-
-# 2. Or Run Directly via Python
-python brain/train_gpt2.py --arch modern --optimizer muon --data_dir data/systems_shards --batch_size 16384 --save_interval 25 --resume checkpoints/model_latest.pt
-
-# 3. Pretrain with Activation Gradient Checkpointing (for low VRAM systems)
-python brain/train_gpt2.py --arch modern --optimizer muon --grad_checkpoint
-
-# 4. Run PyTorch Profiler and Export Chrome / Perfetto Trace
-python brain/train_gpt2.py --profile
-```
-
-> **Note:** Checkpoints automatically save to `checkpoints/model_latest.pt` every 25 steps and immediately upon pressing `Ctrl+C`, with automatic historical pruning (`max_step_ckpts=2`) to keep disk space clean.
-
-### 4. Automated Hugging Face Safetensors Exporter
-
-Convert raw checkpoints into standard zero-copy Hugging Face format (`model.safetensors`, `config.json`, `generation_config.json`, `tokenizer_config.json`, and model card):
-
-```bash
-python brain/export_hf.py --checkpoint checkpoints/model_latest.pt --output_dir exports/AxiomLM-124M
-```
-
-### 5. Interactive Web Interface & GPU Cloud Cost Calculator
-
-Launch the clean, low-latency browser interface featuring interactive generation, the live KV-Cache speed duel, and the GPU Cloud Cost Optimizer:
+Launch the browser-based interface:
 
 ```bash
 python app.py
 ```
 
-Access the interface locally at `http://127.0.0.1:7860` to:
-* **Tab 1 (Interactive Studio)**: Live token streaming with probability inspection and sampling controls.
-* **Tab 2 (Execution Duel)**: Real-time race between $O(1)$ KV-Cache and $O(T^2)$ Naive Eager decoding.
-* **Tab 3 (GPU & Cost Optimizer)**: Synthesize production-grade OpenAI Triton kernels and compute enterprise GPU fleet dollar savings.
-
-### 6. Technical Report & Architectural Whitepaper
-
-Read the formal mathematical and systems whitepaper:
-* **[AxiomLM_Technical_Report.md](AxiomLM_Technical_Report.md)**: RoPE orthogonal invariance, RMSNorm invariant scaling, SwiGLU gating, GQA memory compression, 5-step Newton-Schulz Polar Matrix Orthogonalization, and Roofline arithmetic intensity analysis.
+Features included:
+* **Interactive Studio**: Real-time token streaming, probability inspection, and sampling configuration.
+* **Execution Duel**: Live side-by-side benchmark comparing O(1) KV-Cache against naive O(T^2) autoregression.
+* **Kernel & Cloud Cost Optimizer**: Fused OpenAI Triton kernel synthesizer and enterprise fleet cost calculation engine.
 
 ---
 
-## Custom Low-Level Kernel Suite
-
-AxiomLM includes custom low-level GPU and CPU kernels with analytical backward passes:
+## Custom Kernel Suite
 
 ```text
 kernels/
 ├── cpu_neon_kernels.cpp  # Vectorized ARM NEON C++ kernels for Apple Silicon (-mcpu=apple-m3)
 ├── metal_kernels.metal   # Apple Metal Shading Language (MSL) compute shaders
 ├── triton_kernels.py     # OpenAI Triton JIT GPU kernels for NVIDIA CUDA
-├── ops.py                # Custom torch.autograd.Function bindings and PyTorch modules
+├── ops.py                # PyTorch autograd bindings and module wrappers
 ├── build_kernels.py      # JIT and C++ build harness
-└── benchmark_kernels.py  # Low-level microbenchmark test harness
+└── benchmark_kernels.py  # Kernel-level microbenchmark harness
 ```
 
 ---
 
 ## Automated Verification & Test Suite
 
-Run the full automated test suite (39 unit and native kernel tests):
+The library includes a test suite with 39 automated tests covering core modeling components, optimizers, inference parity, and native kernels:
 
 ```bash
-# Run core architecture, optimizer, KV-cache, sampling, safetensors, and data loader tests (31 tests)
+# Run core architecture, optimizer, KV-cache, sampling, and export tests (31 tests)
 python tests/test_all.py
 
-# Run custom low-level SIMD, Metal, and Triton kernel tests (8 tests)
+# Run low-level SIMD, Metal, and Triton kernel parity tests (8 tests)
 python tests/test_kernels.py
 ```
+
+---
+
+## Technical Report
+
+For mathematical derivations, convergence proofs, and hardware Roofline analysis, refer to:
+* **[AxiomLM_Technical_Report.md](AxiomLM_Technical_Report.md)**
 
 ---
 
 ## Repository Structure
 
 ```text
-├── .github/                      # GitHub Actions CI workflow and issue templates
-├── assets/                       # 13 publication-grade benchmark plots and architectural charts
+├── .github/                      # CI/CD workflows and issue templates
+├── assets/                       # Benchmark charts and architecture diagrams
 ├── brain/
-│   ├── train_gpt2.py             # Core model, data loader, Muon/AdamW optimizers, MFU tracker, training loop
-│   ├── export_hf.py              # Automated zero-copy Hugging Face .safetensors & config exporter
-│   ├── generate.py               # Interactive text generation CLI and token streaming engine
-│   ├── generate_new_metrics.py   # Systems roofline, spectral singular value, and KV scaling generator
-│   └── performance_metrics.ipynb # Interactive metrics notebook with systems benchmarks
-├── kernels/                      # Custom low-level GPU & ARM NEON SIMD kernels
-│   ├── cpu_neon_kernels.cpp       # Vectorized ARM NEON C++ kernels for Apple Silicon M-series
-│   ├── metal_kernels.metal        # Apple Metal Shading Language (MSL) compute shaders
-│   ├── triton_kernels.py          # OpenAI Triton JIT GPU kernels for CUDA hardware
-│   ├── ops.py                     # Custom torch.autograd.Function bindings and modules
-│   ├── build_kernels.py           # JIT/extension compilation harness
-│   └── benchmark_kernels.py       # Microbenchmark test harness
+│   ├── train_gpt2.py             # Model definitions, optimizers, DataLoader, training loop
+│   ├── export_hf.py              # Zero-copy Hugging Face Safetensors exporter
+│   ├── generate.py               # Interactive CLI text generation engine
+│   └── generate_new_metrics.py   # Systems roofline and spectral analysis generator
+├── kernels/                      # Custom low-level GPU and CPU SIMD kernels
+│   ├── cpu_neon_kernels.cpp       # ARM NEON C++ SIMD implementations
+│   ├── metal_kernels.metal        # Apple Metal MSL compute shaders
+│   ├── triton_kernels.py          # OpenAI Triton JIT GPU kernels
+│   ├── ops.py                     # Autograd function bindings
+│   ├── build_kernels.py           # Build configuration
+│   └── benchmark_kernels.py       # Kernel microbenchmarks
 ├── data/
-│   ├── build_systems_dataset.py  # Multi-shard GPU kernel, systems ML, and code intelligence builder
-│   └── systems_shards/           # Multi-shard uint16 binary dataset shards (train_*.bin, val_*.bin)
+│   ├── build_systems_dataset.py  # Multi-shard systems dataset builder
+│   └── systems_shards/           # Sharded binary uint16 token arrays
 ├── checkpoints/                  # Model weight snapshots (model_latest.pt)
-├── exports/                      # Exported Hugging Face safetensors, configs, and tokenizer mappings
-├── material/                     # 27 mathematical derivations, guides, and foundational papers
-├── tests/                        # Automated unit and integration test suite (39 tests)
-│   ├── test_all.py               # Full integration & architecture test suite (31 tests)
-│   └── test_kernels.py           # Custom low-level kernel & gradcheck test suite (8 tests)
-├── train.sh                      # 1-Click execution script with auto-resumption and step auto-save
-├── app.py                        # Minimalist interactive web interface, KV duel & GPU cost optimizer
-├── AxiomLM_Technical_Report.md   # Official mathematical whitepaper and systems technical report
+├── exports/                      # Exported Safetensors and Hugging Face artifacts
+├── material/                     # 27 technical reference guides and mathematical notes
+├── tests/                        # Automated test suite (39 tests)
+│   ├── test_all.py               # Architecture and integration tests
+│   └── test_kernels.py           # Native kernel parity tests
+├── train.sh                      # Pretraining runner script
+├── app.py                        # Interactive dashboard and GPU cost calculator
+├── AxiomLM_Technical_Report.md   # Mathematical and architectural technical report
 ├── pyproject.toml                # Standard PEP 517/621 package build configuration
-├── requirements.txt              # Minimal environment dependencies
-├── CITATION.cff                  # Citation metadata for academic and research attribution
-├── CONTRIBUTING.md               # Contribution guidelines and development workflow
+├── requirements.txt              # Package dependencies
+├── CITATION.cff                  # Citation metadata
+├── CONTRIBUTING.md               # Contribution guidelines
 ├── LICENSE                       # MIT Open Source License
 └── README.md
 ```
 
 ---
 
-## Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details on setting up the development environment, running unit tests, and submitting pull requests.
-
----
-
 ## Citation
-
-If you find AxiomLM or its benchmarks useful in your research or educational projects, please cite it using the following BibTeX:
 
 ```bibtex
 @software{nada2026axiomlm,
   author       = {Eyad Nada},
-  title        = {AxiomLM: High-Performance Pretraining Engine and Modern Architectural Overhaul of GPT-2 (124M)},
+  title        = {AxiomLM: A High-Performance PyTorch Library for Modern Transformer Modeling and Spectral Matrix Optimization},
   year         = {2026},
   publisher    = {GitHub},
   journal      = {GitHub repository},

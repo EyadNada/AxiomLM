@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "axiomlm"
 version = "0.1.0"
-description = "High-performance pretraining engine & modern architectural overhaul of GPT-2 (124M) in pure PyTorch."
+description = "A high-performance PyTorch library for modern autoregressive Transformer modeling, fused hardware kernels, and spectral matrix optimization."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
