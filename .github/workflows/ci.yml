@@ -26,15 +26,39 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      - name: Install dependencies
+      - name: Install dependencies & package
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -e .
 
-      - name: Run Core Test Suite (Architecture, Muon, KV-Cache, Sampling)
+      - name: Verify CLI Tools & Entry Points
+        run: |
+          axiom-generate --help
+          axiom-export --help
+
+      - name: Run Core Test Suite (Architecture, Muon, Shards, Sampling, Export)
         run: |
           python tests/test_all.py
 
-      - name: Run Kernel Test Suite (SIMD, Metal MSL, Triton)
+      - name: Run Hardware Kernel Test Suite (SIMD, Metal MSL, Triton)
         run: |
           python tests/test_kernels.py
+
+      - name: End-to-End Micro Training & Export Smoke Test
+        run: |
+          python -c "
+          import os, torch
+          from brain.train_gpt2 import train
+          from brain.export_hf import export_checkpoint_to_hf
+          
+          # Run 2 micro-steps to verify training loop execution
+          train(max_steps=2, total_batch_size=4096, eval_interval=10, sample_interval=10, save_interval=1, architecture='modern', optimizer_type='muon')
+          
+          # Verify safetensors export from checkpoint
+          if os.path.exists('checkpoints/model_latest.pt'):
+              export_checkpoint_to_hf('checkpoints/model_latest.pt', 'exports/ci_test_export', 'AxiomLM-CI-Test')
+              assert os.path.exists('exports/ci_test_export/model.safetensors'), 'Exported model.safetensors missing'
+              assert os.path.exists('exports/ci_test_export/config.json'), 'Exported config.json missing'
+          "
+

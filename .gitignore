@@ -39,3 +39,8 @@ log/
 TODO_ROADMAP.md
 .TODO.md
 *.local.md
+
+# Build and packaging artifacts
+*.egg-info/
+build/
+dist/

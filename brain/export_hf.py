@@ -169,10 +169,14 @@ axiom-generate --checkpoint {output_dir} --prompt "def triton_rmsnorm(x, weight)
     print(f"\n🎉 Successfully exported Hugging Face artifacts to {output_dir}!")
     return output_dir
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(description="AxiomLM Hugging Face .safetensors Model Exporter")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/model_latest.pt")
     parser.add_argument("--output_dir", type=str, default="exports/AxiomLM-124M")
     parser.add_argument("--model_name", type=str, default="AxiomLM-124M")
     args = parser.parse_args()
     export_checkpoint_to_hf(checkpoint_path=args.checkpoint, output_dir=args.output_dir, model_name=args.model_name)
+
+
+if __name__ == "__main__":
+    main()

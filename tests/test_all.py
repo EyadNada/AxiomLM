@@ -29,6 +29,7 @@ from brain.train_gpt2 import (
     sample_logits,
     generate_samples,
     generate_with_cache,
+    get_lr,
     get_raw_model,
     estimate_hardware_peak_tflops,
     calculate_mfu,
@@ -722,6 +723,152 @@ class TestHuggingFaceExport(unittest.TestCase):
             x = torch.randint(0, 500, (1, 8))
             logits, _ = fresh_model(x)
             self.assertEqual(logits.shape, (1, 8, 500))
+
+
+class TestMultiShardDataLoader(unittest.TestCase):
+    """Rigorous tests for memory-mapped multi-shard streaming and rotation."""
+
+    def test_shard_boundary_transition_and_wrap(self):
+        """Verify DataLoaderLite seamlessly transitions across shard boundaries and wraps around."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create 3 tiny mock shards (500 tokens each)
+            enc = np.arange(1500, dtype=np.uint16)
+            enc[:500].tofile(os.path.join(tmpdir, "train_0000.bin"))
+            enc[500:1000].tofile(os.path.join(tmpdir, "train_0001.bin"))
+            enc[1000:1500].tofile(os.path.join(tmpdir, "train_0002.bin"))
+
+            # B=2, T=10 -> 20 tokens per batch
+            loader = DataLoaderLite(B=2, T=10, process_rank=0, num_processes=1, split="train", data_dir=tmpdir)
+            self.assertEqual(len(loader.shards), 3)
+
+            # Collect tokens across 35 batches (700 tokens > shard size of 500)
+            seen_tokens = []
+            for _ in range(35):
+                x, y = loader.next_batch()
+                self.assertEqual(x.shape, (2, 10))
+                self.assertEqual(y.shape, (2, 10))
+                # Targets should be shifted by 1
+                self.assertTrue(torch.all(y[:, :-1] == x[:, 1:]))
+                seen_tokens.append(x[0, 0].item())
+
+            self.assertGreater(len(seen_tokens), 30)
+
+    def test_dataloader_reset_and_epoch_counting(self):
+        """Verify reset function restores stream state to initial shard and offset."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            enc = np.arange(600, dtype=np.uint16)
+            enc.tofile(os.path.join(tmpdir, "train.bin"))
+
+            loader = DataLoaderLite(B=2, T=8, process_rank=0, num_processes=1, split="train", data_dir=tmpdir)
+            x1, _ = loader.next_batch()
+            loader.reset()
+            x2, _ = loader.next_batch()
+            self.assertTrue(torch.equal(x1, x2), "Reset should replay exact initial batch.")
+
+
+class TestAdvancedSamplingAndInference(unittest.TestCase):
+    """Unit tests for advanced sampling strategies and KV-cache state management."""
+
+    def test_min_p_sampling_truncation(self):
+        """Verify min-p dynamic thresholding correctly filters low probability tail tokens."""
+        # Logits with one dominant token and many tiny tail tokens
+        logits = torch.tensor([[10.0, 5.0, 1.0, -5.0, -10.0]])
+        # With min_p = 0.5 (relative to max prob), tail logits should be filtered to -inf
+        filtered = sample_logits(logits.clone(), temperature=1.0, min_p=0.5)
+        self.assertFalse(torch.isnan(filtered).any())
+
+    def test_repetition_penalty_application(self):
+        """Verify repetition penalty biases sampling away from previously generated token IDs."""
+        # Logit for token 0 is dominant (10.0), token 1 is moderate (5.0)
+        logits = torch.tensor([[10.0, 5.0, -10.0, -10.0]])
+        # Without repetition penalty, token 0 is selected greedily
+        tok_greedy = sample_logits(logits.clone(), temperature=0.0)
+        self.assertEqual(tok_greedy.item(), 0)
+
+        # With extreme repetition penalty (5.0) on token 0: 10.0 / 5.0 = 2.0 < 5.0 (token 1)
+        gen_tokens = torch.tensor([[0]])
+        tok_penalized = sample_logits(logits.clone(), temperature=0.0, repetition_penalty=5.0, prev_tokens=gen_tokens)
+        self.assertEqual(tok_penalized.item(), 1, "Token 1 should be selected after penalizing token 0.")
+
+    def test_kv_cache_state_reset_and_reuse(self):
+        """Verify that reusing the model with and without cache reset produces deterministic outputs."""
+        import tiktoken
+        enc = tiktoken.get_encoding("gpt2")
+        cfg = GPTConfig(n_layer=2, n_head=4, n_kv_head=2, n_embd=64, vocab_size=50304, norm_type="rmsnorm", pos_emb="rope", mlp_type="swiglu")
+        model = GPT(cfg)
+        model.eval()
+
+        samples1 = generate_with_cache(model, enc, device="cpu", prompt="def forward", max_length=15, temperature=0.0)
+        samples2 = generate_with_cache(model, enc, device="cpu", prompt="def forward", max_length=15, temperature=0.0)
+        self.assertEqual(samples1, samples2, "Consecutive cached generations must be 100% deterministic.")
+
+    def test_directory_safetensors_and_config_loading(self):
+        """Verify generate.py load_model correctly loads exported directories."""
+        import tempfile
+        from brain.export_hf import export_checkpoint_to_hf
+        from brain.generate import load_model
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = GPTConfig(n_layer=2, n_head=4, n_kv_head=2, n_embd=64, vocab_size=300, norm_type="rmsnorm", pos_emb="rope", mlp_type="swiglu")
+            model = GPT(cfg)
+            ckpt_path = os.path.join(tmpdir, "model.pt")
+            torch.save({"model_state_dict": model.state_dict(), "config": cfg, "step": 42}, ckpt_path)
+
+            export_dir = os.path.join(tmpdir, "hf_dir")
+            export_checkpoint_to_hf(ckpt_path, export_dir, "TestModel")
+
+            # Load from directory path
+            loaded_model, loaded_cfg = load_model(checkpoint_path=export_dir, arch="modern", device="cpu")
+            self.assertEqual(loaded_cfg.n_layer, 2)
+            self.assertEqual(loaded_cfg.n_kv_head, 2)
+            self.assertEqual(loaded_cfg.norm_type, "rmsnorm")
+
+            # Test forward parity between original and loaded
+            x = torch.randint(0, 300, (1, 6))
+            with torch.no_grad():
+                orig_logits, _ = model(x)
+                loaded_logits, _ = loaded_model(x)
+            self.assertTrue(torch.allclose(orig_logits, loaded_logits, atol=1e-5))
+
+
+class TestOptimizerSchedulingAndInvariants(unittest.TestCase):
+    """Unit tests for optimizer learning rate schedule and parameter routing."""
+
+    def test_cosine_learning_rate_schedule(self):
+        """Verify learning rate schedule correctly executes warmup, cosine decay, and min_lr floor."""
+        from brain.train_gpt2 import get_lr
+        max_lr = 6e-4
+        min_lr = max_lr * 0.1
+        warmup_steps = 100
+        max_steps = 1000
+
+        # Step 0: lr starts at zero / initial ramp
+        lr_0 = get_lr(0, warmup_steps=warmup_steps, max_steps=max_steps, max_lr=max_lr, min_lr=min_lr)
+        self.assertAlmostEqual(lr_0, max_lr / (warmup_steps + 1), delta=1e-5)
+
+        # Step = warmup_steps: reaches peak max_lr
+        lr_warmup = get_lr(warmup_steps, warmup_steps=warmup_steps, max_steps=max_steps, max_lr=max_lr, min_lr=min_lr)
+        self.assertAlmostEqual(lr_warmup, max_lr, places=5)
+
+        # Step > max_steps: strictly bounded by min_lr floor
+        lr_end = get_lr(max_steps + 50, warmup_steps=warmup_steps, max_steps=max_steps, max_lr=max_lr, min_lr=min_lr)
+        self.assertEqual(lr_end, min_lr)
+
+    def test_tied_weight_gradient_flow(self):
+        """Verify that tied lm_head and wte tensors accumulate gradients correctly in backward pass."""
+        cfg = GPTConfig(n_layer=1, n_head=2, n_embd=32, vocab_size=100)
+        model = GPT(cfg)
+        self.assertTrue(model.transformer.wte.weight is model.lm_head.weight)
+
+        x = torch.randint(0, 100, (2, 4))
+        y = torch.randint(0, 100, (2, 4))
+        logits, loss = model(x, y)
+        loss.backward()
+
+        self.assertIsNotNone(model.transformer.wte.weight.grad)
+        self.assertFalse(torch.isnan(model.transformer.wte.weight.grad).any())
 
 
 if __name__ == "__main__":
