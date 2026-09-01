@@ -836,9 +836,9 @@ def build_app():
                     with gr.Column(scale=6):
                         prompt_box = gr.Textbox(
                             label="Input Prompt",
-                            placeholder="Enter prompt text here...",
+                            placeholder="Enter Python / Systems ML code prompt here...",
                             lines=3,
-                            value="Once upon a time in a quiet forest,",
+                            value="import triton\nimport triton.language as tl\n\n@triton.jit\ndef _rmsnorm_fwd_kernel(",
                         )
 
                         with gr.Row():
@@ -873,13 +873,13 @@ def build_app():
 
                         gr.Examples(
                             examples=[
-                                ["Once upon a time in a quiet forest,"],
-                                ["The ancient astronomer looked through the telescope and discovered"],
-                                ["Lily and her dog Max were walking down the street when"],
-                                ["The fundamental theorem of arithmetic states that"],
+                                ["import triton\nimport triton.language as tl\n\n@triton.jit\ndef _rmsnorm_fwd_kernel("],
+                                ["import torch\nimport torch.nn as nn\n\nclass SwiGLUMLP(nn.Module):"],
+                                ["class RooflineModel:\n    def __init__(self, peak_tflops: float, memory_bandwidth_gb_s: float):"],
+                                ["def calculate_mfu(model, tokens_per_sec, context_len, peak_tflops):"],
                             ],
                             inputs=prompt_box,
-                            label="Prompt Presets",
+                            label="Prompt Presets (Systems ML & Code)",
                         )
 
                 # Visibility Handler
@@ -939,7 +939,7 @@ def build_app():
                 with gr.Row():
                     bm_prompt_box = gr.Textbox(
                         label="Benchmark Input Prompt",
-                        value="Once upon a time in a faraway galaxy,",
+                        value="def triton_flash_attention(q, k, v, sm_scale):",
                         lines=2,
                         scale=4,
                     )

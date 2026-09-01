@@ -790,7 +790,7 @@ def generate_samples(
     model: GPT,
     enc,
     device: str,
-    prompt: str = "Once upon a time",
+    prompt: str = "import torch\n",
     num_samples: int = 2,
     max_length: int = 40,
     temperature: float = 1.0,
@@ -829,7 +829,7 @@ def generate_with_cache(
     model: GPT,
     enc,
     device: str,
-    prompt: str = "Once upon a time",
+    prompt: str = "import torch\n",
     num_samples: int = 1,
     max_length: int = 40,
     temperature: float = 1.0,
@@ -883,7 +883,7 @@ def generate_with_cache(
     return samples
 
 
-def benchmark_generation_speed(model: GPT, enc, device: str, prompt: str = "Once upon a time", max_length: int = 100):
+def benchmark_generation_speed(model: GPT, enc, device: str, prompt: str = "import torch\n", max_length: int = 100):
     """Benchmarks generation throughput (tokens/sec) comparing Naive O(T^2) vs KV-Cache O(1)."""
     model.eval()
     print(f"\n[Axiom-LM Benchmark] Benchmarking generation to {max_length} tokens on {device}...")
@@ -1071,6 +1071,7 @@ def train(
     total_batch_size: int = 4096,
     eval_interval: int = 50,
     sample_interval: int = 200,
+    sample_prompt: str = "import torch\n",
     save_interval: int = 25,
     architecture: str = "classic",
     optimizer_type: str = "adamw",
@@ -1276,11 +1277,11 @@ def train(
                     if master_process:
                         print(f"\n[Val Eval @ Step {step:4d}] validation loss: {val_loss:.4f}", flush=True)
 
-            # 2. Live Text Generation Sampling (KV-Cache Accelerated)
+            # 2. Live Validation Token Sampling (KV-Cache Accelerated)
             if master_process and ((sample_interval > 0 and step % sample_interval == 0) or last_step):
                 raw_model = get_raw_model(model)
-                samples = generate_with_cache(raw_model, enc, device, prompt="Once upon a time", num_samples=2, max_length=45)
-                print(f"--- Live Generated Samples (KV-Cache) @ Step {step:4d} ---")
+                samples = generate_with_cache(raw_model, enc, device, prompt=sample_prompt, num_samples=2, max_length=45)
+                print(f"--- Live Generated Samples (Systems ML / Code) @ Step {step:4d} ---")
                 for idx, s in enumerate(samples, 1):
                     print(f"  [{idx}] {s}")
                 print("-" * 50, flush=True)
@@ -1397,7 +1398,8 @@ def main():
     parser.add_argument("--max_steps", type=int, default=4800, help="Total training optimization steps")
     parser.add_argument("--batch_size", type=int, default=4096, help="Total tokens per optimization step")
     parser.add_argument("--eval_interval", type=int, default=50, help="Validation evaluation step interval")
-    parser.add_argument("--sample_interval", type=int, default=200, help="Live story sampling step interval")
+    parser.add_argument("--sample_interval", type=int, default=200, help="Live token sampling step interval")
+    parser.add_argument("--sample_prompt", type=str, default="import torch\n", help="Prompt text used for periodic live sampling")
     parser.add_argument("--save_interval", type=int, default=25, help="Model checkpoint step interval (default: 25)")
     parser.add_argument("--resume", nargs="?", const="checkpoints/model_latest.pt", default=None, help="Resume training from checkpoint file path (defaults to checkpoints/model_latest.pt if flag provided without path)")
     parser.add_argument("--benchmark", action="store_true", help="Run KV-cache vs Naive generation speed benchmark")
@@ -1425,7 +1427,7 @@ def main():
             grad_checkpoint=args.grad_checkpoint,
         )
         bm_model = GPT(cfg).to(device)
-        benchmark_generation_speed(bm_model, enc, device, prompt="Once upon a time", max_length=100)
+        benchmark_generation_speed(bm_model, enc, device, prompt=args.sample_prompt, max_length=100)
     else:
         train_steps = 5 if args.profile and args.max_steps == 4800 else args.max_steps
         train(
@@ -1433,6 +1435,7 @@ def main():
             total_batch_size=args.batch_size,
             eval_interval=args.eval_interval,
             sample_interval=args.sample_interval,
+            sample_prompt=args.sample_prompt,
             save_interval=args.save_interval,
             architecture=args.arch,
             optimizer_type=args.optimizer,
