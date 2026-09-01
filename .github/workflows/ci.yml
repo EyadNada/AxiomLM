@@ -47,6 +47,8 @@ jobs:
           python tests/test_kernels.py
 
       - name: End-to-End Micro Training & Export Smoke Test
+        env:
+          PYTORCH_MPS_HIGH_WATERMARK_RATIO: "0.0"
         run: |
           python -c "
           import os, torch
@@ -54,7 +56,7 @@ jobs:
           from axiomlm.engine import export_checkpoint_to_hf
           
           # Run 2 micro-steps to verify training loop execution
-          train(max_steps=2, total_batch_size=128, eval_interval=10, sample_interval=10, save_interval=1, architecture='modern', optimizer_type='muon')
+          train(max_steps=2, total_batch_size=4096, eval_interval=10, sample_interval=10, save_interval=1, architecture='modern', optimizer_type='muon')
           
           # Verify safetensors export from checkpoint
           if os.path.exists('checkpoints/model_latest.pt'):
