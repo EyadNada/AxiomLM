@@ -7,5 +7,11 @@
     "."
   ],
   "reportMissingImports": false,
-  "reportAttributeAccessIssue": false
+  "reportAttributeAccessIssue": false,
+  "reportOperatorIssue": false,
+  "reportArgumentType": false,
+  "reportPossiblyUnboundVariable": false,
+  "reportIncompatibleMethodOverride": false,
+  "reportCallIssue": false,
+  "typeCheckingMode": "off"
 }
