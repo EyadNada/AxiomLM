@@ -38,7 +38,7 @@ Summary of empirical hardware performance on Apple Silicon (MPS):
 
 ## Empirical Systems Benchmarks
 
-> 📊 **Interactive Visualizations Available:** All systems and architectural performance metrics are consolidated in an interactive Jupyter Notebook. Open [`assets/vizMetrics.ipynb`](assets/vizMetrics.ipynb) to view the complete charts detailing throughput gains, MFU rooflines, Muon convergence, and KV-cache scaling.
+>  **Interactive Visualizations Available:** All systems and architectural performance metrics are consolidated in an interactive Jupyter Notebook. Open [`assets/vizMetrics.ipynb`](assets/vizMetrics.ipynb) to view the complete charts detailing throughput gains, MFU rooflines, Muon convergence, and KV-cache scaling.
 
 ### 1. Architectural & Systems Paradigm Comparison
 
