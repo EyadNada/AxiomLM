@@ -109,9 +109,9 @@ Compiled (Fused Kernel):
 
 | Feature | `torch.jit.trace` | `torch.jit.script` | `torch.fx` | `torch.compile` (PyTorch 2.0+) |
 |:---|:---|:---|:---|:---|
-| **Handles Dynamic Control Flow (`if`/`while`)** | ❌ Silently freezes branching | ⚠️ Requires strict Python subset | ❌ Breaks on arbitrary control flow | **✅ Fully supported (falls back or handles cleanly)** |
+| **Handles Dynamic Control Flow (`if`/`while`)** |  Silently freezes branching |  Requires strict Python subset |  Breaks on arbitrary control flow | ** Fully supported (falls back or handles cleanly)** |
 | **Code Changes Required** | None / Low | High (type annotations, rewrite loops) | Medium | **Zero (single wrapper `torch.compile(m)`)** |
-| **Graph Breaks** | ❌ Fails silently or gives wrong results | ❌ Throws compilation error | ❌ Throws compilation error | **✅ Graceful subgraphs / graph breaks** |
+| **Graph Breaks** |  Fails silently or gives wrong results |  Throws compilation error |  Throws compilation error | ** Graceful subgraphs / graph breaks** |
 | **Backend Code Generation** | Custom C++ JIT IR | Custom C++ JIT IR | Python AST / Interpreted | **OpenAI Triton (State-of-the-Art GPU Kernels)** |
 | **Status** | Legacy / Maintenance | Legacy / Maintenance | Specialized Tooling | **Modern Standard (Recommended for all new work)** |
 

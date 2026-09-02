@@ -1,11 +1,11 @@
-# 🚀 Modern LLM Technologies & Systems Optimizations Master Guide
+#  Modern LLM Technologies & Systems Optimizations Master Guide
 
 > **The Ultimate Visual & Intuitive Reference for Axiom-LM / GPT-2 (124M)**
 > *Written to be intuitive, crystal clear, visually engaging, and mathematically rigorous.*
 
 ---
 
-## 📑 Table of Contents
+##  Table of Contents
 
 1. [Executive Summary: Classic GPT-2 vs. Modern Axiom-LM](#1-executive-summary)
 2. [Architectural Innovation 1: Rotary Position Embeddings (RoPE)](#2-rotary-position-embeddings-rope)
@@ -48,7 +48,7 @@ Here is how the architecture and systems in this repository compare:
 
 ## 2. Rotary Position Embeddings (RoPE)
 
-### 💡 The Intuitive Analogy: The Spinning Clock Hand
+###  The Intuitive Analogy: The Spinning Clock Hand
 * **Old Absolute Embedding (GPT-2):** Like stamping every word with an absolute page number: *"Token 1 is at index 1, Token 50 is at index 50"*. If you evaluate past token 1024, the model has never seen page 1025 and completely breaks.
 * **RoPE (Modern):** Instead of an absolute page stamp, **each token's embedding vector is rotated by an angle proportional to its position** like hands on a clock. When computing attention $Q \cdot K^T$, the dot product naturally measures the **relative angle difference** $(m - n)$ between words, regardless of where they are in the sequence!
 
@@ -60,7 +60,7 @@ Token at pos 3:  Vector rotated by  3 * θ  ───►  \
 Relative distance between pos 1 and pos 3 = (3 - 1) * θ = 2θ
 ```
 
-### 📐 Mathematical Formulation
+###  Mathematical Formulation
 
 For a 2D sub-vector $(x_1, x_2)$ at sequence position $m$ with base frequency $\theta_i = 10000^{-2i/d}$:
 
@@ -69,7 +69,7 @@ $$\begin{pmatrix} x'_1 \\ x'_2 \end{pmatrix} = \begin{pmatrix} \cos(m\theta_i) &
 Using complex numbers, this is simply multiplying by a unit complex phasor:
 $$\mathbf{x}' = \mathbf{x} \cdot e^{i m \theta_i}$$
 
-### 🏆 Key Benefits
+###  Key Benefits
 1. **Relative Distance Awareness**: Words close together have similar phase alignment; distant words decay gracefully.
 2. **Length Generalization**: Can extrapolate to longer contexts than seen during training.
 3. **Zero Learned Parameter Overhead**: $100\%$ deterministic mathematical rotation.
@@ -78,7 +78,7 @@ $$\mathbf{x}' = \mathbf{x} \cdot e^{i m \theta_i}$$
 
 ## 3. Root Mean Square Normalization (RMSNorm)
 
-### 💡 The Intuitive Analogy: The Volume Knob
+###  The Intuitive Analogy: The Volume Knob
 * **Standard LayerNorm:** Calibrates an audio track by:
   1. Finding the average volume level (mean $\mu$).
   2. Shifting everything so the average is zero ($x - \mu$).
@@ -90,13 +90,13 @@ Standard LayerNorm:   y = [(x - μ) / √(σ² + ε)] * γ + β    (Computes Mea
 RMSNorm:              y = [x / √(RMS(x)² + ε)] * γ         (Computes RMS Energy and Scales only!)
 ```
 
-### 📐 Mathematical Formulation
+###  Mathematical Formulation
 
 $$\text{RMS}(\mathbf{x}) = \sqrt{\frac{1}{d} \sum_{i=1}^d x_i^2 + \epsilon}$$
 
 $$\mathbf{y} = \frac{\mathbf{x}}{\text{RMS}(\mathbf{x})} \odot \mathbf{\gamma}$$
 
-### 🏆 Key Benefits
+###  Key Benefits
 * **$\approx 30\%$ Faster Execution**: Removes two reduction passes over memory (mean and mean-centering).
 * **Same Loss Convergence**: Empirically maintains exact numerical stability as full LayerNorm.
 
@@ -104,7 +104,7 @@ $$\mathbf{y} = \frac{\mathbf{x}}{\text{RMS}(\mathbf{x})} \odot \mathbf{\gamma}$$
 
 ## 4. SwiGLU Gated Feed-Forward Networks
 
-### 💡 The Intuitive Analogy: The Smart Information Valve
+###  The Intuitive Analogy: The Smart Information Valve
 * **Standard GPT-2 MLP:** The input passes through a single linear layer, hits a fixed GELU activation curve, and projects back.
 * **SwiGLU (LLaMA/Mistral):** Uses two parallel linear paths:
   1. An **Information Pathway** ($x W_{\text{up}}$).
@@ -119,7 +119,7 @@ Input x ──────────────┼─────────
                       └──► Linear (W_up) ──────────────────────┘
 ```
 
-### 📐 Mathematical Formulation
+###  Mathematical Formulation
 
 $$\text{SiLU}(z) = z \cdot \sigma(z) = \frac{z}{1 + e^{-z}}$$
 
@@ -128,7 +128,7 @@ $$\text{SwiGLU}(\mathbf{x}) = \Big( \text{SiLU}(\mathbf{x} W_{\text{gate}}) \odo
 To keep parameter count identical to GPT-2 ($4 \times d_{\text{model}}$), the hidden dimension is scaled to:
 $$d_{\text{hidden}} = \frac{8}{3} d_{\text{model}} \approx 2048$$
 
-### 🏆 Key Benefits
+###  Key Benefits
 * **Dramatically Faster Convergence**: Reaches lower perplexity in fewer training steps compared to vanilla GELU or ReLU.
 * **Bilinear Expressivity**: Multiplicative gating allows the model to compute second-order feature interactions in a single block.
 
@@ -136,7 +136,7 @@ $$d_{\text{hidden}} = \frac{8}{3} d_{\text{model}} \approx 2048$$
 
 ## 5. Grouped-Query Attention (GQA)
 
-### 💡 The Intuitive Analogy: Shared Note-Takers in a Lecture
+###  The Intuitive Analogy: Shared Note-Takers in a Lecture
 * **Multi-Head Attention (MHA / GPT-2):** 12 students (Query heads) each bring their own personal note-taker (12 Key & Value heads). During inference, you must store and load 12 full sets of notes from RAM for every token.
 * **Multi-Query Attention (MQA):** All 12 students share 1 single note-taker. Memory is tiny, but the note-taker gets overwhelmed and quality drops.
 * **Grouped-Query Attention (GQA / Modern):** 12 students are divided into 4 study groups of 3 students. Each group shares 1 note-taker ($N_{kv}=4$). You get **$3\times$ memory reduction** with virtually **zero loss in quality**!
@@ -150,7 +150,7 @@ K0 K1 K2 ... K11                  KV0       KV1       KV3              KV0
 [Memory: 100%]                 [Memory: 33.3% -> 66.7% SAVED]  [Memory: 8.3%]
 ```
 
-### 🏆 Key Benefits
+###  Key Benefits
 * **$66.7\%$ VRAM Savings for KV Cache**: From 12 heads down to 4 heads.
 * **Drastically Higher Inference Concurrency**: High batch sizes fit into GPU memory without out-of-memory errors.
 
@@ -158,7 +158,7 @@ K0 K1 K2 ... K11                  KV0       KV1       KV3              KV0
 
 ## 6. Key-Value (KV) Caching ($O(1)$ Autoregression)
 
-### 💡 The Intuitive Analogy: Remembering vs. Re-Reading the Entire Book
+###  The Intuitive Analogy: Remembering vs. Re-Reading the Entire Book
 * **Naive Autoregressive Generation ($O(T^2)$):** To predict token 100, you feed all 99 previous tokens through the model. To predict token 101, you feed all 100 tokens through the model again from scratch! Every token gets slower and slower.
 * **KV-Cache Generation ($O(1)$ per step):** Since previous tokens never change, we **save their Key and Value vectors in GPU memory**. To predict token 101, we only pass token 100 ($1$ token), compute its $Q, K, V$, append new $K, V$ to the cache, and compute attention!
 
@@ -182,10 +182,10 @@ Latency (ms)
 
 ## 7. FlashAttention & Fast SDPA
 
-### 💡 The Problem: The Memory Bandwidth Bottleneck
+###  The Problem: The Memory Bandwidth Bottleneck
 Traditional attention computes an intermediate $(T \times T)$ attention matrix in GPU global VRAM. For $T=1024$, this matrix contains $1,048,576$ elements per head, requiring constant slow reads and writes to global VRAM.
 
-### 💡 The Solution: SRAM Tiling & Fused Softmax
+###  The Solution: SRAM Tiling & Fused Softmax
 FlashAttention breaks $Q, K, V$ into small blocks that fit completely inside the ultra-fast on-chip **SRAM (L1 Cache)** of the GPU. It computes softmax incrementally on-chip (Online Softmax Normalizer) and writes out only the final output vector $O$.
 
 ```
@@ -194,7 +194,7 @@ Global Memory (Slow VRAM) ──[Small Tile]──► On-Chip SRAM (Super Fast) 
 Global Memory (Slow VRAM) ◄──[Final Output]─┘ (Never writes T x T matrix to VRAM!)
 ```
 
-### 🏆 Results in Axiom-LM
+###  Results in Axiom-LM
 * Step latency dropped from **1,462 ms down to 445 ms** ($>3.2\times$ speedup).
 * VRAM footprint reduced to **$< 2.3\text{ GB}$**.
 
@@ -202,7 +202,7 @@ Global Memory (Slow VRAM) ◄──[Final Output]─┘ (Never writes T x T matr
 
 ## 8. Mixed Precision (BF16 / FP16) & TF32 Math
 
-### 💡 Understanding Floating-Point Formats
+###  Understanding Floating-Point Formats
 
 ```
 FP32 (32-bit):  [1 sign] [ 8 exponent bits ] [ 23 mantissa/precision bits ]
@@ -211,7 +211,7 @@ FP16 (16-bit):  [1 sign] [ 5 exponent bits ] [ 10 mantissa/precision bits ]  ◄
 TF32 (19-bit):  [1 sign] [ 8 exponent bits ] [ 10 mantissa/precision bits ]  ◄── Tensor Core hardware accelerator
 ```
 
-### 🛠️ How It Is Implemented in This Repo
+###  How It Is Implemented in This Repo
 1. **Autocast (`torch.autocast`)**: Forward pass matrix multiplications run in fast **BF16 / FP16**, doubling math throughput.
 2. **Master Weights in FP32**: Optimizer parameters stay in FP32 for precise micro-updates.
 3. **TF32 Matmul Precision**:
@@ -223,7 +223,7 @@ TF32 (19-bit):  [1 sign] [ 8 exponent bits ] [ 10 mantissa/precision bits ]  ◄
 
 ## 9. Zero-Sync On-Device Gradient Accumulation
 
-### 💡 The Silent Killer: CPU-GPU Synchronization Stalls
+###  The Silent Killer: CPU-GPU Synchronization Stalls
 When accumulating gradients across micro-steps:
 * **The Bad Way:** Calling `loss.item()` on every micro-step forces the CPU to **halt execution and wait for the GPU to finish all queued operations**, destroying pipeline parallelism.
 * **The Axiom-LM Zero-Sync Way:** Keep loss accumulation strictly as detached on-device tensors (`loss.detach()`). The CPU never waits for the GPU until the main logging interval.
@@ -242,13 +242,13 @@ CPU: Queues instructions ahead of time without blocking.
 
 ## 10. High-Performance Binary Token Sharding (`uint16`)
 
-### 💡 Why Raw Text Datasets Choke Pretraining
+###  Why Raw Text Datasets Choke Pretraining
 Reading raw `.jsonl` or `.txt` files in Python during training causes:
 1. Continuous string parsing and BPE regex overhead.
 2. Garbage collection spikes and memory leaks.
 3. Disk I/O bottlenecks.
 
-### 💡 The Solution: Pre-tokenized Memory-Mapped Binary Shards
+###  The Solution: Pre-tokenized Memory-Mapped Binary Shards
 [data/tinystories.py](../data/tinystories.py) tokenizes the entire corpus once into contiguous **`np.uint16`** binary files:
 * Vocabulary size is $50,257 < 65,535$, so each token fits perfectly into **2 bytes (`uint16`)**.
 * `20,000,000` tokens consume exactly **$38.15\text{ MB}$** on disk.
@@ -261,7 +261,7 @@ Reading raw `.jsonl` or `.txt` files in Python during training causes:
 
 ## 11. Next-Gen Frontier: The Muon Matrix Optimizer
 
-### 💡 Why AdamW Struggles with Large Weight Matrices
+###  Why AdamW Struggles with Large Weight Matrices
 * **AdamW** treats every parameter as an independent scalar. For a 2D weight matrix $W \in \mathbb{R}^{d \times d}$, AdamW ignores the geometric structure of the matrix.
 * **Muon (Momentum Orthogonalized by Newton-Schulz)** treats weight updates as **2D matrices**, projecting the update to the nearest **orthogonal matrix** ($U V^T \approx I$) via fast matrix multiplications (Newton-Schulz iterations).
 
@@ -270,7 +270,7 @@ Gradient Matrix G ──► Heavy-Ball Momentum M ──► Newton-Schulz Iterat
                                                   (5-step Matmul Triplet)     (Uniform singular values)
 ```
 
-### 📐 Newton-Schulz Iteration Formula
+###  Newton-Schulz Iteration Formula
 Starting with normalized matrix $X_0 = M / \|M\|_F$:
 $$X_{k+1} = \frac{1}{2} X_k \left(3 I - X_k^T X_k\right)$$
 Repeated 5 times using only fast matrix multiplications, converging to pure orthogonal updates that allow **$1.5\times - 2\times$ faster convergence than AdamW**!

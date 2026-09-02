@@ -4,7 +4,7 @@ Thank you for your interest in contributing to **AxiomLM**! We welcome contribut
 
 ---
 
-## 🛠️ Development Setup
+##  Development Setup
 
 1. **Fork and clone the repository:**
    ```bash
@@ -27,7 +27,7 @@ Thank you for your interest in contributing to **AxiomLM**! We welcome contribut
 
 ---
 
-## 🧪 Running the Test Suite
+##  Running the Test Suite
 
 Before opening a pull request, ensure all unit, architecture, optimizer, and kernel tests pass:
 
@@ -41,7 +41,7 @@ python tests/test_kernels.py
 
 ---
 
-## 🎨 Code Style & Quality Standards
+##  Code Style & Quality Standards
 
 - **Python:** Follow PEP 8 style guidelines. Code should be clean, explicitly typed where appropriate, and thoroughly commented when introducing complex mathematical or hardware-specific concepts.
 - **Hardware Agnostic:** Ensure core models and training logic run seamlessly across Apple Silicon (`mps`), NVIDIA (`cuda`), and fallback `cpu`.
@@ -49,7 +49,7 @@ python tests/test_kernels.py
 
 ---
 
-## 📬 Pull Request Process
+##  Pull Request Process
 
 1. Create a feature branch from `main`:
    ```bash

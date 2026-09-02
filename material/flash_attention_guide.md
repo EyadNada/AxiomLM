@@ -126,7 +126,7 @@ torch.nn.functional.scaled_dot_product_attention(
 
 ## 5. Implementation: Before vs. After in GPT-2
 
-### ❌ Before: Standard Manual Attention (Slow, High VRAM)
+###  Before: Standard Manual Attention (Slow, High VRAM)
 
 ```python
 # (B, nh, T, hs) @ (B, nh, hs, T) -> (B, nh, T, T)  <-- Heavy O(T^2) HBM allocation!
@@ -136,7 +136,7 @@ att = F.softmax(att, dim=-1)
 y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
 ```
 
-### ✅ After: FlashAttention SDPA (Fast, Fused, $O(T)$ Memory)
+###  After: FlashAttention SDPA (Fast, Fused, $O(T)$ Memory)
 
 ```python
 # Single fused C++/CUDA/Metal kernel call:

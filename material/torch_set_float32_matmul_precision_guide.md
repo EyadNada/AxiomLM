@@ -102,7 +102,7 @@ Place this single line right after importing PyTorch:
 ```python
 import torch
 
-# ⚡ Enable TensorFloat-32 for ~3x faster matmuls on Ampere/Ada/Hopper GPUs
+#  Enable TensorFloat-32 for ~3x faster matmuls on Ampere/Ada/Hopper GPUs
 torch.set_float32_matmul_precision('high')
 
 # Automatic Device Selection

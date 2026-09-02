@@ -1,4 +1,4 @@
-# AxiomLM
+# AxiomLM: High-Performance PyTorch Pretraining Framework & Systems SLM
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -7,6 +7,19 @@
 [![Hardware](https://img.shields.io/badge/Hardware-Apple%20Silicon%20%7C%20CUDA-green.svg)]()
 
 AxiomLM is a high-performance PyTorch library for modern autoregressive Transformer modeling, custom hardware kernel acceleration, and spectral matrix optimization. Built from first principles, it modernizes standard Transformer architectures with LLaMA-3 architectural enhancements, the Muon Newton-Schulz matrix optimizer, and bare-metal kernels for Apple Silicon (Metal MSL and ARM NEON SIMD) and NVIDIA CUDA (OpenAI Triton).
+
+---
+
+## The Motivation: Why AxiomLM?
+
+Most engineers treat model pre-training like a black box. They use standard 2019-era defaults (like standard AdamW and eager FP32), and leave massive amounts of hardware performance on the table. **AxiomLM was engineered to bridge the gap between theoretical deep learning and bare-metal hardware execution.**
+
+Instead of relying on legacy defaults, AxiomLM supports the modern stack natively:
+- **Deep Architectural Upgrades**: Native support for LLaMA-3 specifications, including Grouped-Query Attention (GQA), RoPE, and SwiGLU.
+- **Next-Gen Optimization**: Out-of-the-box integration of the Muon (Newton-Schulz) optimizer to drastically accelerate convergence over standard AdamW.
+- **Bare-Metal Efficiency**: Custom fused kernels and O(1) KV-Cache inference designed to maximize Model FLOPs Utilization on constrained hardware.
+
+To prove the framework is robust, we didn't just run unit tests. We used it to train a **Domain-Specific SLM** completely from scratch on a strict diet of Systems ML data. The result is a local model capable of writing and autocompleting highly optimized, custom GPU kernels (like Triton and CUDA) completely offline.
 
 ---
 

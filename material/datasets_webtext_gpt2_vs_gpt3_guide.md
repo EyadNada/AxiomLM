@@ -217,13 +217,13 @@ Based on the landmark Hugging Face report (*"FineWeb: 15-trillion tokens, 44TB d
                                          │
                                          ▼ Heavy Rule-Based Cleaning & MinHash Deduplication
                   ┌──────────────────────────────────────────────┐
-                  │  🍷 FineWeb (15 Trillion Tokens / 44 TB)      │
+                  │   FineWeb (15 Trillion Tokens / 44 TB)      │
                   │  Permissive ODC-By 1.0 License               │
                   └──────────────────────┬───────────────────────┘
                                          │
                                          ▼ Educational Quality Classifier (Trained on Llama-3-70B)
                   ┌──────────────────────────────────────────────┐
-                  │  📚 FineWeb-Edu                              │
+                  │   FineWeb-Edu                              │
                   ├──────────────────────────────────────────────┤
                   │  • Tier 1 (Very High Quality, Score ≥ 3):    │
                   │    1.3 Trillion Tokens (GPT-2 Tokenizer)     │

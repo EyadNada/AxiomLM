@@ -1,4 +1,4 @@
-# ⚡ Custom Low-Level Kernels: Triton, Metal MSL & ARM NEON SIMD
+#  Custom Low-Level Kernels: Triton, Metal MSL & ARM NEON SIMD
 
 > **Author**: Eyad Nada  
 > **Topic**: High-Performance Deep Learning Systems Engineering & GPU/CPU Kernel Optimization  

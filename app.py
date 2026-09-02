@@ -590,15 +590,15 @@ def calculate_cloud_savings(num_gpus: int, gpu_cost_hr: float, operator_name: st
     gpus_saved = int(num_gpus * effective_gain)
 
     report_md = f"""
-### 💰 Cloud Enterprise Infrastructure Cost Impact
+###  Cloud Enterprise Infrastructure Cost Impact
 
 | Metric / Dimension | Baseline Fleet | Fused Kernel Fleet | Enterprise Savings |
 | :--- | :--- | :--- | :--- |
 | **Active GPU Count** | **{num_gpus} GPUs** | {num_gpus - gpus_saved} GPUs | **{gpus_saved} GPUs Freed ({effective_gain*100:.1f}%)** |
 | **Monthly Cloud Bill** | **${baseline_cost:,.2f}** | ${baseline_cost - monthly_savings:,.2f} | **${monthly_savings:,.2f} / month** |
-| **Annual Cloud Savings** | — | — | **${annual_savings:,.2f} / year 💵** |
+| **Annual Cloud Savings** | — | — | **${annual_savings:,.2f} / year ** |
 | **Memory Round-Trips** | {info['hbm_trips_before']} HBM passes | {info['hbm_trips_after']} HBM pass | **{info['bandwidth_saved']} Bandwidth Saved** |
-| **Operator Acceleration** | Standard PyTorch | AxiomLM Fused Triton | **{info['speedup']} Speedup ⚡** |
+| **Operator Acceleration** | Standard PyTorch | AxiomLM Fused Triton | **{info['speedup']} Speedup ** |
 """
     return info["triton_code"], info["math_explanation"], report_md
 
@@ -1013,7 +1013,7 @@ def build_app():
             # =========================================================================
             # Tab 3: GPU Kernel Synthesizer & Enterprise Cloud Cost Optimizer
             # =========================================================================
-            with gr.Tab("⚡ GPU Kernel & Cloud Cost Optimizer"):
+            with gr.Tab(" GPU Kernel & Cloud Cost Optimizer"):
                 gr.Markdown(
                     """
                     ### Fused OpenAI Triton GPU Kernel Synthesizer & Enterprise Cost Impact

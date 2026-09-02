@@ -121,7 +121,7 @@ for x, y in train_loader:
         
     scaler.scale(loss).backward()
     
-    # ⚠️ CRITICAL: Unscale gradients BEFORE clipping!
+    #  CRITICAL: Unscale gradients BEFORE clipping!
     scaler.unscale_(optimizer)
     
     # Clip gradient norm to 1.0 (GPT-2 standard)

@@ -34,7 +34,7 @@ def export_checkpoint_to_hf(
 
     os.makedirs(output_dir, exist_ok=True)
     print("=" * 70)
-    print("📦 AxiomLM: Hugging Face .safetensors Model Exporter")
+    print(" AxiomLM: Hugging Face .safetensors Model Exporter")
     print("=" * 70)
     print(f"  • Source Checkpoint : {checkpoint_path}")
     print(f"  • Destination Export : {output_dir}")
@@ -48,7 +48,7 @@ def export_checkpoint_to_hf(
     if "config" in checkpoint:
         cfg: ModelConfig = checkpoint["config"]
     else:
-        print("  ⚠️  Config not found in checkpoint dict. Using default modern specification.")
+        print("    Config not found in checkpoint dict. Using default modern specification.")
         cfg = ModelConfig(
             block_size=1024,
             vocab_size=50304,
@@ -147,7 +147,7 @@ def export_checkpoint_to_hf(
             tokenizer.save_pretrained(output_dir)
             print("  ✓ Exported: Complete Hugging Face tokenizer assets (vocab.json, merges.txt, tokenizer.json)")
         except Exception as e:
-            print(f"  ⚠️  Notice: Tokenizer files could not be saved automatically: {e}")
+            print(f"    Notice: Tokenizer files could not be saved automatically: {e}")
 
     # 5. Export README.md (Model Card)
     model_card = f"""---
@@ -181,7 +181,7 @@ AxiomLM Modern 124M autoregressive language model trained using the **Muon (5-st
     with open(readme_path, "w", encoding="utf-8") as f:
         f.write(model_card)
     print(f"  ✓ Exported: {readme_path}")
-    print(f"\n🎉 Successfully exported Hugging Face artifacts to {output_dir}!\n")
+    print(f"\n Successfully exported Hugging Face artifacts to {output_dir}!\n")
 
 
 def main():

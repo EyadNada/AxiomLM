@@ -4,7 +4,7 @@ A comprehensive technical breakdown of **Cross-Attention** (Encoder-Decoder Atte
 
 ---
 
-## 📺 Lecture Video & Official Resources
+##  Lecture Video & Official Resources
 
 * **Lecture Video:** [YouTube — Stanford CS25: V2 | Introduction to Transformers w/ Andrej Karpathy](https://www.youtube.com/watch?v=XfpMkf4rD6E)
 * **Course Site:** [Stanford CS25: Transformers United](https://web.stanford.edu/class/cs25/)
