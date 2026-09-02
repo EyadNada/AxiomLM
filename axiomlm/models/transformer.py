@@ -104,9 +104,9 @@ class Block(nn.Module):
 
         # 4. Feed-Forward Network
         if self.use_fused_kernels and self.mlp_type == "swiglu" and FusedSwiGLUMLP is not None:
-            self.mlp = FusedSwiGLUMLP(config.n_embd, bias=config.bias)
+            self.mlp = FusedSwiGLUMLP(config)
         elif self.mlp_type == "swiglu":
-            self.mlp = SwiGLUMLP(config.n_embd, bias=config.bias)
+            self.mlp = SwiGLUMLP(config)
         else:
             self.mlp = MLP(config)
 
