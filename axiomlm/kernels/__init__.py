@@ -9,6 +9,7 @@ from .ops import (
     FusedRMSNorm,
     FusedSwiGLUFunction,
     fused_swiglu,
+    fused_sdpa,
     FusedSwiGLUMLP,
     _NEON_MOD,
     HAS_TRITON,

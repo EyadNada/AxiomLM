@@ -184,9 +184,6 @@ def _swiglu_backward_kernel(
     tl.store(DGate_ptr + offsets, dgate, mask=mask)
 
 
-# ----------------------------------------------------------------------------
-# 3. Python Public Wrapper APIs
-# ----------------------------------------------------------------------------
 
 def triton_rmsnorm_forward(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> Tuple[torch.Tensor, torch.Tensor]:
     """Triton implementation of RMSNorm forward pass."""
@@ -217,4 +214,125 @@ def triton_swiglu_forward(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     BLOCK_SIZE = 1024
     grid = (triton.cdiv(N, BLOCK_SIZE),)
     _swiglu_forward_kernel[grid](gate, up, out, N, BLOCK_SIZE=BLOCK_SIZE)
+    return out
+
+# ----------------------------------------------------------------------------
+# 3. Fused Scaled Dot-Product Attention (Tiled SDPA)
+# ----------------------------------------------------------------------------
+
+@triton.jit
+def _fused_sdpa_forward_kernel(
+    Q, K, V, sm_scale,
+    Out,
+    stride_qz, stride_qh, stride_qm, stride_qk,
+    stride_kz, stride_kh, stride_kn, stride_kk,
+    stride_vz, stride_vh, stride_vn, stride_vk,
+    stride_oz, stride_oh, stride_om, stride_ok,
+    Z, H, N_CTX,
+    BLOCK_M: tl.constexpr, BLOCK_DMODEL: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    IS_CAUSAL: tl.constexpr,
+):
+    start_m = tl.program_id(0)
+    off_hz = tl.program_id(1)
+    
+    # Offsets
+    qkv_offset = off_hz * stride_qh
+    Q_block_ptr = tl.make_block_ptr(
+        base=Q + qkv_offset,
+        shape=(N_CTX, BLOCK_DMODEL),
+        strides=(stride_qm, stride_qk),
+        offsets=(start_m * BLOCK_M, 0),
+        block_shape=(BLOCK_M, BLOCK_DMODEL),
+        order=(1, 0)
+    )
+    K_block_ptr = tl.make_block_ptr(
+        base=K + qkv_offset,
+        shape=(BLOCK_DMODEL, N_CTX),
+        strides=(stride_kk, stride_kn),
+        offsets=(0, 0),
+        block_shape=(BLOCK_DMODEL, BLOCK_N),
+        order=(0, 1)
+    )
+    V_block_ptr = tl.make_block_ptr(
+        base=V + qkv_offset,
+        shape=(N_CTX, BLOCK_DMODEL),
+        strides=(stride_vn, stride_vk),
+        offsets=(0, 0),
+        block_shape=(BLOCK_N, BLOCK_DMODEL),
+        order=(1, 0)
+    )
+    O_block_ptr = tl.make_block_ptr(
+        base=Out + qkv_offset,
+        shape=(N_CTX, BLOCK_DMODEL),
+        strides=(stride_om, stride_ok),
+        offsets=(start_m * BLOCK_M, 0),
+        block_shape=(BLOCK_M, BLOCK_DMODEL),
+        order=(1, 0)
+    )
+    
+    m_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")
+    l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
+    acc = tl.zeros([BLOCK_M, BLOCK_DMODEL], dtype=tl.float32)
+    
+    q = tl.load(Q_block_ptr)
+    q = (q * sm_scale).to(tl.float16)
+
+    # loop over K, V
+    lo = 0
+    hi = (start_m + 1) * BLOCK_M if IS_CAUSAL else N_CTX
+    for start_n in range(lo, hi, BLOCK_N):
+        start_n = tl.multiple_of(start_n, BLOCK_N)
+        k = tl.load(tl.advance(K_block_ptr, (0, start_n)))
+        qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
+        qk += tl.dot(q, k)
+        
+        if IS_CAUSAL:
+            offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+            offs_n = start_n + tl.arange(0, BLOCK_N)
+            qk = tl.where(offs_m[:, None] >= offs_n[None, :], qk, float("-inf"))
+            
+        m_ij = tl.maximum(m_i, tl.max(qk, 1))
+        qk = qk - m_ij[:, None]
+        p = tl.math.exp(qk)
+        l_ij = tl.sum(p, 1)
+        
+        alpha = tl.math.exp(m_i - m_ij)
+        l_i = l_i * alpha + l_ij
+        
+        acc = acc * alpha[:, None]
+        v = tl.load(tl.advance(V_block_ptr, (start_n, 0)))
+        p = p.to(tl.float16)
+        acc += tl.dot(p, v)
+        
+        m_i = m_ij
+        
+    acc = acc / l_i[:, None]
+    tl.store(O_block_ptr, acc.to(Out.dtype.element_ty))
+
+def triton_fused_sdpa_forward(q, k, v, is_causal=False):
+    # q, k, v are shape [B, H, N_CTX, D_HEAD]
+    BLOCK_M = 128
+    BLOCK_N = 64
+    BLOCK_DMODEL = q.shape[-1]
+    
+    sm_scale = 1.0 / (BLOCK_DMODEL ** 0.5)
+    
+    out = torch.empty_like(q)
+    
+    grid = (triton.cdiv(q.shape[2], BLOCK_M), q.shape[0] * q.shape[1], 1)
+    
+    _fused_sdpa_forward_kernel[grid](
+        q, k, v, sm_scale,
+        out,
+        q.stride(0), q.stride(1), q.stride(2), q.stride(3),
+        k.stride(0), k.stride(1), k.stride(2), k.stride(3),
+        v.stride(0), v.stride(1), v.stride(2), v.stride(3),
+        out.stride(0), out.stride(1), out.stride(2), out.stride(3),
+        q.shape[0], q.shape[1], q.shape[2],
+        BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_DMODEL=BLOCK_DMODEL,
+        IS_CAUSAL=is_causal,
+        num_warps=4,
+        num_stages=2,
+    )
     return out

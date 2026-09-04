@@ -27,6 +27,7 @@ try:
         HAS_TRITON,
         triton_rmsnorm_forward,
         triton_swiglu_forward,
+        triton_fused_sdpa_forward,
     )
 except ImportError:
     HAS_TRITON = False
@@ -159,3 +160,36 @@ class FusedSwiGLUMLP(nn.Module):
         gate = self.w_gate(x)
         up = self.w_up(x)
         return self.w_down(fused_swiglu(gate, up))
+
+# ----------------------------------------------------------------------------
+# 3. Fused SDPA (Scaled Dot-Product Attention) Autograd Function
+# ----------------------------------------------------------------------------
+
+class FusedSDPAFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx: Any, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, is_causal: bool = False) -> torch.Tensor:
+        device = q.device
+        if device.type == "cuda" and HAS_TRITON:
+            out = triton_fused_sdpa_forward(q, k, v, is_causal=is_causal)
+        else:
+            out = F.scaled_dot_product_attention(q, k, v, is_causal=is_causal)
+
+        ctx.save_for_backward(q, k, v)
+        ctx.is_causal = is_causal
+        return out
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
+        q, k, v = ctx.saved_tensors
+        # Using PyTorch's highly optimized SDPA backward for exact parity
+        with torch.enable_grad():
+            q_ = q.detach().requires_grad_(True)
+            k_ = k.detach().requires_grad_(True)
+            v_ = v.detach().requires_grad_(True)
+            out = F.scaled_dot_product_attention(q_, k_, v_, is_causal=ctx.is_causal)
+            out.backward(grad_output)
+        return q_.grad, k_.grad, v_.grad, None
+
+def fused_sdpa(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, is_causal: bool = False) -> torch.Tensor:
+    """Functional interface for Fused SDPA (FlashAttention)."""
+    return FusedSDPAFunction.apply(q, k, v, is_causal)

@@ -15,6 +15,7 @@ from axiomlm.kernels import (
     FusedRMSNorm,
     fused_swiglu,
     FusedSwiGLUMLP,
+    fused_sdpa,
     _NEON_MOD,
 )
 from axiomlm.models import RMSNorm, SwiGLUMLP, GPTConfig, ModelConfig
@@ -159,6 +160,52 @@ class TestCustomKernels(unittest.TestCase):
             diff = (ref_out - fused_out).abs().max().item()
             self.assertLess(diff, 1e-5, f"FusedSwiGLUMLP output diff {diff} on {device}")
 
+
+
+
+    def test_fused_sdpa_forward_parity(self):
+        """Test Fused SDPA forward pass matches reference PyTorch SDPA."""
+        for device in self.devices:
+            B, H, T, D = 2, 4, 16, 64
+            q = torch.randn(B, H, T, D, device=device)
+            k = torch.randn(B, H, T, D, device=device)
+            v = torch.randn(B, H, T, D, device=device)
+
+            ref_out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+            custom_out = fused_sdpa(q, k, v, is_causal=True)
+
+            max_diff = (ref_out - custom_out).abs().max().item()
+            self.assertLess(max_diff, 1e-4, f"SDPA forward diff {max_diff} on {device} exceeds tolerance")
+
+    def test_fused_sdpa_backward_gradients(self):
+        """Test Fused SDPA backward pass gradients match reference."""
+        for device in self.devices:
+            B, H, T, D = 2, 4, 16, 64
+            q1 = torch.randn(B, H, T, D, device=device, requires_grad=True)
+            k1 = torch.randn(B, H, T, D, device=device, requires_grad=True)
+            v1 = torch.randn(B, H, T, D, device=device, requires_grad=True)
+
+            q2 = q1.detach().clone().requires_grad_(True)
+            k2 = k1.detach().clone().requires_grad_(True)
+            v2 = v1.detach().clone().requires_grad_(True)
+
+            # Reference
+            y_ref = F.scaled_dot_product_attention(q1, k1, v1, is_causal=True)
+            loss_ref = (y_ref * 2.0).sum()
+            loss_ref.backward()
+
+            # Fused
+            y_custom = fused_sdpa(q2, k2, v2, is_causal=True)
+            loss_custom = (y_custom * 2.0).sum()
+            loss_custom.backward()
+
+            grad_q_diff = (q1.grad - q2.grad).abs().max().item()
+            grad_k_diff = (k1.grad - k2.grad).abs().max().item()
+            grad_v_diff = (v1.grad - v2.grad).abs().max().item()
+
+            self.assertLess(grad_q_diff, 1e-4, f"SDPA grad_q diff {grad_q_diff} on {device}")
+            self.assertLess(grad_k_diff, 1e-4, f"SDPA grad_k diff {grad_k_diff} on {device}")
+            self.assertLess(grad_v_diff, 1e-4, f"SDPA grad_v diff {grad_v_diff} on {device}")
 
 if __name__ == "__main__":
     unittest.main()
