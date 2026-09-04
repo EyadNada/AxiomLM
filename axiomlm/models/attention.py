@@ -8,6 +8,16 @@ from torch.nn import functional as F
 
 from .modules import apply_rope, repeat_kv
 
+try:
+    from ..kernels import fused_sdpa
+    HAS_CUSTOM_KERNELS = True
+except (ImportError, ValueError):
+    try:
+        from kernels import fused_sdpa
+        HAS_CUSTOM_KERNELS = True
+    except ImportError:
+        HAS_CUSTOM_KERNELS = False
+
 
 class CausalSelfAttention(nn.Module):
     """
@@ -27,6 +37,7 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.head_dim = config.n_embd // config.n_head
         self.pos_emb = getattr(config, "pos_emb", "learned")
+        self.use_fused_kernels = getattr(config, "use_fused_kernels", False) and HAS_CUSTOM_KERNELS
 
         # Projections
         if not self.separate_qkv:
@@ -88,7 +99,10 @@ class CausalSelfAttention(nn.Module):
         v_rep = repeat_kv(v, self.n_rep)
 
         is_causal = (T > 1) and (start_pos == 0)
-        y = F.scaled_dot_product_attention(q, k_rep, v_rep, is_causal=is_causal)
+        if self.use_fused_kernels:
+            y = fused_sdpa(q, k_rep, v_rep, is_causal=is_causal)
+        else:
+            y = F.scaled_dot_product_attention(q, k_rep, v_rep, is_causal=is_causal)
 
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.c_proj(y)
