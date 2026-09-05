@@ -1,0 +1,4 @@
+If:
+  PathMatch: .*\.metal
+CompileFlags:
+  Add: ["-xc++", "-I.vscode", "-include", ".vscode/metal_mock.h", "-Wno-unknown-attributes", "-Wno-ignored-attributes"]

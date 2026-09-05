@@ -1,0 +1,5 @@
+-std=c++17
+-I/Users/apple/Desktop/Projects/AxiomLM/venv/lib/python3.12/site-packages/torch/include
+-I/Users/apple/Desktop/Projects/AxiomLM/venv/lib/python3.12/site-packages/torch/include/torch/csrc/api/include
+-I/opt/homebrew/opt/python@3.12/Frameworks/Python.framework/Versions/3.12/include/python3.12
+-D_GLIBCXX_USE_CXX11_ABI=0

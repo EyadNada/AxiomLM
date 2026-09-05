@@ -2,7 +2,6 @@
 #include <cmath>
 #include <torch/extension.h>
 #include <tuple>
-#include <vector>
 
 // ============================================================================
 // Axiom-LM Apple Silicon M3 Pro Vectorized ARM NEON SIMD Kernel Engine
