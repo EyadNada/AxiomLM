@@ -78,11 +78,12 @@ class Block(nn.Module):
     A single Transformer decoder block.
     Configurable for Pre-LN (LayerNorm) or Pre-RMSNorm with SwiGLU / GELU MLP.
     """
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, layer_idx: int = 0):
         super().__init__()
         self.norm_type = config.norm_type
         self.mlp_type = config.mlp_type
         self.use_fused_kernels = config.use_fused_kernels and HAS_CUSTOM_KERNELS
+        self.layer_idx = layer_idx
 
         # 1. Pre-Attention Normalization
         if self.use_fused_kernels and self.norm_type == "rmsnorm" and FusedRMSNorm is not None:
@@ -94,6 +95,7 @@ class Block(nn.Module):
 
         # 2. Attention
         self.attn = CausalSelfAttention(config)
+        self.attn.layer_idx = layer_idx
 
         # 3. Pre-MLP Normalization
         if self.use_fused_kernels and self.norm_type == "rmsnorm" and FusedRMSNorm is not None:
@@ -134,7 +136,7 @@ class Transformer(nn.Module):
 
         self.transformer = nn.ModuleDict(dict(
             wte=nn.Embedding(config.vocab_size, config.n_embd),
-            h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h=nn.ModuleList([Block(config, layer_idx=i) for i in range(config.n_layer)]),
         ))
 
         # Position embeddings

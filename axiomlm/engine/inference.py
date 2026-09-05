@@ -10,6 +10,8 @@ import json
 import torch
 import torch.nn.functional as F
 import tiktoken
+from .paged_cache import PagedKVCache, SequenceContext
+
 
 from ..models.transformer import Transformer, ModelConfig, GPT, GPTConfig
 
@@ -133,7 +135,21 @@ def generate_with_cache(
     x = torch.tensor(prompt_tokens, dtype=torch.long, device=device).unsqueeze(0).repeat(num_samples, 1)
 
     with torch.no_grad():
-        kv_caches = [None] * model.config.n_layer
+        if num_samples == 1:
+            paged_cache = PagedKVCache(
+                num_blocks=1024,
+                block_size=16,
+                n_layer=model.config.n_layer,
+                n_kv_head=model.config.n_kv_head or model.config.n_head,
+                head_dim=model.config.n_embd // model.config.n_head,
+                dtype=torch.float32,
+                device=device
+            )
+            seq_context = SequenceContext(paged_cache)
+            kv_caches = [seq_context] * model.config.n_layer
+        else:
+            kv_caches = [None] * model.config.n_layer
+            
         logits, _, kv_caches = model(x, kv_caches=kv_caches)
 
         next_token = sample_logits(
@@ -373,7 +389,18 @@ class InferenceEngine:
         x = torch.tensor(prompt_tokens, dtype=torch.long, device=self.device).unsqueeze(0)
 
         with torch.no_grad():
-            kv_caches = [None] * self.config.n_layer
+            paged_cache = PagedKVCache(
+                num_blocks=1024,
+                block_size=16,
+                n_layer=self.config.n_layer,
+                n_kv_head=self.config.n_kv_head or self.config.n_head,
+                head_dim=self.config.n_embd // self.config.n_head,
+                dtype=torch.float32,
+                device=self.device
+            )
+            seq_context = SequenceContext(paged_cache)
+            kv_caches = [seq_context] * self.config.n_layer
+            
             logits, _, kv_caches = self.model(x, kv_caches=kv_caches)
 
             next_token = sample_logits(

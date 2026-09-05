@@ -77,7 +77,13 @@ class CausalSelfAttention(nn.Module):
             k = k.view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
             v = v.view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
 
-        start_pos = kv_cache[0].shape[2] if kv_cache is not None else 0
+        start_pos = 0
+        if kv_cache is not None:
+            if isinstance(kv_cache, tuple):
+                start_pos = kv_cache[0].shape[2]
+            else:
+                # SequenceContext from paged_cache.py
+                start_pos = kv_cache.seq_len
 
         # Apply RoPE if configured
         if self.pos_emb == "rope" and freqs_cis is not None:
@@ -86,10 +92,20 @@ class CausalSelfAttention(nn.Module):
 
         # Update Key-Value Cache
         if kv_cache is not None:
-            k_prev, v_prev = kv_cache
-            k = torch.cat([k_prev, k], dim=2)
-            v = torch.cat([v_prev, v], dim=2)
-            new_kv_cache = (k, v)
+            if isinstance(kv_cache, tuple):
+                k_prev, v_prev = kv_cache
+                k = torch.cat([k_prev, k], dim=2)
+                v = torch.cat([v_prev, v], dim=2)
+                new_kv_cache = (k, v)
+            else:
+                # Assuming kv_cache is a SequenceContext
+                # It expects [1, seq_len, n_kv_head, head_dim]. Currently k is [B, n_kv_head, seq_len, head_dim]
+                kv_cache.append_kv(getattr(self, "layer_idx", 0), k.transpose(1, 2), v.transpose(1, 2))
+                k_rec, v_rec = kv_cache.get_reconstructed_cache(getattr(self, "layer_idx", 0))
+                # Reconstructed shape: [1, total_seq_len, n_kv_head, head_dim]. Need to transpose back to [1, n_kv_head, total_seq_len, head_dim]
+                k = k_rec.transpose(1, 2)
+                v = v_rec.transpose(1, 2)
+                new_kv_cache = kv_cache
         elif use_cache:
             new_kv_cache = (k, v)
         else:
