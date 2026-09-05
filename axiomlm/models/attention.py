@@ -37,6 +37,7 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.head_dim = config.n_embd // config.n_head
         self.pos_emb = getattr(config, "pos_emb", "learned")
+        self.sliding_window = getattr(config, "sliding_window", None)
         self.use_fused_kernels = getattr(config, "use_fused_kernels", False) and HAS_CUSTOM_KERNELS
 
         # Projections
@@ -99,10 +100,22 @@ class CausalSelfAttention(nn.Module):
         v_rep = repeat_kv(v, self.n_rep)
 
         is_causal = (T > 1) and (start_pos == 0)
-        if self.use_fused_kernels:
-            y = fused_sdpa(q, k_rep, v_rep, is_causal=is_causal)
+        
+        # Sliding Window Attention (SWA)
+        if self.sliding_window is not None and is_causal:
+            if self.use_fused_kernels:
+                y = fused_sdpa(q, k_rep, v_rep, is_causal=True, sliding_window=self.sliding_window)
+            else:
+                # Build custom sliding window mask for F.scaled_dot_product_attention
+                causal_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril()
+                window_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril(diagonal=-self.sliding_window)
+                attn_mask = causal_mask & ~window_mask
+                y = F.scaled_dot_product_attention(q, k_rep, v_rep, attn_mask=attn_mask)
         else:
-            y = F.scaled_dot_product_attention(q, k_rep, v_rep, is_causal=is_causal)
+            if self.use_fused_kernels:
+                y = fused_sdpa(q, k_rep, v_rep, is_causal=is_causal, sliding_window=None)
+            else:
+                y = F.scaled_dot_product_attention(q, k_rep, v_rep, is_causal=is_causal)
 
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.c_proj(y)

@@ -48,6 +48,7 @@ class ModelConfig:
     mlp_type: str = "swiglu"     # "swiglu" (modern) or "gelu" (classic)
     bias: bool = False           # Modern architectures omit linear biases
     rope_theta: float = 10000.0  # Base frequency for RoPE
+    sliding_window: Optional[int] = None # Sliding Window Attention (SWA) size
     use_fused_kernels: bool = False # Use fused Triton / Metal / NEON operators
     grad_checkpoint: bool = False   # Enable gradient checkpointing
     arch: Optional[str] = None      # Optional convenience preset ("modern" or "classic")

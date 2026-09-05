@@ -167,29 +167,44 @@ class FusedSwiGLUMLP(nn.Module):
 
 class FusedSDPAFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx: Any, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, is_causal: bool = False) -> torch.Tensor:
+    def forward(ctx: Any, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, is_causal: bool = False, sliding_window: Optional[int] = None) -> torch.Tensor:
         device = q.device
         if device.type == "cuda" and HAS_TRITON:
-            out = triton_fused_sdpa_forward(q, k, v, is_causal=is_causal)
+            out = triton_fused_sdpa_forward(q, k, v, is_causal=is_causal, sliding_window=sliding_window)
         else:
-            out = F.scaled_dot_product_attention(q, k, v, is_causal=is_causal)
+            if sliding_window is not None and is_causal:
+                T = q.size(2)
+                causal_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril()
+                window_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril(diagonal=-sliding_window)
+                attn_mask = causal_mask & ~window_mask
+                out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+            else:
+                out = F.scaled_dot_product_attention(q, k, v, is_causal=is_causal)
 
         ctx.save_for_backward(q, k, v)
         ctx.is_causal = is_causal
+        ctx.sliding_window = sliding_window
         return out
 
     @staticmethod
-    def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
+    def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
         q, k, v = ctx.saved_tensors
         # Using PyTorch's highly optimized SDPA backward for exact parity
         with torch.enable_grad():
             q_ = q.detach().requires_grad_(True)
             k_ = k.detach().requires_grad_(True)
             v_ = v.detach().requires_grad_(True)
-            out = F.scaled_dot_product_attention(q_, k_, v_, is_causal=ctx.is_causal)
+            if ctx.sliding_window is not None and ctx.is_causal:
+                T = q_.size(2)
+                causal_mask = torch.ones(T, T, dtype=torch.bool, device=q_.device).tril()
+                window_mask = torch.ones(T, T, dtype=torch.bool, device=q_.device).tril(diagonal=-ctx.sliding_window)
+                attn_mask = causal_mask & ~window_mask
+                out = F.scaled_dot_product_attention(q_, k_, v_, attn_mask=attn_mask)
+            else:
+                out = F.scaled_dot_product_attention(q_, k_, v_, is_causal=ctx.is_causal)
             out.backward(grad_output)
-        return q_.grad, k_.grad, v_.grad, None
+        return q_.grad, k_.grad, v_.grad, None, None
 
-def fused_sdpa(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, is_causal: bool = False) -> torch.Tensor:
-    """Functional interface for Fused SDPA (FlashAttention)."""
-    return FusedSDPAFunction.apply(q, k, v, is_causal)
+def fused_sdpa(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, is_causal: bool = False, sliding_window: Optional[int] = None) -> torch.Tensor:
+    """Functional interface for Fused SDPA (FlashAttention) with Sliding Window Support."""
+    return FusedSDPAFunction.apply(q, k, v, is_causal, sliding_window)

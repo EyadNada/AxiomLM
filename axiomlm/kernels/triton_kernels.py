@@ -232,6 +232,7 @@ def _fused_sdpa_forward_kernel(
     BLOCK_M: tl.constexpr, BLOCK_DMODEL: tl.constexpr,
     BLOCK_N: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
+    SLIDING_WINDOW: tl.constexpr,
 ):
     start_m = tl.program_id(0)
     off_hz = tl.program_id(1)
@@ -277,20 +278,32 @@ def _fused_sdpa_forward_kernel(
     
     q = tl.load(Q_block_ptr)
     q = (q * sm_scale).to(tl.float16)
-
-    # loop over K, V
+    
+    # Lo is determined by sliding window if specified
     lo = 0
+    if SLIDING_WINDOW > 0:
+        lo = tl.maximum(0, start_m * BLOCK_M - SLIDING_WINDOW)
+        lo = (lo // BLOCK_N) * BLOCK_N
+        
+    K_block_ptr = tl.advance(K_block_ptr, (0, lo))
+    V_block_ptr = tl.advance(V_block_ptr, (lo, 0))
+    
     hi = (start_m + 1) * BLOCK_M if IS_CAUSAL else N_CTX
     for start_n in range(lo, hi, BLOCK_N):
         start_n = tl.multiple_of(start_n, BLOCK_N)
-        k = tl.load(tl.advance(K_block_ptr, (0, start_n)))
+        k = tl.load(K_block_ptr)
         qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
         qk += tl.dot(q, k)
         
+        offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+        offs_n = start_n + tl.arange(0, BLOCK_N)
+        
         if IS_CAUSAL:
-            offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
-            offs_n = start_n + tl.arange(0, BLOCK_N)
-            qk = tl.where(offs_m[:, None] >= offs_n[None, :], qk, float("-inf"))
+            causal_mask = offs_m[:, None] >= offs_n[None, :]
+            if SLIDING_WINDOW > 0:
+                window_mask = (offs_m[:, None] - offs_n[None, :]) < SLIDING_WINDOW
+                causal_mask = causal_mask & window_mask
+            qk = tl.where(causal_mask, qk, float("-inf"))
             
         m_ij = tl.maximum(m_i, tl.max(qk, 1))
         qk = qk - m_ij[:, None]
@@ -301,16 +314,18 @@ def _fused_sdpa_forward_kernel(
         l_i = l_i * alpha + l_ij
         
         acc = acc * alpha[:, None]
-        v = tl.load(tl.advance(V_block_ptr, (start_n, 0)))
+        v = tl.load(V_block_ptr)
         p = p.to(tl.float16)
         acc += tl.dot(p, v)
         
         m_i = m_ij
+        K_block_ptr = tl.advance(K_block_ptr, (0, BLOCK_N))
+        V_block_ptr = tl.advance(V_block_ptr, (BLOCK_N, 0))
         
     acc = acc / l_i[:, None]
     tl.store(O_block_ptr, acc.to(Out.dtype.element_ty))
 
-def triton_fused_sdpa_forward(q, k, v, is_causal=False):
+def triton_fused_sdpa_forward(q, k, v, is_causal=False, sliding_window=None):
     # q, k, v are shape [B, H, N_CTX, D_HEAD]
     BLOCK_M = 128
     BLOCK_N = 64
@@ -322,6 +337,8 @@ def triton_fused_sdpa_forward(q, k, v, is_causal=False):
     
     grid = (triton.cdiv(q.shape[2], BLOCK_M), q.shape[0] * q.shape[1], 1)
     
+    sw_val = sliding_window if sliding_window is not None else -1
+    
     _fused_sdpa_forward_kernel[grid](
         q, k, v, sm_scale,
         out,
@@ -332,6 +349,7 @@ def triton_fused_sdpa_forward(q, k, v, is_causal=False):
         q.shape[0], q.shape[1], q.shape[2],
         BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_DMODEL=BLOCK_DMODEL,
         IS_CAUSAL=is_causal,
+        SLIDING_WINDOW=sw_val,
         num_warps=4,
         num_stages=2,
     )
