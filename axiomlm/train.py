@@ -98,13 +98,27 @@ def train(
     """Pretraining engine for Classic GPT-2 and Modern LLaMA-3 architectures."""
     ddp = int(os.environ.get('RANK', -1)) != -1
     if ddp:
-        assert torch.cuda.is_available(), "DDP requires CUDA backend"
-        init_process_group(backend='nccl')
+        # Determine the best backend and device for distributed training
+        if torch.cuda.is_available():
+            backend = 'nccl'
+            ddp_local_rank = int(os.environ['LOCAL_RANK'])
+            device = f'cuda:{ddp_local_rank}'
+            torch.cuda.set_device(device)
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            backend = 'gloo'
+            ddp_local_rank = int(os.environ.get('LOCAL_RANK', 0))
+            device = 'mps'
+        else:
+            backend = 'gloo'
+            ddp_local_rank = int(os.environ.get('LOCAL_RANK', 0))
+            device = 'cpu'
+            
+        # Initialize process group with multi-node timeouts
+        from datetime import timedelta
+        init_process_group(backend=backend, init_method="env://", timeout=timedelta(minutes=30))
+        
         ddp_rank = int(os.environ['RANK'])
-        ddp_local_rank = int(os.environ['LOCAL_RANK'])
         ddp_world_size = int(os.environ['WORLD_SIZE'])
-        device = f'cuda:{ddp_local_rank}'
-        torch.cuda.set_device(device)
         master_process = ddp_rank == 0
     else:
         ddp_rank = 0
@@ -206,7 +220,10 @@ def train(
                 print(f"[AxiomLM Notice] Checkpoint {resume} not found. Starting from step 0.")
 
     if ddp:
-        model = DDP(model, device_ids=[ddp_local_rank])
+        if device.startswith("cuda"):
+            model = DDP(model, device_ids=[ddp_local_rank])
+        else:
+            model = DDP(model)
 
     autocast_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device.startswith("cuda") else nullcontext()
     enc = tiktoken.get_encoding("gpt2")
