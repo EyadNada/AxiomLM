@@ -55,7 +55,9 @@ jobs:
           
           # Force CPU by disabling MPS detection to prevent runner OOM
           if hasattr(torch.backends, 'mps'):
-              torch.backends.mps.is_available = lambda: False
+              def _mock_is_available(): return False
+              _mock_is_available.__wrapped__ = getattr(torch.backends.mps.is_available, '__wrapped__', None)
+              torch.backends.mps.is_available = _mock_is_available
               
           # CPU uses B=2, T=1024 (B*T=2048), so we use total_batch_size=2048
           train(max_steps=2, total_batch_size=2048, eval_interval=10, sample_interval=10, save_interval=1, architecture='modern', optimizer_type='muon')
