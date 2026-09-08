@@ -1,17 +1,14 @@
 # AxiomLM: High-Performance PyTorch Pretraining Framework & Systems SLM
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-EE4C2C.svg)](https://pytorch.org/)
-[![CI](https://github.com/EyadNada/AxiomLM/actions/workflows/ci.yml/badge.svg)](https://github.com/EyadNada/AxiomLM/actions)
 [![Hardware](https://img.shields.io/badge/Hardware-Apple%20Silicon%20%7C%20CUDA-green.svg)]()
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Hugging Face Models](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Models-orange)](https://huggingface.co/)
 [![OpenAI Triton](https://img.shields.io/badge/Kernel-OpenAI%20Triton-blue.svg)](https://github.com/openai/triton)
 [![Apple Metal](https://img.shields.io/badge/Kernel-Apple%20Metal-silver.svg)](https://developer.apple.com/metal/)
-[![Repo Size](https://img.shields.io/github/repo-size/EyadNada/AxiomLM.svg)](https://github.com/EyadNada/AxiomLM)
-[![GitHub stars](https://img.shields.io/github/stars/EyadNada/AxiomLM.svg?style=social&label=Star)](https://github.com/EyadNada/AxiomLM/stargazers)
+[![ARM NEON](https://img.shields.io/badge/SIMD-ARM%20NEON-ff69b4.svg)]()
+[![Optimizer](https://img.shields.io/badge/Optimizer-Muon%20(Newton--Schulz)-8A2BE2.svg)]()
+[![Architecture](https://img.shields.io/badge/Architecture-LLaMA--3%20Spec-FF8C00.svg)]()
+[![Attention](https://img.shields.io/badge/Attention-SWA%20%26%20GQA-00CED1.svg)]()
 
 AxiomLM is a high-performance PyTorch library for modern autoregressive Transformer modeling, custom hardware kernel acceleration, and spectral matrix optimization. Built from first principles, it modernizes standard Transformer architectures with LLaMA-3 architectural enhancements, the Muon Newton-Schulz matrix optimizer, and bare-metal kernels for Apple Silicon (Metal MSL and ARM NEON SIMD) and NVIDIA CUDA (OpenAI Triton).
 
