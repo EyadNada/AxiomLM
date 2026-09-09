@@ -168,6 +168,41 @@ rmsnorm_backward_neon(torch::Tensor grad_y, torch::Tensor x,
   return std::make_tuple(grad_x, grad_w);
 }
 
+// Vectorized exponential approximation for float32x4_t
+inline float32x4_t vexpq_f32_approx(float32x4_t x) {
+    float32x4_t x_log2 = vmulq_f32(x, vdupq_n_f32(1.4426950408889634f)); 
+    x_log2 = vmaxq_f32(x_log2, vdupq_n_f32(-126.0f));
+    x_log2 = vminq_f32(x_log2, vdupq_n_f32(126.0f));
+
+    // round to nearest integer
+    int32x4_t n = vcvtnq_s32_f32(x_log2);
+    float32x4_t n_f = vcvtq_f32_s32(n);
+    
+    // fractional part
+    float32x4_t f = vsubq_f32(x_log2, n_f);
+
+    float32x4_t poly = vmlaq_f32(vdupq_n_f32(0.2402265f), f, vdupq_n_f32(0.0555041f));
+    poly = vmlaq_f32(vdupq_n_f32(0.693147f), f, poly);
+    poly = vmlaq_f32(vdupq_n_f32(1.0f), f, poly);
+
+    int32x4_t n_shifted = vshlq_n_s32(n, 23); 
+    n_shifted = vaddq_s32(n_shifted, vdupq_n_s32(127 << 23));
+    float32x4_t two_to_n = vreinterpretq_f32_s32(n_shifted);
+
+    return vmulq_f32(poly, two_to_n);
+}
+
+// Vectorized sigmoid
+inline float32x4_t vsigmoidq_f32(float32x4_t x) {
+    float32x4_t exp_neg_x = vexpq_f32_approx(vnegq_f32(x));
+    float32x4_t denom = vaddq_f32(vdupq_n_f32(1.0f), exp_neg_x);
+    // Reciprocal estimate + Newton-Raphson step for division
+    float32x4_t recip = vrecpeq_f32(denom);
+    recip = vmulq_f32(vrecpsq_f32(denom, recip), recip);
+    recip = vmulq_f32(vrecpsq_f32(denom, recip), recip);
+    return recip;
+}
+
 // ----------------------------------------------------------------------------
 // 3. Fused SwiGLU Forward Pass (High-Precision Parallel Pass)
 // ----------------------------------------------------------------------------
@@ -185,7 +220,16 @@ torch::Tensor swiglu_forward_neon(torch::Tensor gate, torch::Tensor up) {
   float *out_ptr = out.data_ptr<float>();
 
   at::parallel_for(0, total_elements, 2048, [&](int64_t start, int64_t end) {
-    for (int64_t i = start; i < end; ++i) {
+    int64_t i = start;
+    for (; i <= end - 4; i += 4) {
+      float32x4_t g = vld1q_f32(g_ptr + i);
+      float32x4_t u = vld1q_f32(u_ptr + i);
+      float32x4_t sig = vsigmoidq_f32(g);
+      float32x4_t silu_g = vmulq_f32(g, sig);
+      float32x4_t result = vmulq_f32(silu_g, u);
+      vst1q_f32(out_ptr + i, result);
+    }
+    for (; i < end; ++i) {
       float g = g_ptr[i];
       float u = u_ptr[i];
       float sig = exact_sigmoid(g);
@@ -218,7 +262,29 @@ swiglu_backward_neon(torch::Tensor grad_y, torch::Tensor gate,
   float *gu_ptr = grad_up.data_ptr<float>();
 
   at::parallel_for(0, total_elements, 2048, [&](int64_t start, int64_t end) {
-    for (int64_t i = start; i < end; ++i) {
+    int64_t i = start;
+    for (; i <= end - 4; i += 4) {
+      float32x4_t gy = vld1q_f32(gy_ptr + i);
+      float32x4_t g = vld1q_f32(g_ptr + i);
+      float32x4_t u = vld1q_f32(u_ptr + i);
+
+      float32x4_t sig = vsigmoidq_f32(g);
+      float32x4_t silu_g = vmulq_f32(g, sig);
+      
+      // grad_up = gy * silu_g
+      float32x4_t gu = vmulq_f32(gy, silu_g);
+      vst1q_f32(gu_ptr + i, gu);
+
+      // d_silu = sig * (1 + g * (1 - sig))
+      float32x4_t one_minus_sig = vsubq_f32(vdupq_n_f32(1.0f), sig);
+      float32x4_t d_silu = vmlaq_f32(vdupq_n_f32(1.0f), g, one_minus_sig);
+      d_silu = vmulq_f32(sig, d_silu);
+      
+      // grad_gate = gy * u * d_silu
+      float32x4_t gg = vmulq_f32(vmulq_f32(gy, u), d_silu);
+      vst1q_f32(gg_ptr + i, gg);
+    }
+    for (; i < end; ++i) {
       float gy = gy_ptr[i];
       float g = g_ptr[i];
       float u = u_ptr[i];

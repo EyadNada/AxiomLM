@@ -166,7 +166,9 @@ def fused_swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     device = gate.device
     
     # Avoid Python autograd wrapper unless we actually have a compiled C++ or Triton kernel active for this device
-    if (device.type == "cuda" and HAS_TRITON) or (_NEON_MOD is not None and device.type == "cpu" and gate.dtype == torch.float32) or (_METAL_MOD is not None and device.type == "mps" and gate.dtype == torch.float32):
+    # Note: We intentionally bypass _NEON_MOD for SwiGLU on CPU because PyTorch's native C++ F.silu is highly 
+    # optimized, faster, and perfectly accurate, whereas our custom NEON kernel uses a less precise exp approximation.
+    if (device.type == "cuda" and HAS_TRITON) or (_METAL_MOD is not None and device.type == "mps" and gate.dtype == torch.float32):
         return FusedSwiGLUFunction.apply(gate, up)
         
     # Standard PyTorch eager fallback (native C++ autograd)
