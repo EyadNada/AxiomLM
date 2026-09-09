@@ -347,3 +347,108 @@ kernel void cross_entropy_backward_kernel(
         row_grad[i] = grad * go;
     }
 }
+
+// ----------------------------------------------------------------------------
+// Flash Attention Forward (Custom Apple Silicon AMX/SRAM Optimized)
+// ----------------------------------------------------------------------------
+#define BLOCK_Q 32
+#define BLOCK_K 32
+
+kernel void flash_attention_forward_kernel(
+    device const float *Q [[buffer(0)]],
+    device const float *K [[buffer(1)]],
+    device const float *V [[buffer(2)]],
+    device float *O [[buffer(3)]],
+    constant uint &seq_len_q [[buffer(4)]],
+    constant uint &seq_len_k [[buffer(5)]],
+    constant uint &head_dim [[buffer(6)]],
+    constant uint &is_causal [[buffer(7)]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint2 bid [[threadgroup_position_in_grid]]
+) {
+    uint batch_head_idx = bid.x;
+    uint block_q_idx = bid.y;
+    
+    uint q_offset = batch_head_idx * seq_len_q * head_dim;
+    uint kv_offset = batch_head_idx * seq_len_k * head_dim;
+    
+    device const float *q_ptr = Q + q_offset;
+    device const float *k_ptr = K + kv_offset;
+    device const float *v_ptr = V + kv_offset;
+    device float *o_ptr = O + q_offset;
+    
+    uint q_start = block_q_idx * BLOCK_Q;
+    uint q_idx = q_start + tid;
+    
+    bool valid_q = q_idx < seq_len_q;
+    
+    // Thread-local state for streaming softmax
+    float m_i = -1e38f;
+    float l_i = 0.0f;
+    float O_i[128]; // support up to head_dim = 128
+    for(uint d=0; d<128; d++) O_i[d] = 0.0f;
+    
+    float Q_i[128];
+    if (valid_q) {
+        for(uint d=0; d<head_dim; d++) {
+            Q_i[d] = q_ptr[q_idx * head_dim + d];
+        }
+    }
+    
+    threadgroup float K_shared[BLOCK_K * 128];
+    threadgroup float V_shared[BLOCK_K * 128];
+    
+    float scale = 1.0f / fast::sqrt((float)head_dim);
+    uint num_blocks_k = (seq_len_k + BLOCK_K - 1) / BLOCK_K;
+    
+    for (uint bk = 0; bk < num_blocks_k; bk++) {
+        uint k_start = bk * BLOCK_K;
+        
+        // Collaborative load K and V into SRAM
+        uint load_k_idx = k_start + tid;
+        if (load_k_idx < seq_len_k) {
+            for(uint d=0; d<head_dim; d++) {
+                K_shared[tid * head_dim + d] = k_ptr[load_k_idx * head_dim + d];
+                V_shared[tid * head_dim + d] = v_ptr[load_k_idx * head_dim + d];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        
+        if (valid_q) {
+            uint k_limit = min((uint)BLOCK_K, seq_len_k - k_start);
+            for (uint j = 0; j < k_limit; j++) {
+                uint k_global = k_start + j;
+                if (is_causal > 0 && k_global > q_idx) {
+                    continue;
+                }
+                
+                // dot product
+                float score = 0.0f;
+                for (uint d = 0; d < head_dim; d++) {
+                    score += Q_i[d] * K_shared[j * head_dim + d];
+                }
+                score *= scale;
+                
+                float m_new = max(m_i, score);
+                float exp_score = fast::exp(score - m_new);
+                float exp_m_diff = fast::exp(m_i - m_new);
+                
+                l_i = l_i * exp_m_diff + exp_score;
+                
+                for (uint d = 0; d < head_dim; d++) {
+                    O_i[d] = O_i[d] * exp_m_diff + exp_score * V_shared[j * head_dim + d];
+                }
+                
+                m_i = m_new;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    
+    if (valid_q) {
+        float inv_l = 1.0f / l_i;
+        for (uint d = 0; d < head_dim; d++) {
+            o_ptr[q_idx * head_dim + d] = O_i[d] * inv_l;
+        }
+    }
+}
