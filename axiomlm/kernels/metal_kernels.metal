@@ -363,7 +363,7 @@ kernel void flash_attention_forward_kernel(
     constant uint &seq_len_k [[buffer(5)]],
     constant uint &head_dim [[buffer(6)]],
     constant uint &is_causal [[buffer(7)]],
-    uint tid [[thread_position_in_threadgroup]],
+    uint2 tid_2d [[thread_position_in_threadgroup]],
     uint2 bid [[threadgroup_position_in_grid]]
 ) {
     uint batch_head_idx = bid.x;
@@ -378,6 +378,7 @@ kernel void flash_attention_forward_kernel(
     device float *o_ptr = O + q_offset;
     
     uint q_start = block_q_idx * BLOCK_Q;
+    uint tid = tid_2d.x;
     uint q_idx = q_start + tid;
     
     bool valid_q = q_idx < seq_len_q;
