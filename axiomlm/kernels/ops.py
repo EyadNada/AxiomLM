@@ -89,7 +89,13 @@ class FusedRMSNormFunction(torch.autograd.Function):
 
 def fused_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     """Functional interface for Fused RMSNorm."""
-    return FusedRMSNormFunction.apply(x, weight, eps)
+    device = x.device
+    if (device.type == "cuda" and HAS_TRITON) or (_NEON_MOD is not None and device.type == "cpu" and x.dtype == torch.float32):
+        return FusedRMSNormFunction.apply(x, weight, eps)
+    
+    # Fallback to standard PyTorch eager execution to avoid Python autograd overhead
+    mean_sq = x.pow(2).mean(-1, keepdim=True)
+    return x * torch.rsqrt(mean_sq + eps) * weight
 
 
 class FusedRMSNorm(nn.Module):
@@ -120,6 +126,8 @@ class FusedSwiGLUFunction(torch.autograd.Function):
         device = gate.device
         if device.type == "cuda" and HAS_TRITON:
             out = triton_swiglu_forward(gate.contiguous(), up.contiguous())
+        elif _NEON_MOD is not None and device.type == "cpu" and gate.dtype == torch.float32:
+            out = _NEON_MOD.swiglu_forward_neon(gate.contiguous(), up.contiguous())
         else:
             out = F.silu(gate) * up
 
@@ -129,6 +137,10 @@ class FusedSwiGLUFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         gate, up = ctx.saved_tensors
+        device = gate.device
+        if _NEON_MOD is not None and device.type == "cpu" and grad_output.dtype == torch.float32:
+            return _NEON_MOD.swiglu_backward_neon(grad_output.contiguous(), gate.contiguous(), up.contiguous())
+        
         sig_g = torch.sigmoid(gate)
         silu_g = gate * sig_g
         grad_up = grad_output * silu_g
@@ -139,7 +151,12 @@ class FusedSwiGLUFunction(torch.autograd.Function):
 
 def fused_swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     """Functional interface for Fused SwiGLU."""
-    return FusedSwiGLUFunction.apply(gate, up)
+    device = gate.device
+    if (device.type == "cuda" and HAS_TRITON) or (_NEON_MOD is not None and device.type == "cpu" and gate.dtype == torch.float32):
+        return FusedSwiGLUFunction.apply(gate, up)
+    
+    # Fallback to standard PyTorch eager execution to avoid Python autograd overhead
+    return F.silu(gate) * up
 
 
 class FusedSwiGLUMLP(nn.Module):
