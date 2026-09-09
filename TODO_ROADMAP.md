@@ -417,3 +417,12 @@ def _rmsnorm_kernel(
 - **Part 2: Hardware Optimizations**: TF32, BF16, FlashAttention SRAM tiling, JIT compilation.
 - **Part 3: The 2026 Frontier**: Why LLaMA-3 uses RoPE/RMSNorm/SwiGLU, and why Muon outperforms AdamW.
 - **Part 4: Live Coding & Training**: Sharding TinyStories, training the 124M model on Mac, evaluating live stories.
+
+## Next-Level Apple Silicon Kernel Optimizations (Metal)
+
+To push AxiomLM to the absolute maximum performance on Mac GPUs, the following custom Metal kernels are needed:
+
+- [ ] **Fused RMSNorm Backward Pass**: Implement `rmsnorm_backward_kernel` in `metal_kernels.metal`. Currently, we only have the forward pass, meaning training falls back to PyTorch autograd for the backward pass. Fixing this will yield a 1.5x - 2.0x speedup for the norm layer gradients, cutting total training time by 3-5%.
+- [ ] **Fused RoPE (Rotary Positional Embeddings)**: Standard PyTorch RoPE requires slicing, multiplying, and adding, taking 5 trips to GPU RAM. A fused Metal kernel does this in 1 trip, saving massive memory bandwidth and yielding a 5-10% overall speedup.
+- [ ] **Fused Flash Cross-Entropy**: Calculate loss and gradients without materializing the full vocabulary logits tensor (e.g., `[batch, seq, 128000]`) in memory. This saves gigabytes of RAM during training, allowing for 2x larger batch sizes.
+- [ ] **Custom Metal FlashAttention**: A handcrafted Metal FlashAttention kernel (similar to MLX) to replace PyTorch's generic `F.scaled_dot_product_attention`. This could yield a 20-40% overall speedup for long-context prompts.
