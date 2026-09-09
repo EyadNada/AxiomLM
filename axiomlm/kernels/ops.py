@@ -17,10 +17,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .build_kernels import load_neon_module
+from .build_kernels import load_neon_module, load_metal_module
 
-# Load native compiled NEON module
+# Load native compiled modules
 _NEON_MOD = load_neon_module()
+_METAL_MOD = load_metal_module()
 
 try:
     from .triton_kernels import (
@@ -38,60 +39,70 @@ except ImportError:
 # ----------------------------------------------------------------------------
 
 class FusedRMSNormFunction(torch.autograd.Function):
-    """
-    Fused Root Mean Square Normalization Autograd Function.
-    Calculates forward normalization and backward gradients in single SRAM passes.
-    """
     @staticmethod
-    def forward(ctx: Any, x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-        orig_shape = x.shape
-        x_flat = x.contiguous().view(-1, orig_shape[-1])
-        weight_flat = weight.contiguous()
-
-        device = x.device
-        if device.type == "cuda" and HAS_TRITON:
-            out, rsqrt_cache = triton_rmsnorm_forward(x_flat, weight_flat, eps=eps)
-        elif _NEON_MOD is not None and device.type == "cpu" and x.dtype == torch.float32:
-            out, rsqrt_cache = _NEON_MOD.rmsnorm_forward_neon(x_flat, weight_flat, eps)
-        else:
-            # High-efficiency native PyTorch single-pass on MPS/other devices
-            mean_sq = x_flat.pow(2).mean(-1, keepdim=True)
-            rsqrt_cache = torch.rsqrt(mean_sq + eps)
-            out = x_flat * rsqrt_cache * weight_flat
-
-        ctx.save_for_backward(x_flat, weight_flat, rsqrt_cache)
+    def forward(ctx, x, weight, eps):
         ctx.eps = eps
-        ctx.orig_shape = orig_shape
-        return out.view(orig_shape)
+        
+        if x.device.type == "cuda" and HAS_TRITON:
+            y, rsqrt = _triton_kernels.rmsnorm_forward(x, weight, eps)
+            ctx.save_for_backward(x, weight, rsqrt)
+            return y
+        elif _NEON_MOD is not None and x.device.type == "cpu" and x.dtype == torch.float32:
+            orig_shape = x.shape
+            x_flat = x.contiguous().view(-1, orig_shape[-1])
+            weight_flat = weight.contiguous()
+            y, rsqrt = _NEON_MOD.rmsnorm_forward_neon(x_flat, weight_flat, eps)
+            ctx.save_for_backward(x, weight, rsqrt)
+            ctx.orig_shape = orig_shape
+            return y.view(orig_shape)
+        elif _METAL_MOD is not None and x.device.type == "mps" and x.dtype == torch.float32:
+            orig_shape = x.shape
+            x_flat = x.contiguous().view(-1, orig_shape[-1])
+            weight_flat = weight.contiguous()
+            y, rsqrt = _METAL_MOD.rmsnorm_forward_mps(x_flat, weight_flat, eps)
+            ctx.save_for_backward(x, weight, rsqrt)
+            ctx.orig_shape = orig_shape
+            return y.view(orig_shape)
+            
+        # Fallback to standard PyTorch eager execution (avoid custom autograd for eager fallback!)
+        raise RuntimeError("FusedRMSNormFunction.apply called without available kernel.")
 
     @staticmethod
-    def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], None]:
-        x_flat, weight_flat, rsqrt_cache = ctx.saved_tensors
-        grad_out_flat = grad_output.contiguous().view(-1, ctx.orig_shape[-1])
-        device = grad_output.device
-
-        if _NEON_MOD is not None and device.type == "cpu" and grad_output.dtype == torch.float32:
-            grad_x, grad_weight = _NEON_MOD.rmsnorm_backward_neon(
-                grad_out_flat, x_flat, weight_flat, rsqrt_cache
-            )
-        else:
-            # Exact analytical backward derivation
-            D = x_flat.size(-1)
-            r_val = rsqrt_cache if rsqrt_cache.dim() == 2 else rsqrt_cache.unsqueeze(-1)
-            dy_w = grad_out_flat * weight_flat
-            inner = (dy_w * x_flat).sum(-1, keepdim=True)
-            scale = (inner / D) * (r_val * r_val * r_val)
-            grad_x = (dy_w * r_val) - (x_flat * scale)
-            grad_weight = (grad_out_flat * x_flat * r_val).sum(0)
-
-        return grad_x.view(ctx.orig_shape), grad_weight, None
+    def backward(ctx, grad_y):
+        x, weight, rsqrt = ctx.saved_tensors
+        eps = ctx.eps
+        
+        if grad_y.device.type == "cuda" and HAS_TRITON:
+            grad_x, grad_w = _triton_kernels.rmsnorm_backward(grad_y, x, weight, rsqrt, eps)
+            return grad_x, grad_w, None
+        elif _NEON_MOD is not None and grad_y.device.type == "cpu" and grad_y.dtype == torch.float32:
+            grad_out_flat = grad_y.contiguous().view(-1, ctx.orig_shape[-1])
+            x_flat = x.contiguous().view(-1, ctx.orig_shape[-1])
+            weight_flat = weight.contiguous()
+            grad_x, grad_w = _NEON_MOD.rmsnorm_backward_neon(grad_out_flat, x_flat, weight_flat, rsqrt)
+            return grad_x.view(ctx.orig_shape), grad_w, None
+        elif _METAL_MOD is not None and grad_y.device.type == "mps" and grad_y.dtype == torch.float32:
+            # Metal backward for RMSNorm isn't implemented in metal_kernels.metal yet!
+            # We must fallback to PyTorch autograd for MPS backward.
+            pass
+            
+        raise RuntimeError("RMSNorm backward kernel missing for device.")
 
 
 def fused_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     """Functional interface for Fused RMSNorm."""
     device = x.device
-    if (device.type == "cuda" and HAS_TRITON) or (_NEON_MOD is not None and device.type == "cpu" and x.dtype == torch.float32):
-        return FusedRMSNormFunction.apply(x, weight, eps)
+    if (device.type == "cuda" and HAS_TRITON) or (_NEON_MOD is not None and device.type == "cpu" and x.dtype == torch.float32) or (_METAL_MOD is not None and device.type == "mps" and x.dtype == torch.float32):
+        # NOTE: Since Metal backward is missing, we actually cannot use FusedRMSNormFunction for training on MPS yet.
+        # But for benchmarking/inference, we can use the forward.
+        # Wait, if we use apply, it will crash on backward.
+        # So we should only do this if not requires_grad. But benchmark uses backward.
+        # Let's fallback to eager for MPS for now, or just let benchmark fail on backward.
+        # Wait, the Metal kernel for SwiGLU DOES have backward. RMSNorm doesn't!
+        if device.type == "mps" and x.requires_grad:
+            pass # Fallthrough to Python autograd
+        else:
+            return FusedRMSNormFunction.apply(x, weight, eps)
     
     # Fallback to standard PyTorch eager execution to avoid Python autograd overhead
     mean_sq = x.pow(2).mean(-1, keepdim=True)
@@ -99,14 +110,10 @@ def fused_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> t
 
 
 class FusedRMSNorm(nn.Module):
-    """
-    Fused Root Mean Square Normalization Layer.
-    Drop-in replacement for standard RMSNorm with kernel acceleration.
-    """
-    def __init__(self, dim: int, eps: float = 1e-6):
+    def __init__(self, hidden_size: int, eps: float = 1e-6):
         super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return fused_rmsnorm(x, self.weight, self.eps)
@@ -117,45 +124,52 @@ class FusedRMSNorm(nn.Module):
 # ----------------------------------------------------------------------------
 
 class FusedSwiGLUFunction(torch.autograd.Function):
-    """
-    Fused SwiGLU (Swish Gated Linear Unit) Autograd Function.
-    Calculates y = SiLU(gate) * up in a single fused pass.
-    """
     @staticmethod
-    def forward(ctx: Any, gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
-        device = gate.device
-        if device.type == "cuda" and HAS_TRITON:
-            out = triton_swiglu_forward(gate.contiguous(), up.contiguous())
-        elif _NEON_MOD is not None and device.type == "cpu" and gate.dtype == torch.float32:
-            out = _NEON_MOD.swiglu_forward_neon(gate.contiguous(), up.contiguous())
-        else:
-            out = F.silu(gate) * up
-
-        ctx.save_for_backward(gate, up)
-        return out
+    def forward(ctx, gate, up):
+        if gate.device.type == "cuda" and HAS_TRITON:
+            out = _triton_kernels.swiglu_forward(gate, up)
+            ctx.save_for_backward(gate, up)
+            return out
+        elif _NEON_MOD is not None and gate.device.type == "cpu" and gate.dtype == torch.float32:
+            out = _NEON_MOD.swiglu_forward_neon(gate, up)
+            ctx.save_for_backward(gate, up)
+            return out
+        elif _METAL_MOD is not None and gate.device.type == "mps" and gate.dtype == torch.float32:
+            out = _METAL_MOD.swiglu_forward_mps(gate, up)
+            ctx.save_for_backward(gate, up)
+            return out
+            
+        raise RuntimeError("FusedSwiGLUFunction.apply called without available kernel.")
 
     @staticmethod
-    def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def backward(ctx, grad_y):
         gate, up = ctx.saved_tensors
-        device = gate.device
-        if _NEON_MOD is not None and device.type == "cpu" and grad_output.dtype == torch.float32:
-            return _NEON_MOD.swiglu_backward_neon(grad_output.contiguous(), gate.contiguous(), up.contiguous())
+        grad_y = grad_y.contiguous()
+        gate = gate.contiguous()
+        up = up.contiguous()
         
-        sig_g = torch.sigmoid(gate)
-        silu_g = gate * sig_g
-        grad_up = grad_output * silu_g
-        d_silu_dg = sig_g * (1.0 + gate * (1.0 - sig_g))
-        grad_gate = grad_output * up * d_silu_dg
-        return grad_gate, grad_up
+        if grad_y.device.type == "cuda" and HAS_TRITON:
+            grad_gate, grad_up = _triton_kernels.swiglu_backward(grad_y, gate, up)
+            return grad_gate, grad_up
+        elif _NEON_MOD is not None and grad_y.device.type == "cpu" and grad_y.dtype == torch.float32:
+            grad_gate, grad_up = _NEON_MOD.swiglu_backward_neon(grad_y, gate, up)
+            return grad_gate, grad_up
+        elif _METAL_MOD is not None and grad_y.device.type == "mps" and grad_y.dtype == torch.float32:
+            grad_gate, grad_up = _METAL_MOD.swiglu_backward_mps(grad_y, gate, up)
+            return grad_gate, grad_up
+
+        raise RuntimeError("SwiGLU backward kernel missing for device.")
 
 
 def fused_swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
-    """Functional interface for Fused SwiGLU."""
+    """Functional interface for Fused SwiGLU activation."""
     device = gate.device
-    if (device.type == "cuda" and HAS_TRITON) or (_NEON_MOD is not None and device.type == "cpu" and gate.dtype == torch.float32):
-        return FusedSwiGLUFunction.apply(gate, up)
     
-    # Fallback to standard PyTorch eager execution to avoid Python autograd overhead
+    # Avoid Python autograd wrapper unless we actually have a compiled C++ or Triton kernel active for this device
+    if (device.type == "cuda" and HAS_TRITON) or (_NEON_MOD is not None and device.type == "cpu" and gate.dtype == torch.float32) or (_METAL_MOD is not None and device.type == "mps" and gate.dtype == torch.float32):
+        return FusedSwiGLUFunction.apply(gate, up)
+        
+    # Standard PyTorch eager fallback (native C++ autograd)
     return F.silu(gate) * up
 
 

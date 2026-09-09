@@ -36,7 +36,7 @@ kernel void rmsnorm_forward_kernel(
   }
 
   // Threadgroup SRAM reduction
-  threadgroup float shared_sq[256];
+  threadgroup float shared_sq[1024];
   shared_sq[tid] = thread_sum_sq;
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
