@@ -99,27 +99,99 @@ kernel void swiglu_forward_kernel(
 // grad_up   = grad_y * silu(x_gate)
 // grad_gate = grad_y * x_up * (sig(x_gate) * (1 + x_gate * (1 - sig(x_gate))))
 // ----------------------------------------------------------------------------
-kernel void swiglu_backward_kernel(device const float4 *grad_y [[buffer(0)]],
-                                   device const float4 *x_gate [[buffer(1)]],
-                                   device const float4 *x_up [[buffer(2)]],
-                                   device float4 *grad_gate [[buffer(3)]],
-                                   device float4 *grad_up [[buffer(4)]],
-                                   constant uint &num_vec4 [[buffer(5)]],
-                                   uint gid [[thread_position_in_grid]]) {
-  if (gid >= num_vec4)
+kernel void swiglu_backward_kernel(
+    device const float *grad_y [[buffer(0)]],
+    device const float *gate [[buffer(1)]],
+    device const float *up [[buffer(2)]],
+    device float *grad_gate [[buffer(3)]],
+    device float *grad_up [[buffer(4)]],
+    constant uint &num_elements [[buffer(5)]], // Number of float4 vectors
+    uint tid [[thread_position_in_grid]]
+) {
+  if (tid >= num_elements)
     return;
 
-  float4 gy = grad_y[gid];
-  float4 g = x_gate[gid];
-  float4 u = x_up[gid];
+  device const float4 *gy_vec = (device const float4 *)grad_y;
+  device const float4 *gate_vec = (device const float4 *)gate;
+  device const float4 *up_vec = (device const float4 *)up;
+  device float4 *gg_vec = (device float4 *)grad_gate;
+  device float4 *gu_vec = (device float4 *)grad_up;
 
-  float4 sig = 1.0f / (1.0f + exp(-g));
-  float4 silu_g = g * sig;
+  float4 gy = gy_vec[tid];
+  float4 g = gate_vec[tid];
+  float4 u = up_vec[tid];
 
-  // grad_up = grad_y * silu(g)
-  grad_up[gid] = gy * silu_g;
+  // sigmoid(g) = 1 / (1 + exp(-g))
+  float4 sig_g = 1.0f / (1.0f + fast::exp(-g));
+  float4 silu_g = g * sig_g;
 
-  // d(silu(g))/dg = sig * (1 + g * (1 - sig))
-  float4 d_silu = sig * (1.0f + g * (1.0f - sig));
-  grad_gate[gid] = gy * u * d_silu;
+  // grad_up = grad_y * silu(gate)
+  gu_vec[tid] = gy * silu_g;
+
+  // d_silu/d_gate = sig_g * (1 + gate * (1 - sig_g))
+  float4 d_silu_dg = sig_g * (1.0f + g * (1.0f - sig_g));
+  gg_vec[tid] = gy * u * d_silu_dg;
+}
+
+// ----------------------------------------------------------------------------
+// RMSNorm Backward kernels
+// ----------------------------------------------------------------------------
+
+kernel void rmsnorm_backward_kernel(
+    device const float *grad_y [[buffer(0)]],
+    device const float *x [[buffer(1)]],
+    device const float *weight [[buffer(2)]],
+    device const float *rsqrt [[buffer(3)]],
+    device float *grad_x [[buffer(4)]],
+    constant uint &D [[buffer(5)]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint bid [[threadgroup_position_in_grid]],
+    uint block_dim [[threads_per_threadgroup]]
+) {
+    uint row_idx = bid;
+    device const float *row_gy = grad_y + row_idx * D;
+    device const float *row_x = x + row_idx * D;
+    device float *row_gx = grad_x + row_idx * D;
+    float rsqrt_val = rsqrt[row_idx];
+
+    float thread_inner = 0.0f;
+    for (uint i = tid; i < D; i += block_dim) {
+        thread_inner += row_gy[i] * weight[i] * row_x[i];
+    }
+
+    threadgroup float shared_inner[1024];
+    shared_inner[tid] = thread_inner;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint s = block_dim / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            shared_inner[tid] += shared_inner[tid + s];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    float inner_sum = shared_inner[0];
+    float scale = (inner_sum / (float)D) * (rsqrt_val * rsqrt_val * rsqrt_val);
+
+    for (uint i = tid; i < D; i += block_dim) {
+        row_gx[i] = (row_gy[i] * weight[i] * rsqrt_val) - (row_x[i] * scale);
+    }
+}
+
+kernel void rmsnorm_backward_weight_kernel(
+    device const float *grad_y [[buffer(0)]],
+    device const float *x [[buffer(1)]],
+    device const float *rsqrt [[buffer(2)]],
+    device float *grad_w [[buffer(3)]],
+    constant uint &D [[buffer(4)]],
+    constant uint &num_rows [[buffer(5)]],
+    uint tid [[thread_position_in_grid]]
+) {
+    if (tid >= D) return;
+
+    float gw_val = 0.0f;
+    for (uint r = 0; r < num_rows; ++r) {
+        gw_val += grad_y[r * D + tid] * x[r * D + tid] * rsqrt[r];
+    }
+    grad_w[tid] = gw_val;
 }

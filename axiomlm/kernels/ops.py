@@ -82,10 +82,12 @@ class FusedRMSNormFunction(torch.autograd.Function):
             grad_x, grad_w = _NEON_MOD.rmsnorm_backward_neon(grad_out_flat, x_flat, weight_flat, rsqrt)
             return grad_x.view(ctx.orig_shape), grad_w, None
         elif _METAL_MOD is not None and grad_y.device.type == "mps" and grad_y.dtype == torch.float32:
-            # Metal backward for RMSNorm isn't implemented in metal_kernels.metal yet!
-            # We must fallback to PyTorch autograd for MPS backward.
-            pass
-            
+            grad_out_flat = grad_y.contiguous().view(-1, ctx.orig_shape[-1])
+            x_flat = x.contiguous().view(-1, ctx.orig_shape[-1])
+            weight_flat = weight.contiguous()
+            grad_x, grad_w = _METAL_MOD.rmsnorm_backward_mps(grad_out_flat, x_flat, weight_flat, rsqrt)
+            return grad_x.view(ctx.orig_shape), grad_w, None
+
         raise RuntimeError("RMSNorm backward kernel missing for device.")
 
 
@@ -93,16 +95,7 @@ def fused_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> t
     """Functional interface for Fused RMSNorm."""
     device = x.device
     if (device.type == "cuda" and HAS_TRITON) or (_NEON_MOD is not None and device.type == "cpu" and x.dtype == torch.float32) or (_METAL_MOD is not None and device.type == "mps" and x.dtype == torch.float32):
-        # NOTE: Since Metal backward is missing, we actually cannot use FusedRMSNormFunction for training on MPS yet.
-        # But for benchmarking/inference, we can use the forward.
-        # Wait, if we use apply, it will crash on backward.
-        # So we should only do this if not requires_grad. But benchmark uses backward.
-        # Let's fallback to eager for MPS for now, or just let benchmark fail on backward.
-        # Wait, the Metal kernel for SwiGLU DOES have backward. RMSNorm doesn't!
-        if device.type == "mps" and x.requires_grad:
-            pass # Fallthrough to Python autograd
-        else:
-            return FusedRMSNormFunction.apply(x, weight, eps)
+        return FusedRMSNormFunction.apply(x, weight, eps)
     
     # Fallback to standard PyTorch eager execution to avoid Python autograd overhead
     mean_sq = x.pow(2).mean(-1, keepdim=True)

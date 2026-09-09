@@ -35,6 +35,8 @@ static id<MTLComputePipelineState> get_pipeline(id<MTLDevice> device, id<MTLLibr
 static id<MTLDevice> mtl_device = nil;
 static id<MTLLibrary> mtl_library = nil;
 static id<MTLComputePipelineState> rmsnorm_fwd_pso = nil;
+static id<MTLComputePipelineState> rmsnorm_bwd_pso = nil;
+static id<MTLComputePipelineState> rmsnorm_bwd_weight_pso = nil;
 static id<MTLComputePipelineState> swiglu_fwd_pso = nil;
 static id<MTLComputePipelineState> swiglu_bwd_pso = nil;
 static bool is_initialized = false;
@@ -46,6 +48,8 @@ void init_mps(std::string metal_path) {
         mtl_library = load_metal_library(mtl_device, ns_path);
         if (mtl_library) {
             rmsnorm_fwd_pso = get_pipeline(mtl_device, mtl_library, @"rmsnorm_forward_kernel");
+            rmsnorm_bwd_pso = get_pipeline(mtl_device, mtl_library, @"rmsnorm_backward_kernel");
+            rmsnorm_bwd_weight_pso = get_pipeline(mtl_device, mtl_library, @"rmsnorm_backward_weight_kernel");
             swiglu_fwd_pso = get_pipeline(mtl_device, mtl_library, @"swiglu_forward_kernel");
             swiglu_bwd_pso = get_pipeline(mtl_device, mtl_library, @"swiglu_backward_kernel");
         }
@@ -55,6 +59,56 @@ void init_mps(std::string metal_path) {
 
 static inline id<MTLBuffer> getMTLBufferStorage(const torch::Tensor& tensor) {
     return __builtin_bit_cast(id<MTLBuffer>, tensor.storage().data());
+}
+
+std::tuple<torch::Tensor, torch::Tensor> rmsnorm_backward_mps(torch::Tensor grad_y, torch::Tensor x, torch::Tensor weight, torch::Tensor rsqrt_cache) {
+    auto grad_x = torch::empty_like(x);
+    auto grad_w = torch::empty_like(weight);
+    
+    int64_t D = x.size(-1);
+    int64_t num_rows = x.numel() / D;
+
+    id<MTLBuffer> gy_buf = getMTLBufferStorage(grad_y);
+    id<MTLBuffer> x_buf = getMTLBufferStorage(x);
+    id<MTLBuffer> w_buf = getMTLBufferStorage(weight);
+    id<MTLBuffer> rsqrt_buf = getMTLBufferStorage(rsqrt_cache);
+    id<MTLBuffer> gx_buf = getMTLBufferStorage(grad_x);
+    id<MTLBuffer> gw_buf = getMTLBufferStorage(grad_w);
+
+    auto stream = at::mps::getCurrentMPSStream();
+    id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+
+    // 1. grad_x computation
+    [encoder setComputePipelineState:rmsnorm_bwd_pso];
+    [encoder setBuffer:gy_buf offset:grad_y.storage_offset() * grad_y.element_size() atIndex:0];
+    [encoder setBuffer:x_buf offset:x.storage_offset() * x.element_size() atIndex:1];
+    [encoder setBuffer:w_buf offset:weight.storage_offset() * weight.element_size() atIndex:2];
+    [encoder setBuffer:rsqrt_buf offset:rsqrt_cache.storage_offset() * rsqrt_cache.element_size() atIndex:3];
+    [encoder setBuffer:gx_buf offset:grad_x.storage_offset() * grad_x.element_size() atIndex:4];
+    uint32_t D_uint = D;
+    [encoder setBytes:&D_uint length:sizeof(uint32_t) atIndex:5];
+
+    MTLSize gx_gridSize = MTLSizeMake(num_rows, 1, 1);
+    NSUInteger gx_threadGroupSize = 256; 
+    MTLSize gx_threadsPerThreadgroup = MTLSizeMake(gx_threadGroupSize, 1, 1);
+    [encoder dispatchThreadgroups:gx_gridSize threadsPerThreadgroup:gx_threadsPerThreadgroup];
+
+    // 2. grad_w computation
+    [encoder setComputePipelineState:rmsnorm_bwd_weight_pso];
+    [encoder setBuffer:gy_buf offset:grad_y.storage_offset() * grad_y.element_size() atIndex:0];
+    [encoder setBuffer:x_buf offset:x.storage_offset() * x.element_size() atIndex:1];
+    [encoder setBuffer:rsqrt_buf offset:rsqrt_cache.storage_offset() * rsqrt_cache.element_size() atIndex:2];
+    [encoder setBuffer:gw_buf offset:grad_w.storage_offset() * grad_w.element_size() atIndex:3];
+    [encoder setBytes:&D_uint length:sizeof(uint32_t) atIndex:4];
+    uint32_t num_rows_uint = num_rows;
+    [encoder setBytes:&num_rows_uint length:sizeof(uint32_t) atIndex:5];
+
+    NSUInteger gw_tg_size = rmsnorm_bwd_weight_pso.maxTotalThreadsPerThreadgroup;
+    MTLSize gw_threads = MTLSizeMake(gw_tg_size, 1, 1);
+    MTLSize gw_grid = MTLSizeMake((D + gw_tg_size - 1) / gw_tg_size, 1, 1);
+    [encoder dispatchThreadgroups:gw_grid threadsPerThreadgroup:gw_threads];
+
+    return std::make_tuple(grad_x, grad_w);
 }
 
 std::tuple<torch::Tensor, torch::Tensor> rmsnorm_forward_mps(torch::Tensor x, torch::Tensor weight, float eps) {
@@ -153,7 +207,8 @@ std::tuple<torch::Tensor, torch::Tensor> swiglu_backward_mps(torch::Tensor grad_
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("init_metal", &init_mps, "Initialize Metal with path");
-  m.def("rmsnorm_forward_mps", &rmsnorm_forward_mps, "MPS RMSNorm");
+  m.def("rmsnorm_forward_mps", &rmsnorm_forward_mps, "MPS RMSNorm Forward");
+  m.def("rmsnorm_backward_mps", &rmsnorm_backward_mps, "MPS RMSNorm Backward");
   m.def("swiglu_forward_mps", &swiglu_forward_mps, "MPS SwiGLU Forward");
   m.def("swiglu_backward_mps", &swiglu_backward_mps, "MPS SwiGLU Backward");
 }
