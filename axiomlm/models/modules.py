@@ -58,6 +58,13 @@ def apply_rope(x: torch.Tensor, freqs_cis: torch.Tensor, start_pos: int = 0) -> 
     Returns:
         Rotated tensor of same shape and dtype as x.
     """
+    if HAS_CUSTOM_KERNELS:
+        try:
+            from ..kernels.ops import fused_apply_rope
+            return fused_apply_rope(x, freqs_cis, start_pos)
+        except ImportError:
+            pass
+
     orig_dtype = x.dtype
     B, n_head, T, head_dim = x.shape
     x_complex = torch.view_as_complex(x.float().reshape(B, n_head, T, -1, 2))

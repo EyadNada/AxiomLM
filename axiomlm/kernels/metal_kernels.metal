@@ -195,3 +195,35 @@ kernel void rmsnorm_backward_weight_kernel(
     }
     grad_w[tid] = gw_val;
 }
+
+// ----------------------------------------------------------------------------
+// Rotary Position Embeddings (RoPE) kernel
+// ----------------------------------------------------------------------------
+kernel void rope_kernel(
+    device const float2 *x [[buffer(0)]],
+    device const float2 *freqs_cis [[buffer(1)]],
+    device float2 *out [[buffer(2)]],
+    constant uint &T [[buffer(3)]],
+    constant uint &half_head_dim [[buffer(4)]],
+    constant uint &forward [[buffer(5)]], // 1 for forward, 0 for backward
+    uint tid [[thread_position_in_grid]],
+    constant uint &num_elements [[buffer(6)]]
+) {
+    if (tid >= num_elements) return;
+
+    uint hd_idx = tid % half_head_dim;
+    uint t_idx = (tid / half_head_dim) % T;
+    
+    float2 x_val = x[tid];
+    float2 f_val = freqs_cis[t_idx * half_head_dim + hd_idx]; // f_val.x = cos, f_val.y = sin
+    
+    if (forward == 0) {
+        f_val.y = -f_val.y;
+    }
+    
+    float2 res;
+    res.x = x_val.x * f_val.x - x_val.y * f_val.y;
+    res.y = x_val.x * f_val.y + x_val.y * f_val.x;
+    
+    out[tid] = res;
+}
