@@ -197,12 +197,8 @@ class FusedSDPAFunction(torch.autograd.Function):
         device = q.device
         if device.type == "cuda" and HAS_TRITON:
             out = triton_fused_sdpa_forward(q, k, v, is_causal=is_causal, sliding_window=sliding_window)
-        
-        if _METAL_MOD is not None and q.device.type == "mps" and q.dtype == torch.float32 and q.size(3) <= 128:
-            out = _METAL_MOD.flash_attention_forward_mps(q.contiguous(), k.contiguous(), v.contiguous(), is_causal)
         else:
             if sliding_window is not None and is_causal:
-
                 T = q.size(2)
                 causal_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril()
                 window_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril(diagonal=-sliding_window)
