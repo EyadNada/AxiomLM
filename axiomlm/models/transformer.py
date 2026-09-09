@@ -8,6 +8,7 @@ import math
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from ..kernels.ops import fused_cross_entropy
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 from .modules import (
@@ -222,7 +223,7 @@ class Transformer(nn.Module):
 
         if targets is not None:
             logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            loss = fused_cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
         else:
             if kv_caches is not None:
                 logits = self.lm_head(x[:, [-1], :])

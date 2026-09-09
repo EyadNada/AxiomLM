@@ -227,3 +227,123 @@ kernel void rope_kernel(
     
     out[tid] = res;
 }
+
+// ----------------------------------------------------------------------------
+// Fused Cross Entropy
+// ----------------------------------------------------------------------------
+
+kernel void cross_entropy_forward_kernel(
+    device const float *logits [[buffer(0)]],
+    device const int *targets [[buffer(1)]],
+    device float *losses [[buffer(2)]],
+    constant uint &V [[buffer(3)]],
+    constant int &ignore_index [[buffer(4)]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint bid [[threadgroup_position_in_grid]],
+    uint block_dim [[threads_per_threadgroup]]
+) {
+    uint row_idx = bid;
+    int target_class = targets[row_idx];
+    
+    if (target_class == ignore_index) {
+        if (tid == 0) losses[row_idx] = 0.0f;
+        return;
+    }
+
+    device const float *row_logits = logits + row_idx * V;
+    
+    float thread_max = -1e38f;
+    for (uint i = tid; i < V; i += block_dim) {
+        thread_max = max(thread_max, row_logits[i]);
+    }
+    
+    threadgroup float shared_max[1024];
+    shared_max[tid] = thread_max;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = block_dim / 2; s > 0; s >>= 1) {
+        if (tid < s) shared_max[tid] = max(shared_max[tid], shared_max[tid + s]);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float row_max = shared_max[0];
+    
+    float thread_sum = 0.0f;
+    for (uint i = tid; i < V; i += block_dim) {
+        thread_sum += fast::exp(row_logits[i] - row_max);
+    }
+    
+    threadgroup float shared_sum[1024];
+    shared_sum[tid] = thread_sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = block_dim / 2; s > 0; s >>= 1) {
+        if (tid < s) shared_sum[tid] += shared_sum[tid + s];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float row_sum = shared_sum[0];
+    
+    if (tid == 0) {
+        float lse = row_max + fast::log(row_sum);
+        losses[row_idx] = lse - row_logits[target_class];
+    }
+}
+
+kernel void cross_entropy_backward_kernel(
+    device const float *logits [[buffer(0)]],
+    device const int *targets [[buffer(1)]],
+    device const float *grad_losses [[buffer(2)]],
+    device float *grad_logits [[buffer(3)]],
+    constant uint &V [[buffer(4)]],
+    constant int &ignore_index [[buffer(5)]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint bid [[threadgroup_position_in_grid]],
+    uint block_dim [[threads_per_threadgroup]]
+) {
+    uint row_idx = bid;
+    int target_class = targets[row_idx];
+    device const float *row_logits = logits + row_idx * V;
+    device float *row_grad = grad_logits + row_idx * V;
+    
+    if (target_class == ignore_index) {
+        for (uint i = tid; i < V; i += block_dim) {
+            row_grad[i] = 0.0f;
+        }
+        return;
+    }
+    
+    float go = grad_losses[row_idx];
+    
+    float thread_max = -1e38f;
+    for (uint i = tid; i < V; i += block_dim) {
+        thread_max = max(thread_max, row_logits[i]);
+    }
+    threadgroup float shared_max[1024];
+    shared_max[tid] = thread_max;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = block_dim / 2; s > 0; s >>= 1) {
+        if (tid < s) shared_max[tid] = max(shared_max[tid], shared_max[tid + s]);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float row_max = shared_max[0];
+    
+    float thread_sum = 0.0f;
+    for (uint i = tid; i < V; i += block_dim) {
+        thread_sum += fast::exp(row_logits[i] - row_max);
+    }
+    threadgroup float shared_sum[1024];
+    shared_sum[tid] = thread_sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = block_dim / 2; s > 0; s >>= 1) {
+        if (tid < s) shared_sum[tid] += shared_sum[tid + s];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float row_sum = shared_sum[0];
+    
+    float inv_sum = 1.0f / row_sum;
+    for (uint i = tid; i < V; i += block_dim) {
+        float prob = fast::exp(row_logits[i] - row_max) * inv_sum;
+        float grad = prob;
+        if ((int)i == target_class) {
+            grad -= 1.0f;
+        }
+        row_grad[i] = grad * go;
+    }
+}
