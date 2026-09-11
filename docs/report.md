@@ -33,7 +33,7 @@
 
 ### 2.1 Complex Rotary Position Embeddings (RoPE)
 Traditional absolute positional embeddings add a static lookup vector $p_t$ to token embeddings $x_t$, which destroys translational invariance in self-attention:
-$$	ext{Attention}(q_m, k_n) = (x_m + p_m)^T W_q^T W_k (x_n + p_n)$$
+$$\text{Attention}(q_m, k_n) = (x_m + p_m)^T W_q^T W_k (x_n + p_n)$$
 
 AxiomLM adopts **Rotary Position Embeddings (RoPE)**, encoding position directly by rotating query and key vectors in complex 2D orthogonal subspaces:
 $$R_{\Theta, m}^d = \text{diag}\left( R_{\theta_1, m}, R_{\theta_2, m}, \dots, R_{\theta_{d/2}, m} \right)$$
