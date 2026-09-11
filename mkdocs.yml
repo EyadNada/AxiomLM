@@ -1,0 +1,45 @@
+site_name: AxiomLM
+site_description: High-Performance PyTorch Pretraining Framework & Systems SLM
+site_author: Eyad Nada
+repo_url: https://github.com/EyadNada/AxiomLM
+repo_name: EyadNada/AxiomLM
+
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - toc.integrate
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: indigo
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: white
+      accent: indigo
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          options:
+            show_root_heading: true
+            show_source: true
+            docstring_style: google
+            show_signature_annotations: true
+
+nav:
+  - Overview: index.md
+  - Architecture Report: report.md
+  - API Reference:
+    - Models: api/models.md
+    - Inference Engine: api/engine.md
+    - Optimizer: api/optim.md
+    - Data Loader: api/dengine.md
+    - Telemetry: api/telemetry.md
