@@ -8,6 +8,7 @@
 
 --------------------------------------------------------------------------------
 
+[![PyPI version](https://badge.fury.io/py/axiomlm.svg)](https://badge.fury.io/py/axiomlm)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-EE4C2C.svg)](https://pytorch.org/)
 [![Hardware](https://img.shields.io/badge/Hardware-Apple%20Silicon%20%7C%20CUDA-green.svg)]()
@@ -94,7 +95,7 @@ pip install -e .
 ### Direct via pip
 
 ```bash
-pip install git+https://github.com/EyadNada/AxiomLM.git
+pip install axiomlm
 ```
 
 --------------------------------------------------------------------------------
