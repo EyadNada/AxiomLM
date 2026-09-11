@@ -155,6 +155,88 @@ optimizers = model.configure_optimizers(
 )
 ```
 
+### 4. Zero-Overhead Inference & Streaming Generation
+
+```python
+import axiomlm as ax
+
+# Use the Paged KV-Cache engine for O(1) step decoding
+engine = ax.InferenceEngine(model, device="mps")
+prompt = "def fibonacci(n):"
+
+# Standard Generation
+output = engine.generate(prompt, max_tokens=100, temperature=0.8, top_p=0.9)
+print(output)
+
+# Real-time Streaming
+for token in engine.stream(prompt, max_tokens=100):
+    print(token, end="", flush=True)
+```
+
+### 5. Multi-Shard Streaming Data Loader
+
+```python
+import axiomlm as ax
+
+# Stream multiple sharded binary files with cross-shard synchronization
+train_loader = ax.DataLoaderLite(
+    B=16,           # Batch size
+    T=1024,         # Sequence context length
+    process_rank=0, # For multi-GPU / DDP setups
+    num_processes=1,
+    split="train",
+    data_root="data/systems_shards"
+)
+
+# Fetch the next batch of input tokens and targets continuously with sub-200MB RAM overhead
+input_ids, targets = train_loader.next_batch()
+```
+
+### 6. Systems Telemetry & Hardware FLOPs Profiling
+
+```python
+import axiomlm as ax
+
+# Estimate theoretical peak performance and calculate current Model FLOPs Utilization (MFU)
+peak_tflops = ax.telemetry.profiler.estimate_hardware_peak_tflops("mps")
+mfu = ax.telemetry.profiler.calculate_mfu(
+    model, 
+    fwdbwd_per_iter=64,
+    dt=0.45, 
+    peak_tflops=peak_tflops
+)
+print(f"Current Model FLOPs Utilization: {mfu * 100:.2f}%")
+```
+
+### 7. Exporting to Hugging Face Ecosystem
+
+```python
+import axiomlm as ax
+
+# Export a saved PyTorch/Axiom checkpoint directly to a Hugging Face safetensors format
+ax.export_checkpoint_to_hf(
+    checkpoint_path="checkpoints/model_step_10000.pt",
+    output_dir="exports/hf_model",
+    arch="modern" 
+)
+```
+
+### 8. Standalone Modern Architectural Modules
+
+```python
+import torch
+import axiomlm as ax
+
+# 1. Rotary Position Embeddings (RoPE)
+freqs_cis = ax.precompute_rope_frequencies(dim=64, end=1024)
+q, k = torch.randn(2, 1024, 12, 64), torch.randn(2, 1024, 4, 64)
+q_rope, k_rope = ax.apply_rope(q, k, freqs_cis)
+
+# 2. SwiGLU Feed-Forward Networks
+swiglu = ax.SwiGLUMLP(dim=768, hidden_dim=2048)
+out = swiglu(torch.randn(16, 1024, 768))
+```
+
 --------------------------------------------------------------------------------
 
 ## System Benchmarks
