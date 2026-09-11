@@ -23,14 +23,11 @@ _NEON_MOD = load_neon_module()
 _METAL_MOD = load_metal_module()
 
 try:
-    from .triton_kernels import (
-        HAS_TRITON,
-        triton_rmsnorm_forward,
-        triton_swiglu_forward,
-        triton_fused_sdpa_forward,
-    )
+    from . import triton_kernels as _triton_kernels
+    from .triton_kernels import HAS_TRITON
 except ImportError:
     HAS_TRITON = False
+    _triton_kernels = None
 
 
 # ----------------------------------------------------------------------------

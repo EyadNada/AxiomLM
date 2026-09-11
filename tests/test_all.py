@@ -23,6 +23,9 @@ from axiomlm import (
     zeropower_via_newtonschulz5,
     Muon,
     DataLoaderLite,
+    export_checkpoint_to_hf,
+    get_lr,
+    load_model,
     sample_logits,
     generate_with_cache,
     estimate_hardware_peak_tflops,
@@ -391,7 +394,10 @@ class TestMuonOptimizerAndNewtonSchulz(unittest.TestCase):
 
 
 class TestDataLoaderAndShards(unittest.TestCase):
-    """Unit tests for DataLoaderLite, binary shard streaming, and wrap-around handling."""
+    """Unit tests for DataLoaderLite,
+    export_checkpoint_to_hf,
+    get_lr,
+    load_model, binary shard streaming, and wrap-around handling."""
 
     def test_dataloader_batching_and_shifting(self):
         """Verify DataLoaderLite yields (B, T) batches and y is precisely x shifted by 1."""
