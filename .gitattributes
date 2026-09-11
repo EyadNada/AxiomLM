@@ -1,1 +1,8 @@
 *.pt filter=lfs diff=lfs merge=lfs -text
+
+# Enforce GitHub language statistics to focus on core framework code
+docs/** linguist-documentation
+assets/** linguist-documentation
+*.md linguist-documentation
+*.json linguist-vendored
+*.sh linguist-vendored
