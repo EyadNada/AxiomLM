@@ -1,10 +1,11 @@
+import math
 import os
 import sys
 import unittest
-import math
-import torch
-import torch.nn as nn
+
 import numpy as np
+import torch
+from torch import nn
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -12,25 +13,25 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from axiomlm import (
-    RMSNorm,
-    precompute_rope_frequencies,
-    apply_rope,
-    repeat_kv,
-    SwiGLUMLP,
-    CausalSelfAttention,
-    GPTConfig,
     GPT,
-    zeropower_via_newtonschulz5,
-    Muon,
+    CausalSelfAttention,
     DataLoaderLite,
-    export_checkpoint_to_hf,
-    get_lr,
-    load_model,
-    sample_logits,
-    generate_with_cache,
-    estimate_hardware_peak_tflops,
+    GPTConfig,
+    Muon,
+    RMSNorm,
+    SwiGLUMLP,
+    apply_rope,
     calculate_mfu,
     create_profiler,
+    estimate_hardware_peak_tflops,
+    export_checkpoint_to_hf,
+    generate_with_cache,
+    get_lr,
+    load_model,
+    precompute_rope_frequencies,
+    repeat_kv,
+    sample_logits,
+    zeropower_via_newtonschulz5,
 )
 
 
@@ -397,6 +398,7 @@ class TestDataLoaderAndShards(unittest.TestCase):
     """Unit tests for DataLoaderLite,
     export_checkpoint_to_hf,
     get_lr,
+    load_model,
     load_model, binary shard streaming, and wrap-around handling."""
 
     def test_dataloader_batching_and_shifting(self):
@@ -424,6 +426,7 @@ class TestDataLoaderAndShards(unittest.TestCase):
     def test_multishard_streaming_and_rotation(self):
         """Verify multi-shard dynamic rotation and cross-shard step synchronization."""
         import tempfile
+
         import numpy as np
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -462,7 +465,7 @@ class TestCheckpointingAndResumption(unittest.TestCase):
 
         # Do a fake step
         x = torch.randint(0, 500, (2, 8))
-        logits, loss = model1(x, targets=x)
+        _, loss = model1(x, targets=x)
         loss.backward()
         opt1.step()
 
@@ -629,7 +632,7 @@ class TestAdvancedSamplingAndCheckpointing(unittest.TestCase):
         model.train()
         x = torch.randint(0, 1000, (2, 32))
         y = torch.randint(0, 1000, (2, 32))
-        logits, loss = model(x, y)
+        _, loss = model(x, y)
         self.assertIsNotNone(loss)
         loss.backward()
         for name, param in model.named_parameters():
@@ -673,7 +676,7 @@ class TestWebInterfaceAndApp(unittest.TestCase):
         )
         outputs = list(gen)
         self.assertGreater(len(outputs), 0)
-        last_text, last_prob, last_telem = outputs[-1]
+        last_text, _, last_telem = outputs[-1]
         self.assertTrue(last_text.startswith("The quick brown fox"))
         self.assertIn("tokens in", last_telem)
 
@@ -694,7 +697,7 @@ class TestWebInterfaceAndApp(unittest.TestCase):
         )
         outputs = list(gen)
         self.assertGreater(len(outputs), 0)
-        c_txt, n_txt, sc, sn, md = outputs[-1]
+        c_txt, n_txt, _, _, md = outputs[-1]
         self.assertTrue(c_txt.startswith("Hello world"))
         self.assertTrue(n_txt.startswith("Hello world"))
         self.assertIn("KV-Cache", md)
@@ -721,6 +724,7 @@ class TestHuggingFaceExport(unittest.TestCase):
     def test_export_checkpoint_to_safetensors(self):
         """Verify that export_checkpoint_to_hf generates valid .safetensors, config.json, and metadata."""
         import tempfile
+
         from safetensors.torch import load_file
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -910,7 +914,6 @@ class TestAdvancedSamplingAndInference(unittest.TestCase):
     def test_directory_safetensors_and_config_loading(self):
         """Verify generate.py load_model correctly loads exported directories."""
         import tempfile
-        from axiomlm.engine import load_model
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = GPTConfig(
@@ -998,7 +1001,7 @@ class TestOptimizerSchedulingAndInvariants(unittest.TestCase):
 
         x = torch.randint(0, 100, (2, 4))
         y = torch.randint(0, 100, (2, 4))
-        logits, loss = model(x, y)
+        _, loss = model(x, y)
         loss.backward()
 
         self.assertIsNotNone(model.transformer.wte.weight.grad)

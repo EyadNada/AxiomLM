@@ -254,7 +254,7 @@ class FusedSDPAFunction(torch.autograd.Function):
     ) -> torch.Tensor:
         device = q.device
         if device.type == "cuda" and HAS_TRITON:
-            out = triton_fused_sdpa_forward(
+            out = _triton_kernels.triton_fused_sdpa_forward(
                 q, k, v, is_causal=is_causal, sliding_window=sliding_window
             )
         else:
