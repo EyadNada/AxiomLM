@@ -1,6 +1,7 @@
 """
 AxiomLM Systems Profiling, Roofline Analysis, and MFU Telemetry.
 """
+
 import os
 from typing import Tuple, Any, Optional
 import torch
@@ -21,15 +22,15 @@ def estimate_hardware_peak_tflops(device: str) -> float:
         elif "4090" in gpu_name:
             return 165.0  # RTX 4090 FP16
         elif "3090" in gpu_name or "a5000" in gpu_name:
-            return 71.0   # RTX 3090 / A5000 FP16
+            return 71.0  # RTX 3090 / A5000 FP16
         elif "t4" in gpu_name:
-            return 65.0   # T4 FP16
+            return 65.0  # T4 FP16
         else:
             return 100.0  # Generic CUDA GPU fallback
     elif device == "mps":
         return 10.0  # Apple Silicon baseline estimation
     else:
-        return 2.0   # CPU vector baseline
+        return 2.0  # CPU vector baseline
 
 
 def calculate_mfu(
@@ -46,9 +47,9 @@ def calculate_mfu(
     if context_len is not None:
         seq_len = context_len
 
-    raw_model = model.module if hasattr(model, 'module') else model
+    raw_model = model.module if hasattr(model, "module") else model
     config = raw_model.config
-    
+
     # Active parameter count
     N = sum(p.numel() for p in raw_model.parameters())
     L = config.n_layer
@@ -70,7 +71,7 @@ def create_profiler(log_dir: str = "log/profiler_trace") -> torch.profiler.profi
     activities = [torch.profiler.ProfilerActivity.CPU]
     if torch.cuda.is_available():
         activities.append(torch.profiler.ProfilerActivity.CUDA)
-        
+
     return torch.profiler.profile(
         activities=activities,
         schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),

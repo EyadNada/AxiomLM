@@ -115,18 +115,18 @@ scaler = torch.cuda.amp.GradScaler()
 
 for x, y in train_loader:
     optimizer.zero_grad()
-    
+
     with torch.autocast(device_type="cuda", dtype=torch.float16):
         logits, loss = model(x, y)
-        
+
     scaler.scale(loss).backward()
-    
+
     #  CRITICAL: Unscale gradients BEFORE clipping!
     scaler.unscale_(optimizer)
-    
+
     # Clip gradient norm to 1.0 (GPT-2 standard)
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-    
+
     # scaler.step() updates weights if unscaled grads are finite
     scaler.step(optimizer)
     scaler.update()
@@ -175,19 +175,19 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for step in range(max_steps):
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
-    
+
     optimizer.zero_grad()
-    
+
     # 3. Forward pass under autocast
     with torch.autocast(device_type=device, dtype=torch.bfloat16):
         logits, loss = model(x, y)
-        
+
     # 4. Backward pass
     loss.backward()
-    
+
     # 5. Gradient clipping
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-    
+
     # 6. Optimizer step
     optimizer.step()
 ```

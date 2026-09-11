@@ -1,7 +1,8 @@
 """
 AxiomLM Causal Self-Attention with Grouped-Query Attention (GQA) & KV-Cache.
 """
-from typing import Tuple, Optional, Any, List, Union
+
+from typing import Tuple, Optional, Any, Union
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -10,10 +11,12 @@ from .modules import apply_rope, repeat_kv
 
 try:
     from ..kernels import fused_sdpa
+
     HAS_CUSTOM_KERNELS = True
 except (ImportError, ValueError):
     try:
         from kernels import fused_sdpa
+
         HAS_CUSTOM_KERNELS = True
     except ImportError:
         HAS_CUSTOM_KERNELS = False
@@ -27,18 +30,25 @@ class CausalSelfAttention(nn.Module):
     - FlashAttention / Scaled Dot-Product Attention (SDPA)
     - Key-Value (KV) cache for O(1) autoregressive generation
     """
+
     def __init__(self, config: Any):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         self.n_head = config.n_head
-        self.n_kv_head = config.n_kv_head if getattr(config, "n_kv_head", None) is not None else config.n_head
-        self.separate_qkv = (self.n_kv_head != self.n_head)
+        self.n_kv_head = (
+            config.n_kv_head
+            if getattr(config, "n_kv_head", None) is not None
+            else config.n_head
+        )
+        self.separate_qkv = self.n_kv_head != self.n_head
         self.n_rep = self.n_head // self.n_kv_head
         self.n_embd = config.n_embd
         self.head_dim = config.n_embd // config.n_head
         self.pos_emb = getattr(config, "pos_emb", "learned")
         self.sliding_window = getattr(config, "sliding_window", None)
-        self.use_fused_kernels = getattr(config, "use_fused_kernels", False) and HAS_CUSTOM_KERNELS
+        self.use_fused_kernels = (
+            getattr(config, "use_fused_kernels", False) and HAS_CUSTOM_KERNELS
+        )
 
         # Projections
         if not self.separate_qkv:
@@ -57,7 +67,9 @@ class CausalSelfAttention(nn.Module):
         freqs_cis: Optional[torch.Tensor] = None,
         kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]]:
+    ) -> Union[
+        torch.Tensor, Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]
+    ]:
         B, T, C = x.size()
 
         if not self.separate_qkv:
@@ -100,8 +112,12 @@ class CausalSelfAttention(nn.Module):
             else:
                 # Assuming kv_cache is a SequenceContext
                 # It expects [1, seq_len, n_kv_head, head_dim]. Currently k is [B, n_kv_head, seq_len, head_dim]
-                kv_cache.append_kv(getattr(self, "layer_idx", 0), k.transpose(1, 2), v.transpose(1, 2))
-                k_rec, v_rec = kv_cache.get_reconstructed_cache(getattr(self, "layer_idx", 0))
+                kv_cache.append_kv(
+                    getattr(self, "layer_idx", 0), k.transpose(1, 2), v.transpose(1, 2)
+                )
+                k_rec, v_rec = kv_cache.get_reconstructed_cache(
+                    getattr(self, "layer_idx", 0)
+                )
                 # Reconstructed shape: [1, total_seq_len, n_kv_head, head_dim]. Need to transpose back to [1, n_kv_head, total_seq_len, head_dim]
                 k = k_rec.transpose(1, 2)
                 v = v_rec.transpose(1, 2)
@@ -116,20 +132,26 @@ class CausalSelfAttention(nn.Module):
         v_rep = repeat_kv(v, self.n_rep)
 
         is_causal = (T > 1) and (start_pos == 0)
-        
+
         # Sliding Window Attention (SWA)
         if self.sliding_window is not None and is_causal:
             if self.use_fused_kernels:
-                y = fused_sdpa(q, k_rep, v_rep, is_causal=True, sliding_window=self.sliding_window)
+                y = fused_sdpa(
+                    q, k_rep, v_rep, is_causal=True, sliding_window=self.sliding_window
+                )
             else:
                 # Build custom sliding window mask for F.scaled_dot_product_attention
                 causal_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril()
-                window_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril(diagonal=-self.sliding_window)
+                window_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril(
+                    diagonal=-self.sliding_window
+                )
                 attn_mask = causal_mask & ~window_mask
                 y = F.scaled_dot_product_attention(q, k_rep, v_rep, attn_mask=attn_mask)
         else:
             if self.use_fused_kernels:
-                y = fused_sdpa(q, k_rep, v_rep, is_causal=is_causal, sliding_window=None)
+                y = fused_sdpa(
+                    q, k_rep, v_rep, is_causal=is_causal, sliding_window=None
+                )
             else:
                 y = F.scaled_dot_product_attention(q, k_rep, v_rep, is_causal=is_causal)
 

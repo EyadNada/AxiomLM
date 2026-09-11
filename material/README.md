@@ -10,22 +10,22 @@ The curriculum covers first-principles Transformer mechanics, hardware memory hi
 
 For a systematic progression through the systems and mathematical stack:
 
-1. **[Modern LLM Technologies & Optimizations Master Guide](./modern_llm_technologies_and_optimizations_guide.md)**  
+1. **[Modern LLM Technologies & Optimizations Master Guide](./modern_llm_technologies_and_optimizations_guide.md)**
    Architectural comparison of baseline Transformer specs vs. modern LLaMA-3/Mistral designs, mathematical formulations, and empirical ablation benchmarks.
 
-2. **[Custom Low-Level Kernels: Triton, Metal MSL & ARM NEON SIMD](./custom_low_level_kernels_triton_metal_neon_guide.md)**  
+2. **[Custom Low-Level Kernels: Triton, Metal MSL & ARM NEON SIMD](./custom_low_level_kernels_triton_metal_neon_guide.md)**
    Hardware-level kernel fusion, mathematical autograd derivations for fused RMSNorm and SwiGLU, and implementations across OpenAI Triton, Metal Shading Language, and ARM NEON SIMD.
 
-3. **[The Muon Matrix Optimizer Master Guide](./muon_optimizer_guide.md)**  
+3. **[The Muon Matrix Optimizer Master Guide](./muon_optimizer_guide.md)**
    Geometric motivation for 2D matrix parameter updates, polar decomposition ($G = U H$), and dual-parameter routing for accelerated step convergence.
 
-4. **[Newton-Schulz Spectral Analysis & Polynomial Approximation Guide](./newton_schulz_spectral_analysis_guide.md)**  
+4. **[Newton-Schulz Spectral Analysis & Polynomial Approximation Guide](./newton_schulz_spectral_analysis_guide.md)**
    Minimax quintic polynomial derivation ($p(x) = ax + bx^3 + cx^5$), singular value spectrum flattening, and systolic GEMM efficiency.
 
-5. **[Model FLOPs Utilization (MFU) & Hardware Roofline Guide](./model_flops_utilization_mfu_guide.md)**  
+5. **[Model FLOPs Utilization (MFU) & Hardware Roofline Guide](./model_flops_utilization_mfu_guide.md)**
    Analytical compute derivations ($6N$ FLOPs/token), attention quadratic scaling, hardware peak TFLOPs estimation, and Roofline arithmetic intensity boundaries.
 
-6. **[Key-Value (KV) Cache & Inference Engine Guide](./kv_cache_inference_engine_guide.md)**  
+6. **[Key-Value (KV) Cache & Inference Engine Guide](./kv_cache_inference_engine_guide.md)**
    Algorithmic inference scaling, transitioning from quadratic autoregression to constant-time token generation with prefill and decode state caching.
 
 ---

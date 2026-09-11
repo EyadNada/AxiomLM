@@ -170,7 +170,7 @@ class CausalSelfAttention(nn.Module):
         # 1. Project to QKV
         qkv = self.c_attn(x)
         q, k, v = qkv.split(self.n_embd, dim=2)
-        
+
         # 2. Reshape to (B, nh, T, hs)
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)

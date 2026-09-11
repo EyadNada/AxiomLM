@@ -1,6 +1,6 @@
 # AxiomLM: High-Performance Autoregressive Language Modeling with Modern Architectures and Polar Matrix Optimization
 
-**Technical Report & Architectural Whitepaper**  
+**Technical Report & Architectural Whitepaper**
 *AxiomLM Engineering & Deep Learning Systems Research*
 
 ---

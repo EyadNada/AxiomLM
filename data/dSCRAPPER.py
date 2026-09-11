@@ -1,6 +1,7 @@
 """
 AxiomLM: High-Performance Multi-Shard Systems ML & GPU Kernel Dataset Builder.
 """
+
 import os
 import sys
 import argparse
@@ -12,7 +13,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
 SYSTEMS_KERNEL_SNIPPETS = [
-    '''
+    """
 # OpenAI Triton Fused RMSNorm Forward and Backward Kernel
 import torch
 import triton
@@ -36,8 +37,8 @@ def triton_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> 
     BLOCK_SIZE = triton.next_power_of_2(N)
     _rmsnorm_fwd_kernel[(M,)](x, y, weight, x.stride(0), N=N, eps=eps, BLOCK_SIZE=BLOCK_SIZE, num_warps=4)
     return y
-''',
-    '''
+""",
+    """
 # OpenAI Triton Fused SwiGLU Gated Activation Kernel
 import torch
 import triton
@@ -60,8 +61,8 @@ def triton_swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     BLOCK_SIZE = triton.next_power_of_2(N)
     _swiglu_fwd_kernel[(M,)](gate, up, out, gate.stride(0), N=N, BLOCK_SIZE=BLOCK_SIZE, num_warps=8)
     return out
-''',
-    '''
+""",
+    """
 # OpenAI Triton FlashAttention Tiled Forward Operator with Online Softmax Rescaling
 import torch
 import triton
@@ -104,8 +105,8 @@ def _flash_attn_fwd_kernel(
         m_i = m_ij
     acc = acc / l_i[:, None]
     tl.store(o_ptrs, acc.to(tl.float16), mask=offs_m[:, None] < N_CTX)
-''',
-    '''
+""",
+    """
 # Systems ML: Arithmetic Intensity and Roofline Analysis Model
 class RooflineModel:
     def __init__(self, peak_tflops: float, memory_bandwidth_gb_s: float):
@@ -121,7 +122,7 @@ class RooflineModel:
             "arithmetic_intensity": f"{intensity:.2f} FLOPs/Byte",
             "regime": "MEMORY_BOUND" if is_memory_bound else "COMPUTE_BOUND",
         }
-''',
+""",
 ]
 
 
@@ -154,13 +155,23 @@ def build_systems_dataset(
     for _ in range(repeats):
         all_tokens.extend(curated_tokens)
 
-    pbar = tqdm(total=target_tokens, initial=len(all_tokens), unit="tokens", desc="Tokenizing")
+    pbar = tqdm(
+        total=target_tokens, initial=len(all_tokens), unit="tokens", desc="Tokenizing"
+    )
 
     if use_huggingface_stream:
         try:
             from datasets import load_dataset
-            print("Streaming from Hugging Face (HuggingFaceTB/smollm-corpus -> python-edu)...")
-            ds = load_dataset("HuggingFaceTB/smollm-corpus", "python-edu", split="train", streaming=True)
+
+            print(
+                "Streaming from Hugging Face (HuggingFaceTB/smollm-corpus -> python-edu)..."
+            )
+            ds = load_dataset(
+                "HuggingFaceTB/smollm-corpus",
+                "python-edu",
+                split="train",
+                streaming=True,
+            )
             for sample in ds:
                 text = sample.get("text", "")
                 if text and len(text.strip()) > 40:
@@ -174,7 +185,9 @@ def build_systems_dataset(
 
     # If stream ended or offline, use curated snippets as the pure code fallback
     if len(all_tokens) < target_tokens:
-        print("[Warning] Could not reach target tokens from HuggingFace. Duplicating curated systems kernels to fill the remaining quota to ensure a pure code dataset...")
+        print(
+            "[Warning] Could not reach target tokens from HuggingFace. Duplicating curated systems kernels to fill the remaining quota to ensure a pure code dataset..."
+        )
         while len(all_tokens) < target_tokens:
             all_tokens.extend(curated_tokens)
             pbar.update(min(len(curated_tokens), target_tokens - len(all_tokens)))
@@ -196,12 +209,17 @@ def build_systems_dataset(
         shard_data = np.array(train_tokens[start_idx:end_idx], dtype=np.uint16)
         shard_path = os.path.join(output_dir, f"train_{shard_idx:04d}.bin")
         shard_data.tofile(shard_path)
-        print(f"  ✓ Train Shard {shard_idx+1}/{num_train_shards}: {shard_path} ({len(shard_data):,} tokens)")
+        print(
+            f"  ✓ Train Shard {shard_idx+1}/{num_train_shards}: {shard_path} ({len(shard_data):,} tokens)"
+        )
 
     if num_train_shards == 1:
-        np.array(train_tokens, dtype=np.uint16).tofile(os.path.join(output_dir, "train.bin"))
+        np.array(train_tokens, dtype=np.uint16).tofile(
+            os.path.join(output_dir, "train.bin")
+        )
 
     print(f"Successfully generated {num_train_shards} training shards in {output_dir}.")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AxiomLM Multi-Shard Dataset Builder")

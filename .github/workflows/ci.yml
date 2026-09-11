@@ -52,20 +52,19 @@ jobs:
           import os, torch
           from axiomlm.train import train
           from axiomlm.engine import export_checkpoint_to_hf
-          
+
           # Force CPU by disabling MPS detection to prevent runner OOM
           if hasattr(torch.backends, 'mps'):
               def _mock_is_available(): return False
               _mock_is_available.__wrapped__ = getattr(torch.backends.mps.is_available, '__wrapped__', None)
               torch.backends.mps.is_available = _mock_is_available
-              
+
           # CPU uses B=2, T=1024 (B*T=2048), so we use total_batch_size=2048
           train(max_steps=2, total_batch_size=2048, eval_interval=10, sample_interval=10, save_interval=1, architecture='modern', optimizer_type='muon')
-          
+
           # Verify safetensors export from checkpoint
           if os.path.exists('checkpoints/model_latest.pt'):
               export_checkpoint_to_hf('checkpoints/model_latest.pt', 'exports/ci_test_export', 'AxiomLM-CI-Test')
               assert os.path.exists('exports/ci_test_export/model.safetensors'), 'Exported model.safetensors missing'
               assert os.path.exists('exports/ci_test_export/config.json'), 'Exported config.json missing'
           "
-

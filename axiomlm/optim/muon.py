@@ -1,12 +1,14 @@
 """
 AxiomLM Muon (MomentUm Orthogonalized by Newton-Schulz) Matrix Optimizer.
 """
-from typing import List, Optional, Any
+
+from typing import Optional, Any
 import torch
-import torch.nn as nn
 
 
-def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5, eps: float = 1e-7) -> torch.Tensor:
+def zeropower_via_newtonschulz5(
+    G: torch.Tensor, steps: int = 5, eps: float = 1e-7
+) -> torch.Tensor:
     """
     Computes the polar orthogonalization factor of 2D matrix G using 5-step quintic Newton-Schulz iteration.
     Transforms matrix singular values toward sigma_i = 1.0.
@@ -31,7 +33,15 @@ class Muon(torch.optim.Optimizer):
     Muon - MomentUm Orthogonalized by Newton-Schulz optimizer.
     Optimizes 2D parameter matrices by replacing gradient coordinates with orthogonal updates.
     """
-    def __init__(self, params: Any, lr: float = 0.02, momentum: float = 0.95, nesterov: bool = True, ns_steps: int = 5):
+
+    def __init__(
+        self,
+        params: Any,
+        lr: float = 0.02,
+        momentum: float = 0.95,
+        nesterov: bool = True,
+        ns_steps: int = 5,
+    ):
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
         super().__init__(params, defaults)
 
@@ -43,12 +53,12 @@ class Muon(torch.optim.Optimizer):
                 loss = closure()
 
         for group in self.param_groups:
-            lr = group['lr']
-            momentum = group['momentum']
-            nesterov = group['nesterov']
-            ns_steps = group['ns_steps']
+            lr = group["lr"]
+            momentum = group["momentum"]
+            nesterov = group["nesterov"]
+            ns_steps = group["ns_steps"]
 
-            for p in group['params']:
+            for p in group["params"]:
                 if p.grad is None:
                     continue
                 g = p.grad
@@ -57,9 +67,9 @@ class Muon(torch.optim.Optimizer):
 
                 state = self.state[p]
                 if len(state) == 0:
-                    state['momentum_buffer'] = torch.zeros_like(g)
+                    state["momentum_buffer"] = torch.zeros_like(g)
 
-                buf = state['momentum_buffer']
+                buf = state["momentum_buffer"]
                 buf.mul_(momentum).add_(g)
 
                 if nesterov:
@@ -69,7 +79,7 @@ class Muon(torch.optim.Optimizer):
 
                 # Polar orthogonalization via 5-step Newton-Schulz
                 update_ortho = zeropower_via_newtonschulz5(update, steps=ns_steps)
-                
+
                 # Scale update by aspect ratio heuristic
                 scale = max(1.0, p.size(0) / p.size(1)) ** 0.5
                 p.data.add_(update_ortho, alpha=-lr * scale)

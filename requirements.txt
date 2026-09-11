@@ -8,5 +8,3 @@ datasets
 matplotlib
 gradio>=5.0.0,<6.0.0
 safetensors>=0.4.0
-
-

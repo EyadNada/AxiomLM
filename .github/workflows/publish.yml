@@ -16,7 +16,7 @@ jobs:
     permissions:
       id-token: write  # IMPORTANT: mandatory for PyPI Trusted Publishing
       contents: read
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4

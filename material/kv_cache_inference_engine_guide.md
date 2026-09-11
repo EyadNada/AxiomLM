@@ -90,7 +90,7 @@ class Block(nn.Module):
     def forward(self, x, kv_cache=None):
         # x shape: (B, 1, C) during single-token decode
         # ... compute q, k, v for x ...
-        
+
         if kv_cache is not None:
             k_past, v_past = kv_cache
             k = torch.cat([k_past, k], dim=-2)

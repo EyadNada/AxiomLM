@@ -50,7 +50,7 @@ By default, PyTorch computes `torch.float32` matrix multiplications (`torch.matm
 
 ### 2. `"high"` (TensorFloat-32 — Recommended Default for Training)
 * **Datatype:** **TensorFloat-32 (`TF32`)** or sum of two `bfloat16` numbers.
-* **Behavior:** 
+* **Behavior:**
   - Inputs (FP32) are internally truncated to 10 mantissa bits (same precision as FP16) while keeping the full 8-bit exponent (same dynamic range as FP32).
   - Executed directly on **NVIDIA Tensor Cores** in hardware.
   - Accumulation is performed in full **FP32** registers.

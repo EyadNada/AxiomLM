@@ -1,14 +1,14 @@
 """
 AxiomLM Hugging Face Safetensors Model Exporter.
 """
+
 import os
-import sys
 import json
 import argparse
-from typing import Optional, Dict, Any
+from typing import Dict
 import torch
 
-from ..models.transformer import Transformer, ModelConfig, GPT, GPTConfig
+from ..models.transformer import ModelConfig
 
 
 def export_checkpoint_to_hf(
@@ -25,7 +25,9 @@ def export_checkpoint_to_hf(
     try:
         from safetensors.torch import save_file
     except ImportError:
-        raise ImportError("Package 'safetensors' is required. Install via `pip install safetensors`.")
+        raise ImportError(
+            "Package 'safetensors' is required. Install via `pip install safetensors`."
+        )
 
     try:
         from transformers import GPT2TokenizerFast
@@ -48,7 +50,9 @@ def export_checkpoint_to_hf(
     if "config" in checkpoint:
         cfg: ModelConfig = checkpoint["config"]
     else:
-        print("    Config not found in checkpoint dict. Using default modern specification.")
+        print(
+            "    Config not found in checkpoint dict. Using default modern specification."
+        )
         cfg = ModelConfig(
             block_size=1024,
             vocab_size=50304,
@@ -75,7 +79,9 @@ def export_checkpoint_to_hf(
         if not isinstance(v, torch.Tensor):
             continue
         clean_key = k.replace("_orig_mod.", "").replace("module.", "")
-        if not clean_key.endswith(".attn.bias") and not clean_key.endswith(".freqs_cis"):
+        if not clean_key.endswith(".attn.bias") and not clean_key.endswith(
+            ".freqs_cis"
+        ):
             cleaned_state_dict[clean_key] = v.clone().contiguous()
 
     # 1. Export model.safetensors
@@ -83,7 +89,9 @@ def export_checkpoint_to_hf(
     save_file(cleaned_state_dict, safetensors_path)
     total_params = sum(p.numel() for p in cleaned_state_dict.values())
     filesize_mb = os.path.getsize(safetensors_path) / (1024 * 1024)
-    print(f"\n  ✓ Exported: {safetensors_path} ({total_params:,} parameters, {filesize_mb:.2f} MB)")
+    print(
+        f"\n  ✓ Exported: {safetensors_path} ({total_params:,} parameters, {filesize_mb:.2f} MB)"
+    )
 
     # 2. Export config.json
     hf_config = {
@@ -93,7 +101,9 @@ def export_checkpoint_to_hf(
         "hidden_size": cfg.n_embd,
         "num_hidden_layers": cfg.n_layer,
         "num_attention_heads": cfg.n_head,
-        "num_key_value_heads": cfg.n_kv_head if cfg.n_kv_head is not None else cfg.n_head,
+        "num_key_value_heads": (
+            cfg.n_kv_head if cfg.n_kv_head is not None else cfg.n_head
+        ),
         "intermediate_size": int(2 * (4 * cfg.n_embd) / 3),
         "max_position_embeddings": cfg.block_size,
         "rms_norm_eps": 1e-6 if cfg.norm_type == "rmsnorm" else 1e-5,
@@ -145,7 +155,9 @@ def export_checkpoint_to_hf(
         try:
             tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
             tokenizer.save_pretrained(output_dir)
-            print("  ✓ Exported: Complete Hugging Face tokenizer assets (vocab.json, merges.txt, tokenizer.json)")
+            print(
+                "  ✓ Exported: Complete Hugging Face tokenizer assets (vocab.json, merges.txt, tokenizer.json)"
+            )
         except Exception as e:
             print(f"    Notice: Tokenizer files could not be saved automatically: {e}")
 
@@ -186,10 +198,30 @@ AxiomLM Modern 124M autoregressive language model trained using the **Muon (5-st
 
 def main():
     parser = argparse.ArgumentParser(description="AxiomLM Hugging Face Exporter CLI")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/model_latest.pt", help="Path to input PyTorch checkpoint .pt file")
-    parser.add_argument("--output", type=str, default="exports/AxiomLM-124M-Systems", help="Output directory path for Hugging Face artifacts")
-    parser.add_argument("--model_name", type=str, default="AxiomLM-124M-Systems", help="Model name for README model card")
-    parser.add_argument("--license", type=str, default="mit", help="License identifier (e.g., mit, apache-2.0)")
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default="checkpoints/model_latest.pt",
+        help="Path to input PyTorch checkpoint .pt file",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="exports/AxiomLM-124M-Systems",
+        help="Output directory path for Hugging Face artifacts",
+    )
+    parser.add_argument(
+        "--model_name",
+        type=str,
+        default="AxiomLM-124M-Systems",
+        help="Model name for README model card",
+    )
+    parser.add_argument(
+        "--license",
+        type=str,
+        default="mit",
+        help="License identifier (e.g., mit, apache-2.0)",
+    )
     args = parser.parse_args()
 
     export_checkpoint_to_hf(

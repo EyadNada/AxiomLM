@@ -140,7 +140,7 @@ For the 175B-parameter GPT-3 model, training for 300 billion tokens on the 10B-t
 ## 5. RedPajama & SlimPajama: The Open Foundation Era
 
 ### A. RedPajama-1T (Together AI, April 2023)
-When Meta released LLaMA 1 in early 2023, its high quality derived from a curated 1.4T token recipe across 7 distinct domains. However, Meta did not release the underlying dataset. 
+When Meta released LLaMA 1 in early 2023, its high quality derived from a curated 1.4T token recipe across 7 distinct domains. However, Meta did not release the underlying dataset.
 
 **Together AI** (along with Ontocord.ai, ETH DS3Lab, Stanford CRFM, and Hazy Research) launched the **RedPajama project** to create a 100% open-source reproduction of the LLaMA pretraining dataset (~1.21 Trillion tokens).
 
@@ -247,7 +247,7 @@ Based on the landmark Hugging Face report (*"FineWeb: 15-trillion tokens, 44TB d
 FineWeb-Edu is specifically optimized to teach LLMs high-density factual knowledge and scientific reasoning.
 
 #### 1. The Annotation & Filtering Methodology:
-1. **Seed Annotation via LLM-as-a-Judge:** 
+1. **Seed Annotation via LLM-as-a-Judge:**
    * A seed dataset of 500,000 web pages was scored by **`Meta-Llama-3-70B-Instruct`** on an educational scale from **0 to 5** (evaluating clarity, pedagogical value, depth of explanation, and factual density).
 2. **Classifier Distillation:**
    * A lightweight, highly parallel classifier (`Snowflake-arctic-embed-m` + classification head) was trained on the Llama-3-70B annotations.
@@ -313,4 +313,3 @@ def load_tokens_shard(filename):
 3. **RedPajama-1T (2023):** Democratized the 7-domain LLaMA recipe into open source (~1.21T tokens).
 4. **SlimPajama (2023):** Demonstrated that **extensive MinHashLSH deduplication** can remove ~50% redundant data to produce a superior 627B-token dataset.
 5. **FineWeb & FineWeb-Edu (2024):** Set the new benchmark by scaling to 15T tokens and using **synthetic LLM annotations (Llama-3-70B)** to filter a 1.3T / 5.4T educational corpus.
-

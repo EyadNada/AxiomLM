@@ -108,7 +108,7 @@ Given gradient $g_t = \nabla_\theta f_t(\theta_{t-1})$:
 In standard SGD, L2 regularization ($\frac{1}{2}\lambda \|\theta\|^2$) is mathematically identical to weight decay.
 
 However, in adaptive optimizers like **Adam**:
-- **Standard Adam with L2 Penalty:** 
+- **Standard Adam with L2 Penalty:**
   The L2 penalty adds $\lambda \theta$ directly to the gradient: $g_t' = g_t + \lambda \theta$.
   Then $g_t'$ is divided by $\sqrt{v_t}$.
   - **Problem:** Weights with historically large gradients get divided by a large $\sqrt{v_t}$, which **suppresses their weight decay penalty**.
@@ -166,7 +166,7 @@ def configure_optimizers(model, weight_decay=0.1, learning_rate=6e-4, betas=(0.9
         {'params': decay_params, 'weight_decay': weight_decay},
         {'params': nodecay_params, 'weight_decay': 0.0}
     ]
-    
+
     num_decay_params = sum(p.numel() for p in decay_params)
     num_nodecay_params = sum(p.numel() for p in nodecay_params)
     print(f"Decayed parameter tensors: {len(decay_params)} ({num_decay_params:,} parameters)")

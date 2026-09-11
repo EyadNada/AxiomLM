@@ -39,7 +39,7 @@ In transformer models, the attention mechanism determines how tokens exchange in
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-> **Intuition:**  
+> **Intuition:**
 > In Cross-Attention, the decoder asks: *"Given what I am currently generating ($Q$), what relevant information should I retrieve from the source context ($K, V$)?"*
 
 ---
@@ -110,11 +110,11 @@ class EncoderDecoderBlock(nn.Module):
         # 1. Causal Self-Attention
         self.ln_1 = nn.LayerNorm(config.n_embd)
         self.self_attn = CausalSelfAttention(config)
-        
+
         # 2. Cross-Attention (Conditioned on Encoder Features)
         self.ln_cross = nn.LayerNorm(config.n_embd)
         self.cross_attn = CrossAttention(config)
-        
+
         # 3. Feed-Forward Network
         self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
@@ -122,10 +122,10 @@ class EncoderDecoderBlock(nn.Module):
     def forward(self, x, encoder_hidden_states):
         # Step 1: Self-attention over the decoder stream (masked causally)
         x = x + self.self_attn(self.ln_1(x))
-        
+
         # Step 2: Cross-attention -> Q from x, K and V from encoder_hidden_states
         x = x + self.cross_attn(self.ln_cross(x), encoder_hidden_states)
-        
+
         # Step 3: Standard feed-forward MLP
         x = x + self.mlp(self.ln_2(x))
         return x
@@ -147,17 +147,17 @@ class CrossAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
-        
+
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.head_dim = config.n_embd // config.n_head
 
         # Query projection (applied to the decoder sequence 'x')
         self.q_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
-        
+
         # Key & Value projections (applied to the encoder hidden states 'enc')
         self.kv_proj = nn.Linear(config.n_embd, 2 * config.n_embd, bias=config.bias)
-        
+
         # Output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
 
@@ -184,8 +184,8 @@ class CrossAttention(nn.Module):
         # Note: NO CAUSAL MASK! The decoder is allowed to attend to ALL encoder tokens.
         # FlashAttention / F.scaled_dot_product_attention handles this efficiently:
         y = F.scaled_dot_product_attention(
-            q, k, v, 
-            attn_mask=key_padding_mask, 
+            q, k, v,
+            attn_mask=key_padding_mask,
             is_causal=False # Cross-attention is NEVER causal over the encoder sequence
         ) # (B, nh, T_dec, hs)
 

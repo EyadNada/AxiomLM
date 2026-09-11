@@ -1,8 +1,8 @@
 #  Custom Low-Level Kernels: Triton, Metal MSL & ARM NEON SIMD
 
-> **Author**: Eyad Nada  
-> **Topic**: High-Performance Deep Learning Systems Engineering & GPU/CPU Kernel Optimization  
-> **Repository**: `EyadNada/AxiomLM`  
+> **Author**: Eyad Nada
+> **Topic**: High-Performance Deep Learning Systems Engineering & GPU/CPU Kernel Optimization
+> **Repository**: `EyadNada/AxiomLM`
 > **Scope**: OpenAI Triton (CUDA), Apple Silicon Metal (MSL), and Apple ARM NEON SIMD (C++)
 
 ---
@@ -21,7 +21,7 @@ In standard deep learning frameworks like PyTorch, high-level neural network ope
 ```
 
 ### The Memory Wall Problem
-For elementwise and reduction operations, modern compute engines (NVIDIA H100 Tensor Cores @ ~1,000 TFLOPs FP16; Apple M3 Max GPU @ ~16 TFLOPs FP32; Apple M3 CPU @ ~500 GFLOPs NEON) are severely **memory-bandwidth bound**, rather than compute bound. 
+For elementwise and reduction operations, modern compute engines (NVIDIA H100 Tensor Cores @ ~1,000 TFLOPs FP16; Apple M3 Max GPU @ ~16 TFLOPs FP32; Apple M3 CPU @ ~500 GFLOPs NEON) are severely **memory-bandwidth bound**, rather than compute bound.
 
 The arithmetic intensity is defined as:
 $$\text{Arithmetic Intensity } I = \frac{\text{Floating Point Operations (FLOPs)}}{\text{Memory Transferred (Bytes)}} \quad \left[\frac{\text{FLOP}}{\text{Byte}}\right]$$
@@ -133,20 +133,20 @@ def _fused_rmsnorm_fwd_kernel(
     row_idx = tl.program_id(0)
     cols = tl.arange(0, BLOCK_SIZE)
     mask = cols < D
-    
+
     # Vectorized coalesced load into SRAM
     x_ptrs = X_ptr + row_idx * stride_x_row + cols
     x = tl.load(x_ptrs, mask=mask, other=0.0)
     w = tl.load(W_ptr + cols, mask=mask, other=1.0)
-    
+
     # Online reduction across registers
     variance = tl.sum(x * x, axis=0) / D
     rrms = tl.rsqrt(variance + eps)
-    
+
     # Store scalar RMS for backward pass
     if RMS_ptr is not None:
         tl.store(RMS_ptr + row_idx, rrms)
-        
+
     y = x * rrms * w
     tl.store(Y_ptr + row_idx * stride_y_row + cols, y, mask=mask)
 ```
@@ -211,7 +211,7 @@ void fused_rmsnorm_forward_neon(
     for (int r = 0; r < B_T; ++r) {
         const float* row_x = x + r * D;
         float* row_y = y + r * D;
-        
+
         float32x4_t v_sum = vdupq_n_f32(0.0f);
         int i = 0;
         for (; i <= D - 4; i += 4) {
@@ -221,10 +221,10 @@ void fused_rmsnorm_forward_neon(
         float sum_sq = vaddvq_f32(v_sum);
         // Scalar tail loop
         for (; i < D; ++i) sum_sq += row_x[i] * row_x[i];
-        
+
         float rrms = 1.0f / std::sqrt(sum_sq / static_cast<float>(D) + eps);
         if (rms_out) rms_out[r] = rrms;
-        
+
         float32x4_t v_rrms = vdupq_n_f32(rrms);
         for (i = 0; i <= D - 4; i += 4) {
             float32x4_t vx = vld1q_f32(row_x + i);

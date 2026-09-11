@@ -201,9 +201,9 @@ import axiomlm as ax
 # Estimate theoretical peak performance and calculate current Model FLOPs Utilization (MFU)
 peak_tflops = ax.telemetry.profiler.estimate_hardware_peak_tflops("mps")
 mfu = ax.telemetry.profiler.calculate_mfu(
-    model, 
+    model,
     fwdbwd_per_iter=64,
-    dt=0.45, 
+    dt=0.45,
     peak_tflops=peak_tflops
 )
 print(f"Current Model FLOPs Utilization: {mfu * 100:.2f}%")
@@ -218,7 +218,7 @@ import axiomlm as ax
 ax.export_checkpoint_to_hf(
     checkpoint_path="checkpoints/model_step_10000.pt",
     output_dir="exports/hf_model",
-    arch="modern" 
+    arch="modern"
 )
 ```
 
@@ -308,7 +308,7 @@ kernels/
 
 ## Technical Report & Documentation
 
-For mathematical derivations, convergence proofs, and hardware Roofline analysis, refer to the [Technical Report](AxiomLM_Technical_Report.md). 
+For mathematical derivations, convergence proofs, and hardware Roofline analysis, refer to the [Technical Report](AxiomLM_Technical_Report.md).
 Additionally, 27 technical reference guides and mathematical notes are available in the `material/` directory.
 
 --------------------------------------------------------------------------------

@@ -48,7 +48,7 @@ From Appendix B (*Details of Model Training*):
 2. **Cosine Decay**: The learning rate decays following a cosine curve down to **10% of maximum LR** ($\eta_{\text{min}} = 0.1 \times \eta_{\text{max}} = 6.0 \times 10^{-5}$).
 3. **Tail Plateau**: Beyond the cosine schedule steps, the learning rate continues indefinitely at the minimum value $\eta_{\text{min}}$.
 
-$$\eta(t) = \begin{cases} 
+$$\eta(t) = \begin{cases}
 \frac{t}{T_{\text{warmup}}} \cdot \eta_{\text{max}}, & t < T_{\text{warmup}} \\
 \eta_{\text{min}} + \frac{1}{2}\left(1 + \cos\left(\pi \frac{t - T_{\text{warmup}}}{T_{\text{decay}} - T_{\text{warmup}}}\right)\right)(\eta_{\text{max}} - \eta_{\text{min}}), & T_{\text{warmup}} \le t \le T_{\text{decay}} \\
 \eta_{\text{min}}, & t > T_{\text{decay}}
@@ -97,12 +97,12 @@ def configure_optimizers(model, weight_decay=0.1, learning_rate=6e-4, device_typ
     # Separate parameters into 2D (decayed) and 1D (non-decayed)
     decay_params = [p for n, p in model.named_parameters() if p.dim() >= 2 and p.requires_grad]
     nodecay_params = [p for n, p in model.named_parameters() if p.dim() < 2 and p.requires_grad]
-    
+
     optim_groups = [
         {'params': decay_params, 'weight_decay': weight_decay},
         {'params': nodecay_params, 'weight_decay': 0.0}
     ]
-    
+
     # Fused AdamW on CUDA
     use_fused = (device_type == 'cuda') and ('fused' in torch.optim.AdamW.__init__.__code__.co_varnames)
     optimizer = torch.optim.AdamW(

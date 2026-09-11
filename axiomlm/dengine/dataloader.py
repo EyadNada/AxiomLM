@@ -1,9 +1,10 @@
 """
 AxiomLM Multi-Shard Streaming Binary DataLoader.
 """
+
 import os
 import glob
-from typing import Tuple, List, Optional
+from typing import Tuple
 import numpy as np
 import torch
 
@@ -13,6 +14,7 @@ class DataLoaderLite:
     Lightweight, memory-mapped binary token loader with multi-shard support.
     Streams contiguous uint16 tokens across shard boundaries with sub-200 MB RAM utilization.
     """
+
     def __init__(
         self,
         B: int,
@@ -50,7 +52,9 @@ class DataLoaderLite:
         # In-memory synthetic fallback if no shards found (for CI testing / fresh clones)
         if not shards:
             if process_rank == 0:
-                print(f"[DataLoaderLite Warning] No binary shards found in '{data_dir}'. Generating in-memory token buffer.")
+                print(
+                    f"[DataLoaderLite Warning] No binary shards found in '{data_dir}'. Generating in-memory token buffer."
+                )
             synthetic_tokens = np.random.randint(0, 50257, size=10000, dtype=np.uint16)
             synth_path = os.path.join(abs_data_dir, f"{split}_synth.bin")
             synthetic_tokens.tofile(synth_path)
@@ -61,12 +65,18 @@ class DataLoaderLite:
         self.reset()
 
         if process_rank == 0:
-            print(f"[DataLoaderLite] Loaded {split} ({len(self.shards)} shard{'s' if len(self.shards)>1 else ''}) from {data_dir} ({self.total_tokens:,} tokens total)")
-            print(f"[DataLoaderLite] 1 epoch = {self.total_tokens // (B * T * num_processes)} batches")
+            print(
+                f"[DataLoaderLite] Loaded {split} ({len(self.shards)} shard{'s' if len(self.shards)>1 else ''}) from {data_dir} ({self.total_tokens:,} tokens total)"
+            )
+            print(
+                f"[DataLoaderLite] 1 epoch = {self.total_tokens // (B * T * num_processes)} batches"
+            )
 
     def reset(self) -> None:
         self.current_shard = 0
-        self.tokens = np.memmap(self.shards[self.current_shard], dtype=np.uint16, mode='r')
+        self.tokens = np.memmap(
+            self.shards[self.current_shard], dtype=np.uint16, mode="r"
+        )
         self.current_position = self.B * self.T * self.process_rank
 
     @property
@@ -83,8 +93,12 @@ class DataLoaderLite:
             shard_size = os.path.getsize(shard_path) // 2
             if cum_tokens + shard_size > target_token_offset:
                 self.current_shard = i
-                self.tokens = np.memmap(self.shards[self.current_shard], dtype=np.uint16, mode='r')
-                self.current_position = (target_token_offset - cum_tokens) + self.B * self.T * self.process_rank
+                self.tokens = np.memmap(
+                    self.shards[self.current_shard], dtype=np.uint16, mode="r"
+                )
+                self.current_position = (
+                    target_token_offset - cum_tokens
+                ) + self.B * self.T * self.process_rank
                 return
             cum_tokens += shard_size
 
@@ -95,7 +109,9 @@ class DataLoaderLite:
         # Handle shard boundary transition
         if len(buf) < B * T + 1:
             self.current_shard = (self.current_shard + 1) % len(self.shards)
-            self.tokens = np.memmap(self.shards[self.current_shard], dtype=np.uint16, mode='r')
+            self.tokens = np.memmap(
+                self.shards[self.current_shard], dtype=np.uint16, mode="r"
+            )
             self.current_position = B * T * self.process_rank
             buf = self.tokens[self.current_position : self.current_position + B * T + 1]
 

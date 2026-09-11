@@ -105,22 +105,22 @@ if torch.backends.mps.is_available():
 while x.size(1) < max_length:
     with torch.no_grad():
         logits = model(x) # (B, T, vocab_size)
-        
+
         # Take logits at the last position
         logits = logits[:, -1, :] # (B, vocab_size)
-        
+
         # Calculate probabilities with softmax
         probs = F.softmax(logits, dim=-1) # (B, vocab_size)
-        
+
         # Top-K filtering (k=50)
         topk_probs, topk_indices = torch.topk(probs, 50, dim=-1) # (B, 50)
-        
+
         # Sample one token index per sequence from the top-k distribution
         ix = torch.multinomial(topk_probs, 1) # (B, 1)
-        
+
         # Gather the corresponding token ID from vocab
         xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
-        
+
         # Append sampled token to sequence
         x = torch.cat((x, xcol), dim=1) # (B, T+1)
 

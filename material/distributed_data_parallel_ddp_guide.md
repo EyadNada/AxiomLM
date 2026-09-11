@@ -118,10 +118,10 @@ PyTorch provides the `model.no_sync()` context manager:
 ```python
 for micro_step in range(grad_accum_steps):
     is_last_micro_step = (micro_step == grad_accum_steps - 1)
-    
+
     # Disable gradient sync on all micro-steps except the last one
     sync_context = nullcontext() if is_last_micro_step else model.no_sync()
-    
+
     with sync_context:
         with autocast_ctx:
             logits, loss = model(x, y)
@@ -142,13 +142,13 @@ class DistributedDataLoaderLite:
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
-        
+
         # Load token dataset
         with open("material/input.txt", "r") as f:
             text = f.read()
         enc = tiktoken.get_encoding("gpt2")
         self.tokens = torch.tensor(enc.encode(text), dtype=torch.long)
-        
+
         # State: start each rank at its designated offset
         self.current_position = self.B * self.T * self.process_rank
 
@@ -157,14 +157,14 @@ class DistributedDataLoaderLite:
         buf = self.tokens[self.current_position : self.current_position + B * T + 1]
         x = (buf[:-1]).view(B, T)
         y = (buf[1:]).view(B, T)
-        
+
         # Advance by total cluster throughput across all processes
         self.current_position += B * T * self.num_processes
-        
+
         # Reset if end of dataset reached
         if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
             self.current_position = self.B * self.T * self.process_rank
-            
+
         return x, y
 ```
 
@@ -258,40 +258,40 @@ for step in range(max_steps):
     t0 = time.time()
     optimizer.zero_grad()
     loss_accum = 0.0
-    
+
     for micro_step in range(grad_accum_steps):
         x, y = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
-        
+
         # Only sync gradients on the final micro-step
         sync_context = nullcontext() if (not ddp or micro_step == grad_accum_steps - 1) else model.no_sync()
-        
+
         with sync_context:
             with autocast_ctx:
                 logits, loss = model(x, y)
             loss = loss / grad_accum_steps
             loss_accum += loss.detach()
             loss.backward()
-            
+
     if ddp:
         # Average loss metric across all GPUs for clean logging
         dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
-        
+
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    
+
     # Update learning rate
     lr = get_lr(step)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
     optimizer.step()
-    
+
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-        
+
     t1 = time.time()
     dt = t1 - t0
     tokens_per_sec = total_batch_size / dt
-    
+
     if master_process:
         print(f"step {step:4d} | loss: {loss_accum.item():.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
 

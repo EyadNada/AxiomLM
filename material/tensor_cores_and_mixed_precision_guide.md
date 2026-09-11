@@ -174,16 +174,16 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for step in range(num_steps):
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
-    
+
     optimizer.zero_grad()
-    
+
     # Run forward pass in bfloat16 mixed precision
     with torch.autocast(device_type=device, dtype=torch.bfloat16):
         logits, loss = model(x, y)
-    
+
     # Backward pass computes gradients
     loss.backward()
-    
+
     optimizer.step()
 ```
 
@@ -198,18 +198,18 @@ scaler = torch.cuda.amp.GradScaler()
 for step in range(num_steps):
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
-    
+
     optimizer.zero_grad()
-    
+
     with torch.autocast(device_type="cuda", dtype=torch.float16):
         logits, loss = model(x, y)
-    
+
     # Scale loss and backpropagate
     scaler.scale(loss).backward()
-    
+
     # Unscale gradients and step optimizer (skips step if Inf/NaN detected)
     scaler.step(optimizer)
-    
+
     # Update scale factor for next iteration
     scaler.update()
 ```

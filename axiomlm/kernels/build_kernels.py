@@ -105,10 +105,10 @@ def load_neon_module() -> Optional[Any]:
 def compile_metal_extension(force: bool = False, verbose: bool = False) -> str:
     if sys.platform != "darwin":
         return ""
-        
+
     mm_source = os.path.join(KERNEL_DIR, "mps_kernels.mm")
     so_output = os.path.join(KERNEL_DIR, "axiom_metal_kernels.so")
-    
+
     if os.path.exists(so_output) and not force:
         if os.path.getmtime(so_output) >= os.path.getmtime(mm_source):
             return so_output
@@ -124,24 +124,44 @@ def compile_metal_extension(force: bool = False, verbose: bool = False) -> str:
         pass
 
     cmd = [
-        "clang++", "-O3", "-Wall", "-shared", "-std=c++20", "-fPIC", "-ObjC++",
+        "clang++",
+        "-O3",
+        "-Wall",
+        "-shared",
+        "-std=c++20",
+        "-fPIC",
+        "-ObjC++",
         "-DTORCH_EXTENSION_NAME=axiom_metal_kernels",
         "-Iscratch",
-        f"-I{py_inc}", f"-I{torch_inc}", f"-I{torch_api_inc}",
-        f"-L{torch_lib}", "-ltorch", "-ltorch_cpu", "-lc10", "-ltorch_python",
-        "-framework", "Metal", "-framework", "Foundation",
-        "-mcpu=apple-m3", "-undefined", "dynamic_lookup",
-        mm_source, "-o", so_output
+        f"-I{py_inc}",
+        f"-I{torch_inc}",
+        f"-I{torch_api_inc}",
+        f"-L{torch_lib}",
+        "-ltorch",
+        "-ltorch_cpu",
+        "-lc10",
+        "-ltorch_python",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-mcpu=apple-m3",
+        "-undefined",
+        "dynamic_lookup",
+        mm_source,
+        "-o",
+        so_output,
     ]
-    
+
     if verbose:
         print("Compiling Metal kernels with command:", " ".join(cmd))
-        
+
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
         print(f"Warning: Failed to compile Metal kernels:\n{res.stdout}\n{res.stderr}")
         return ""
     return so_output
+
 
 def load_metal_module() -> Optional[Any]:
     if sys.platform != "darwin":
@@ -164,7 +184,7 @@ def load_metal_module() -> Optional[Any]:
 
 if __name__ == "__main__":
     if IS_ARM:
-        print(f"Building Axiom-LM Apple Silicon Kernels...")
+        print("Building Axiom-LM Apple Silicon Kernels...")
         compile_neon_extension(force=True, verbose=True)
         compile_metal_extension(force=True, verbose=True)
         mod_neon = load_neon_module()
@@ -172,4 +192,6 @@ if __name__ == "__main__":
         if mod_metal:
             print("Successfully compiled Metal bindings.")
     else:
-        print(f"Skipping Apple Silicon build: Host architecture ({platform.machine()}) is not ARM64/aarch64.")
+        print(
+            f"Skipping Apple Silicon build: Host architecture ({platform.machine()}) is not ARM64/aarch64."
+        )

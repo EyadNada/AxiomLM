@@ -3,7 +3,6 @@ import sys
 import platform
 import unittest
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -12,13 +11,12 @@ if PROJECT_ROOT not in sys.path:
 
 from axiomlm.kernels import (
     fused_rmsnorm,
-    FusedRMSNorm,
     fused_swiglu,
     FusedSwiGLUMLP,
     fused_sdpa,
     _NEON_MOD,
 )
-from axiomlm.models import RMSNorm, SwiGLUMLP, GPTConfig, ModelConfig
+from axiomlm.models import RMSNorm, SwiGLUMLP, GPTConfig
 
 IS_ARM64 = platform.machine().lower() in ["arm64", "aarch64"]
 
@@ -32,10 +30,15 @@ class TestCustomKernels(unittest.TestCase):
         if torch.backends.mps.is_available():
             self.devices.append("mps")
 
-    @unittest.skipUnless(IS_ARM64, "Native ARM NEON SIMD kernels require ARM64 / Apple Silicon architecture")
+    @unittest.skipUnless(
+        IS_ARM64,
+        "Native ARM NEON SIMD kernels require ARM64 / Apple Silicon architecture",
+    )
     def test_neon_module_loaded(self):
         """Verify native ARM NEON C++ extension is loaded and functional."""
-        self.assertIsNotNone(_NEON_MOD, "Native NEON kernel module should be compiled and loaded.")
+        self.assertIsNotNone(
+            _NEON_MOD, "Native NEON kernel module should be compiled and loaded."
+        )
         self.assertTrue(hasattr(_NEON_MOD, "rmsnorm_forward_neon"))
         self.assertTrue(hasattr(_NEON_MOD, "rmsnorm_backward_neon"))
         self.assertTrue(hasattr(_NEON_MOD, "swiglu_forward_neon"))
@@ -55,7 +58,11 @@ class TestCustomKernels(unittest.TestCase):
             custom_out = fused_rmsnorm(x, weight, eps=1e-6)
 
             max_diff = (ref_out - custom_out).abs().max().item()
-            self.assertLess(max_diff, 1e-5, f"RMSNorm forward diff {max_diff} on {device} exceeds tolerance")
+            self.assertLess(
+                max_diff,
+                1e-5,
+                f"RMSNorm forward diff {max_diff} on {device} exceeds tolerance",
+            )
 
     def test_fused_rmsnorm_backward_gradients(self):
         """Test FusedRMSNorm backward pass gradients match PyTorch autograd exactly."""
@@ -81,14 +88,20 @@ class TestCustomKernels(unittest.TestCase):
             grad_x_diff = (x1.grad - x2.grad).abs().max().item()
             grad_w_diff = (w1.grad - w2.grad).abs().max().item()
 
-            self.assertLess(grad_x_diff, 1e-4, f"RMSNorm grad_x diff {grad_x_diff} on {device}")
-            self.assertLess(grad_w_diff, 1e-4, f"RMSNorm grad_w diff {grad_w_diff} on {device}")
+            self.assertLess(
+                grad_x_diff, 1e-4, f"RMSNorm grad_x diff {grad_x_diff} on {device}"
+            )
+            self.assertLess(
+                grad_w_diff, 1e-4, f"RMSNorm grad_w diff {grad_w_diff} on {device}"
+            )
 
     def test_fused_rmsnorm_gradcheck(self):
         """Use torch.autograd.gradcheck for double-precision gradient verification."""
         x = torch.randn(2, 4, 16, dtype=torch.float64, requires_grad=True)
         weight = torch.randn(16, dtype=torch.float64, requires_grad=True)
-        test_passed = torch.autograd.gradcheck(fused_rmsnorm, (x, weight, 1e-6), eps=1e-6, atol=1e-4)
+        test_passed = torch.autograd.gradcheck(
+            fused_rmsnorm, (x, weight, 1e-6), eps=1e-6, atol=1e-4
+        )
         self.assertTrue(test_passed, "Gradcheck for FusedRMSNorm failed")
 
     def test_fused_swiglu_forward_parity(self):
@@ -102,7 +115,11 @@ class TestCustomKernels(unittest.TestCase):
             custom_out = fused_swiglu(gate, up)
 
             max_diff = (ref_out - custom_out).abs().max().item()
-            self.assertLess(max_diff, 1e-5, f"SwiGLU forward diff {max_diff} on {device} exceeds tolerance")
+            self.assertLess(
+                max_diff,
+                1e-5,
+                f"SwiGLU forward diff {max_diff} on {device} exceeds tolerance",
+            )
 
     def test_fused_swiglu_backward_gradients(self):
         """Test FusedSwiGLU backward pass gradients match PyTorch autograd exactly."""
@@ -127,14 +144,20 @@ class TestCustomKernels(unittest.TestCase):
             grad_g_diff = (g1.grad - g2.grad).abs().max().item()
             grad_u_diff = (u1.grad - u2.grad).abs().max().item()
 
-            self.assertLess(grad_g_diff, 1e-4, f"SwiGLU grad_gate diff {grad_g_diff} on {device}")
-            self.assertLess(grad_u_diff, 1e-4, f"SwiGLU grad_up diff {grad_u_diff} on {device}")
+            self.assertLess(
+                grad_g_diff, 1e-4, f"SwiGLU grad_gate diff {grad_g_diff} on {device}"
+            )
+            self.assertLess(
+                grad_u_diff, 1e-4, f"SwiGLU grad_up diff {grad_u_diff} on {device}"
+            )
 
     def test_fused_swiglu_gradcheck(self):
         """Use torch.autograd.gradcheck for double-precision SwiGLU verification."""
         gate = torch.randn(2, 4, 16, dtype=torch.float64, requires_grad=True)
         up = torch.randn(2, 4, 16, dtype=torch.float64, requires_grad=True)
-        test_passed = torch.autograd.gradcheck(fused_swiglu, (gate, up), eps=1e-6, atol=1e-4)
+        test_passed = torch.autograd.gradcheck(
+            fused_swiglu, (gate, up), eps=1e-6, atol=1e-4
+        )
         self.assertTrue(test_passed, "Gradcheck for FusedSwiGLU failed")
 
     def test_fused_swiglu_mlp_module(self):
@@ -158,10 +181,9 @@ class TestCustomKernels(unittest.TestCase):
             fused_out = fused_mlp(x)
 
             diff = (ref_out - fused_out).abs().max().item()
-            self.assertLess(diff, 1e-5, f"FusedSwiGLUMLP output diff {diff} on {device}")
-
-
-
+            self.assertLess(
+                diff, 1e-5, f"FusedSwiGLUMLP output diff {diff} on {device}"
+            )
 
     def test_fused_sdpa_forward_parity(self):
         """Test Fused SDPA forward pass matches reference PyTorch SDPA."""
@@ -175,7 +197,11 @@ class TestCustomKernels(unittest.TestCase):
             custom_out = fused_sdpa(q, k, v, is_causal=True)
 
             max_diff = (ref_out - custom_out).abs().max().item()
-            self.assertLess(max_diff, 1e-4, f"SDPA forward diff {max_diff} on {device} exceeds tolerance")
+            self.assertLess(
+                max_diff,
+                1e-4,
+                f"SDPA forward diff {max_diff} on {device} exceeds tolerance",
+            )
 
     def test_fused_sdpa_backward_gradients(self):
         """Test Fused SDPA backward pass gradients match reference."""
@@ -203,9 +229,16 @@ class TestCustomKernels(unittest.TestCase):
             grad_k_diff = (k1.grad - k2.grad).abs().max().item()
             grad_v_diff = (v1.grad - v2.grad).abs().max().item()
 
-            self.assertLess(grad_q_diff, 1e-4, f"SDPA grad_q diff {grad_q_diff} on {device}")
-            self.assertLess(grad_k_diff, 1e-4, f"SDPA grad_k diff {grad_k_diff} on {device}")
-            self.assertLess(grad_v_diff, 1e-4, f"SDPA grad_v diff {grad_v_diff} on {device}")
+            self.assertLess(
+                grad_q_diff, 1e-4, f"SDPA grad_q diff {grad_q_diff} on {device}"
+            )
+            self.assertLess(
+                grad_k_diff, 1e-4, f"SDPA grad_k diff {grad_k_diff} on {device}"
+            )
+            self.assertLess(
+                grad_v_diff, 1e-4, f"SDPA grad_v diff {grad_v_diff} on {device}"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -72,7 +72,7 @@ static inline id<MTLBuffer> getMTLBufferStorage(const torch::Tensor& tensor) {
 std::tuple<torch::Tensor, torch::Tensor> rmsnorm_backward_mps(torch::Tensor grad_y, torch::Tensor x, torch::Tensor weight, torch::Tensor rsqrt_cache) {
     auto grad_x = torch::empty_like(x);
     auto grad_w = torch::empty_like(weight);
-    
+
     int64_t D = x.size(-1);
     int64_t num_rows = x.numel() / D;
 
@@ -97,7 +97,7 @@ std::tuple<torch::Tensor, torch::Tensor> rmsnorm_backward_mps(torch::Tensor grad
     [encoder setBytes:&D_uint length:sizeof(uint32_t) atIndex:5];
 
     MTLSize gx_gridSize = MTLSizeMake(num_rows, 1, 1);
-    NSUInteger gx_threadGroupSize = 256; 
+    NSUInteger gx_threadGroupSize = 256;
     MTLSize gx_threadsPerThreadgroup = MTLSizeMake(gx_threadGroupSize, 1, 1);
     [encoder dispatchThreadgroups:gx_gridSize threadsPerThreadgroup:gx_threadsPerThreadgroup];
 
@@ -144,11 +144,11 @@ std::tuple<torch::Tensor, torch::Tensor> rmsnorm_forward_mps(torch::Tensor x, to
 
     MTLSize gridSize = MTLSizeMake(num_rows, 1, 1);
     // MUST be a power of 2 for the reduction tree in metal_kernels.metal to work!
-    NSUInteger threadGroupSize = 256; 
+    NSUInteger threadGroupSize = 256;
     MTLSize threadsPerThreadgroup = MTLSizeMake(threadGroupSize, 1, 1);
 
     [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:threadsPerThreadgroup];
-    
+
     // PyTorch manages ending the encoder, so do not call [encoder endEncoding]
 
     return std::make_tuple(out, rsqrt_cache);
@@ -217,23 +217,23 @@ std::tuple<torch::Tensor, torch::Tensor> swiglu_backward_mps(torch::Tensor grad_
 
 torch::Tensor apply_rope_mps(torch::Tensor x, torch::Tensor freqs_cis, bool is_forward) {
     auto out = torch::empty_like(x);
-    
+
     // x shape: (B, n_head, T, head_dim)
     // freqs_cis shape: (T, head_dim // 2)
     // We treat x as a flat array of float2 (size: numel / 2)
-    
+
     uint32_t T = x.size(2);
     uint32_t half_head_dim = x.size(3) / 2;
     uint32_t num_elements = x.numel() / 2; // number of float2 vectors
     uint32_t forward = is_forward ? 1 : 0;
-    
+
     id<MTLBuffer> x_buf = getMTLBufferStorage(x);
     id<MTLBuffer> freqs_buf = getMTLBufferStorage(freqs_cis);
     id<MTLBuffer> out_buf = getMTLBufferStorage(out);
-    
+
     auto stream = at::mps::getCurrentMPSStream();
     id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
-    
+
     [encoder setComputePipelineState:rope_pso];
     [encoder setBuffer:x_buf offset:x.storage_offset() * x.element_size() atIndex:0];
     [encoder setBuffer:freqs_buf offset:freqs_cis.storage_offset() * freqs_cis.element_size() atIndex:1];
@@ -242,13 +242,13 @@ torch::Tensor apply_rope_mps(torch::Tensor x, torch::Tensor freqs_cis, bool is_f
     [encoder setBytes:&half_head_dim length:sizeof(uint32_t) atIndex:4];
     [encoder setBytes:&forward length:sizeof(uint32_t) atIndex:5];
     [encoder setBytes:&num_elements length:sizeof(uint32_t) atIndex:6];
-    
+
     NSUInteger threadGroupSize = rope_pso.maxTotalThreadsPerThreadgroup;
     MTLSize threadsPerThreadgroup = MTLSizeMake(threadGroupSize, 1, 1);
     MTLSize gridSize = MTLSizeMake((num_elements + threadGroupSize - 1) / threadGroupSize, 1, 1);
-    
+
     [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:threadsPerThreadgroup];
-    
+
     return out;
 }
 
@@ -256,16 +256,16 @@ torch::Tensor apply_rope_mps(torch::Tensor x, torch::Tensor freqs_cis, bool is_f
 torch::Tensor cross_entropy_forward_mps(torch::Tensor logits, torch::Tensor targets, int ignore_index) {
     uint32_t N = logits.size(0);
     uint32_t V = logits.size(1);
-    
+
     auto losses = torch::empty({N}, logits.options());
-    
+
     id<MTLBuffer> logits_buf = getMTLBufferStorage(logits);
     id<MTLBuffer> targets_buf = getMTLBufferStorage(targets);
     id<MTLBuffer> losses_buf = getMTLBufferStorage(losses);
-    
+
     auto stream = at::mps::getCurrentMPSStream();
     id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
-    
+
     [encoder setComputePipelineState:ce_fwd_pso];
     [encoder setBuffer:logits_buf offset:logits.storage_offset() * logits.element_size() atIndex:0];
     [encoder setBuffer:targets_buf offset:targets.storage_offset() * targets.element_size() atIndex:1];
@@ -273,30 +273,30 @@ torch::Tensor cross_entropy_forward_mps(torch::Tensor logits, torch::Tensor targ
     [encoder setBytes:&V length:sizeof(uint32_t) atIndex:3];
     int32_t ign = ignore_index;
     [encoder setBytes:&ign length:sizeof(int32_t) atIndex:4];
-    
+
     MTLSize gridSize = MTLSizeMake(N, 1, 1);
-    NSUInteger threadGroupSize = 256; 
+    NSUInteger threadGroupSize = 256;
     MTLSize threadsPerThreadgroup = MTLSizeMake(threadGroupSize, 1, 1);
-    
+
     [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:threadsPerThreadgroup];
-    
+
     return losses;
 }
 
 torch::Tensor cross_entropy_backward_mps(torch::Tensor logits, torch::Tensor targets, torch::Tensor grad_losses, int ignore_index) {
     uint32_t N = logits.size(0);
     uint32_t V = logits.size(1);
-    
+
     auto grad_logits = torch::empty_like(logits);
-    
+
     id<MTLBuffer> logits_buf = getMTLBufferStorage(logits);
     id<MTLBuffer> targets_buf = getMTLBufferStorage(targets);
     id<MTLBuffer> grad_losses_buf = getMTLBufferStorage(grad_losses);
     id<MTLBuffer> grad_logits_buf = getMTLBufferStorage(grad_logits);
-    
+
     auto stream = at::mps::getCurrentMPSStream();
     id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
-    
+
     [encoder setComputePipelineState:ce_bwd_pso];
     [encoder setBuffer:logits_buf offset:logits.storage_offset() * logits.element_size() atIndex:0];
     [encoder setBuffer:targets_buf offset:targets.storage_offset() * targets.element_size() atIndex:1];
@@ -305,13 +305,13 @@ torch::Tensor cross_entropy_backward_mps(torch::Tensor logits, torch::Tensor tar
     [encoder setBytes:&V length:sizeof(uint32_t) atIndex:4];
     int32_t ign = ignore_index;
     [encoder setBytes:&ign length:sizeof(int32_t) atIndex:5];
-    
+
     MTLSize gridSize = MTLSizeMake(N, 1, 1);
-    NSUInteger threadGroupSize = 256; 
+    NSUInteger threadGroupSize = 256;
     MTLSize threadsPerThreadgroup = MTLSizeMake(threadGroupSize, 1, 1);
-    
+
     [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:threadsPerThreadgroup];
-    
+
     return grad_logits;
 }
 
@@ -323,37 +323,37 @@ torch::Tensor flash_attention_forward_mps(torch::Tensor q, torch::Tensor k, torc
     uint32_t seq_len_q = q.size(2);
     uint32_t head_dim = q.size(3);
     uint32_t seq_len_k = k.size(2);
-    
+
     auto out = torch::empty_like(q);
-    
+
     id<MTLBuffer> q_buf = getMTLBufferStorage(q);
     id<MTLBuffer> k_buf = getMTLBufferStorage(k);
     id<MTLBuffer> v_buf = getMTLBufferStorage(v);
     id<MTLBuffer> out_buf = getMTLBufferStorage(out);
-    
+
     auto stream = at::mps::getCurrentMPSStream();
     id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
-    
+
     [encoder setComputePipelineState:fa_fwd_pso];
     [encoder setBuffer:q_buf offset:q.storage_offset() * q.element_size() atIndex:0];
     [encoder setBuffer:k_buf offset:k.storage_offset() * k.element_size() atIndex:1];
     [encoder setBuffer:v_buf offset:v.storage_offset() * v.element_size() atIndex:2];
     [encoder setBuffer:out_buf offset:out.storage_offset() * out.element_size() atIndex:3];
-    
+
     [encoder setBytes:&seq_len_q length:sizeof(uint32_t) atIndex:4];
     [encoder setBytes:&seq_len_k length:sizeof(uint32_t) atIndex:5];
     [encoder setBytes:&head_dim length:sizeof(uint32_t) atIndex:6];
     uint32_t causal = is_causal ? 1 : 0;
     [encoder setBytes:&causal length:sizeof(uint32_t) atIndex:7];
-    
+
     uint32_t BLOCK_Q = 32;
     uint32_t num_blocks_q = (seq_len_q + BLOCK_Q - 1) / BLOCK_Q;
-    
+
     MTLSize gridSize = MTLSizeMake(B * n_head, num_blocks_q, 1);
     MTLSize threadsPerThreadgroup = MTLSizeMake(BLOCK_Q, 1, 1);
-    
+
     [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:threadsPerThreadgroup];
-    
+
     return out;
 }
 

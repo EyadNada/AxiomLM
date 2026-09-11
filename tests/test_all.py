@@ -4,7 +4,6 @@ import unittest
 import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 
 # Ensure project root is in sys.path
@@ -18,27 +17,18 @@ from axiomlm import (
     apply_rope,
     repeat_kv,
     SwiGLUMLP,
-    MLP,
     CausalSelfAttention,
-    Block,
-    ModelConfig,
     GPTConfig,
-    Transformer,
     GPT,
     zeropower_via_newtonschulz5,
     Muon,
     DataLoaderLite,
     sample_logits,
-    generate_samples,
     generate_with_cache,
-    get_lr,
     estimate_hardware_peak_tflops,
     calculate_mfu,
     create_profiler,
-    export_checkpoint_to_hf,
-    load_model,
 )
-from axiomlm.train import get_raw_model
 
 
 class TestModernArchitectureComponents(unittest.TestCase):
@@ -71,7 +61,9 @@ class TestModernArchitectureComponents(unittest.TestCase):
         """Test Rotary Position Embeddings (RoPE) precomputation, rotation, and relative distance property."""
         head_dim = 64
         max_seq_len = 128
-        freqs_cis = precompute_rope_frequencies(head_dim=head_dim, max_seq_len=max_seq_len)
+        freqs_cis = precompute_rope_frequencies(
+            head_dim=head_dim, max_seq_len=max_seq_len
+        )
 
         # 1. Frequency shape check
         self.assertEqual(freqs_cis.shape, (max_seq_len, head_dim // 2))
@@ -211,7 +203,7 @@ class TestFullModelAndGeneration(unittest.TestCase):
         model = GPT(config)
 
         # Verify weight tying: wte and lm_head share memory
-        self.assertIs(model.transformer['wte'].weight, model.lm_head.weight)
+        self.assertIs(model.transformer["wte"].weight, model.lm_head.weight)
 
         # Verify parameter count
         total_params = sum(p.numel() for p in model.parameters())
@@ -244,11 +236,11 @@ class TestFullModelAndGeneration(unittest.TestCase):
         model = GPT(config)
 
         # No learned position embeddings table (wpe) in RoPE
-        self.assertNotIn('wpe', model.transformer)
+        self.assertNotIn("wpe", model.transformer)
         self.assertIsNotNone(model.freqs_cis)
 
         # Verify weight tying
-        self.assertIs(model.transformer['wte'].weight, model.lm_head.weight)
+        self.assertIs(model.transformer["wte"].weight, model.lm_head.weight)
 
         idx = torch.randint(0, 50304, (2, 32))
         targets = torch.randint(0, 50304, (2, 32))
@@ -261,6 +253,7 @@ class TestFullModelAndGeneration(unittest.TestCase):
     def test_end_to_end_greedy_generation_parity(self):
         """Verify that full-model greedy generation with KV cache is 100% token-for-token identical to naive generation."""
         import tiktoken
+
         enc = tiktoken.get_encoding("gpt2")
 
         config = GPTConfig(
@@ -285,7 +278,13 @@ class TestFullModelAndGeneration(unittest.TestCase):
         # 1. Naive generation (deterministic greedy with temperature=0.0 equivalent)
         # Using generate_with_cache with temp=0.0
         sample_cached = generate_with_cache(
-            model, enc, device="cpu", prompt=prompt, num_samples=1, max_length=max_length, temperature=0.0
+            model,
+            enc,
+            device="cpu",
+            prompt=prompt,
+            num_samples=1,
+            max_length=max_length,
+            temperature=0.0,
         )[0]
 
         # 2. Step-by-step naive forward without KV cache (greedy)
@@ -321,7 +320,11 @@ class TestMuonOptimizerAndNewtonSchulz(unittest.TestCase):
         cond_ns = (s_ns.max() / s_ns.min()).item()
 
         # 1. Verify massive reduction in condition number (spectral flattening)
-        self.assertLess(cond_ns, 2.0, f"Newton-Schulz condition number not compressed: {cond_ns} (original was {cond_orig})")
+        self.assertLess(
+            cond_ns,
+            2.0,
+            f"Newton-Schulz condition number not compressed: {cond_ns} (original was {cond_orig})",
+        )
 
         # 2. Verify singular values are tightly centered around ~1.0
         self.assertGreater(s_ns.min().item(), 0.5)
@@ -330,7 +333,11 @@ class TestMuonOptimizerAndNewtonSchulz(unittest.TestCase):
         # 3. Check off-diagonal orthogonality of U @ U.T
         I_approx = U @ U.T
         off_diag = (I_approx - torch.diag(torch.diag(I_approx))).abs().max().item()
-        self.assertLess(off_diag, 0.2, f"Newton-Schulz off-diagonal correlation too high: {off_diag}")
+        self.assertLess(
+            off_diag,
+            0.2,
+            f"Newton-Schulz off-diagonal correlation too high: {off_diag}",
+        )
 
         # Test rectangular matrix (rows < cols)
         G_rect = torch.randn(32, 64)
@@ -348,15 +355,15 @@ class TestMuonOptimizerAndNewtonSchulz(unittest.TestCase):
         w_orig = w.clone().detach()
 
         # Synthetic loss and gradient
-        loss = (w ** 2).sum()
+        loss = (w**2).sum()
         loss.backward()
 
         opt.step()
 
         # Parameters should have changed
         self.assertFalse(torch.equal(w, w_orig))
-        self.assertIn('momentum_buffer', opt.state[w])
-        self.assertEqual(opt.state[w]['momentum_buffer'].shape, (32, 32))
+        self.assertIn("momentum_buffer", opt.state[w])
+        self.assertEqual(opt.state[w]["momentum_buffer"].shape, (32, 32))
 
     def test_dual_optimizer_routing(self):
         """Test configure_optimizers routes 2D weights to Muon and 1D/embeddings to AdamW."""
@@ -379,7 +386,7 @@ class TestMuonOptimizerAndNewtonSchulz(unittest.TestCase):
 
         # Verify all parameters in Muon are strictly 2D
         for group in muon_opt.param_groups:
-            for p in group['params']:
+            for p in group["params"]:
                 self.assertEqual(p.dim(), 2)
 
 
@@ -442,6 +449,7 @@ class TestCheckpointingAndResumption(unittest.TestCase):
     def test_checkpoint_save_and_restore(self):
         """Verify that checkpoint state dictionary restores exact weights and outputs."""
         import tempfile
+
         config = GPTConfig(n_layer=2, n_head=4, n_embd=64, vocab_size=500)
         model1 = GPT(config)
         opt1 = torch.optim.AdamW(model1.parameters(), lr=1e-3)
@@ -497,6 +505,7 @@ class TestPretrainedHuggingFaceWeights(unittest.TestCase):
 
         # Test prompt
         import tiktoken
+
         enc = tiktoken.get_encoding("gpt2")
         tokens = enc.encode("Hello, my name is Axiom and I build")
         input_ids = torch.tensor(tokens, dtype=torch.long).unsqueeze(0)
@@ -507,7 +516,9 @@ class TestPretrainedHuggingFaceWeights(unittest.TestCase):
 
         # Logits should match within numerical precision (atol=1e-4)
         max_diff = (logits_custom - logits_hf).abs().max().item()
-        self.assertLess(max_diff, 1e-3, f"HF weights logit mismatch: max diff {max_diff}")
+        self.assertLess(
+            max_diff, 1e-3, f"HF weights logit mismatch: max diff {max_diff}"
+        )
 
 
 class TestSystemsProfilingAndMFU(unittest.TestCase):
@@ -558,6 +569,7 @@ class TestSystemsProfilingAndMFU(unittest.TestCase):
     def test_profiler_creation(self):
         """Verify PyTorch profiler instance initializes without error."""
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmpdir:
             prof = create_profiler(tmpdir)
             self.assertIsNotNone(prof)
@@ -592,7 +604,9 @@ class TestAdvancedSamplingAndCheckpointing(unittest.TestCase):
         """Test repetition penalty discounts previously seen tokens."""
         logits = torch.tensor([[5.0, 4.9, 1.0]])
         prev_tokens = torch.tensor([[0]])
-        out = sample_logits(logits, temperature=0.0, repetition_penalty=2.0, prev_tokens=prev_tokens)
+        out = sample_logits(
+            logits, temperature=0.0, repetition_penalty=2.0, prev_tokens=prev_tokens
+        )
         self.assertEqual(out[0].item(), 1)
 
     def test_gradient_checkpointing_forward_backward(self):
@@ -624,6 +638,7 @@ class TestWebInterfaceAndApp(unittest.TestCase):
     def test_app_build_blocks(self):
         """Verify Gradio blocks application instantiates with all components without errors."""
         import app
+
         demo = app.build_app()
         self.assertIsNotNone(demo)
         self.assertEqual(demo.title, "AxiomLM (124M)")
@@ -631,10 +646,15 @@ class TestWebInterfaceAndApp(unittest.TestCase):
     def test_app_stream_inference_generation(self):
         """Verify stream_inference yields progressive text, probability inspector, and telemetry."""
         import app
+
         gen = app.stream_inference(
             prompt="The quick brown fox",
             source_type="local",
-            custom_checkpoint="checkpoints/model_latest.pt" if os.path.exists("checkpoints/model_latest.pt") else "",
+            custom_checkpoint=(
+                "checkpoints/model_latest.pt"
+                if os.path.exists("checkpoints/model_latest.pt")
+                else ""
+            ),
             arch="modern",
             max_tokens=6,
             temperature=0.8,
@@ -654,10 +674,15 @@ class TestWebInterfaceAndApp(unittest.TestCase):
     def test_app_side_by_side_benchmark_generator(self):
         """Verify stream_side_by_side_benchmark yields dual stream and markdown summary table."""
         import app
+
         gen = app.stream_side_by_side_benchmark(
             prompt="Hello world",
             source_type="local",
-            custom_checkpoint="checkpoints/model_latest.pt" if os.path.exists("checkpoints/model_latest.pt") else "",
+            custom_checkpoint=(
+                "checkpoints/model_latest.pt"
+                if os.path.exists("checkpoints/model_latest.pt")
+                else ""
+            ),
             arch="modern",
             num_tokens=6,
         )
@@ -672,6 +697,7 @@ class TestWebInterfaceAndApp(unittest.TestCase):
     def test_app_cloud_savings_calculator(self):
         """Verify calculate_cloud_savings generates valid triton kernel, math notes, and cost markdown table."""
         import app
+
         triton_code, math_md, cost_md = app.calculate_cloud_savings(
             num_gpus=64,
             gpu_cost_hr=3.20,
@@ -690,27 +716,39 @@ class TestHuggingFaceExport(unittest.TestCase):
         """Verify that export_checkpoint_to_hf generates valid .safetensors, config.json, and metadata."""
         import tempfile
         from safetensors.torch import load_file
-        from axiomlm.engine import export_checkpoint_to_hf
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create dummy checkpoint
             cfg = GPTConfig(n_layer=2, n_head=4, n_embd=64, vocab_size=500)
             model = GPT(cfg)
             ckpt_path = os.path.join(tmpdir, "test_model.pt")
-            torch.save({
-                "step": 100,
-                "model_state_dict": model.state_dict(),
-                "config": cfg,
-            }, ckpt_path)
+            torch.save(
+                {
+                    "step": 100,
+                    "model_state_dict": model.state_dict(),
+                    "config": cfg,
+                },
+                ckpt_path,
+            )
 
             export_dir = os.path.join(tmpdir, "hf_export")
-            export_checkpoint_to_hf(checkpoint_path=ckpt_path, output_dir=export_dir, model_name="TestAxiomLM")
+            export_checkpoint_to_hf(
+                checkpoint_path=ckpt_path,
+                output_dir=export_dir,
+                model_name="TestAxiomLM",
+            )
 
             # Check files exist
-            self.assertTrue(os.path.exists(os.path.join(export_dir, "model.safetensors")))
+            self.assertTrue(
+                os.path.exists(os.path.join(export_dir, "model.safetensors"))
+            )
             self.assertTrue(os.path.exists(os.path.join(export_dir, "config.json")))
-            self.assertTrue(os.path.exists(os.path.join(export_dir, "generation_config.json")))
-            self.assertTrue(os.path.exists(os.path.join(export_dir, "tokenizer_config.json")))
+            self.assertTrue(
+                os.path.exists(os.path.join(export_dir, "generation_config.json"))
+            )
+            self.assertTrue(
+                os.path.exists(os.path.join(export_dir, "tokenizer_config.json"))
+            )
             self.assertTrue(os.path.exists(os.path.join(export_dir, "README.md")))
 
             # Verify safetensors weights can be loaded
@@ -735,6 +773,7 @@ class TestMultiShardDataLoader(unittest.TestCase):
     def test_shard_boundary_transition_and_wrap(self):
         """Verify DataLoaderLite seamlessly transitions across shard boundaries and wraps around."""
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create 3 tiny mock shards (500 tokens each)
             enc = np.arange(1500, dtype=np.uint16)
@@ -743,7 +782,14 @@ class TestMultiShardDataLoader(unittest.TestCase):
             enc[1000:1500].tofile(os.path.join(tmpdir, "train_0002.bin"))
 
             # B=2, T=10 -> 20 tokens per batch
-            loader = DataLoaderLite(B=2, T=10, process_rank=0, num_processes=1, split="train", data_dir=tmpdir)
+            loader = DataLoaderLite(
+                B=2,
+                T=10,
+                process_rank=0,
+                num_processes=1,
+                split="train",
+                data_dir=tmpdir,
+            )
             self.assertEqual(len(loader.shards), 3)
 
             # Collect tokens across 35 batches (700 tokens > shard size of 500)
@@ -761,15 +807,25 @@ class TestMultiShardDataLoader(unittest.TestCase):
     def test_dataloader_reset_and_epoch_counting(self):
         """Verify reset function restores stream state to initial shard and offset."""
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmpdir:
             enc = np.arange(600, dtype=np.uint16)
             enc.tofile(os.path.join(tmpdir, "train.bin"))
 
-            loader = DataLoaderLite(B=2, T=8, process_rank=0, num_processes=1, split="train", data_dir=tmpdir)
+            loader = DataLoaderLite(
+                B=2,
+                T=8,
+                process_rank=0,
+                num_processes=1,
+                split="train",
+                data_dir=tmpdir,
+            )
             x1, _ = loader.next_batch()
             loader.reset()
             x2, _ = loader.next_batch()
-            self.assertTrue(torch.equal(x1, x2), "Reset should replay exact initial batch.")
+            self.assertTrue(
+                torch.equal(x1, x2), "Reset should replay exact initial batch."
+            )
 
 
 class TestAdvancedSamplingAndInference(unittest.TestCase):
@@ -793,37 +849,88 @@ class TestAdvancedSamplingAndInference(unittest.TestCase):
 
         # With extreme repetition penalty (5.0) on token 0: 10.0 / 5.0 = 2.0 < 5.0 (token 1)
         gen_tokens = torch.tensor([[0]])
-        tok_penalized = sample_logits(logits.clone(), temperature=0.0, repetition_penalty=5.0, prev_tokens=gen_tokens)
-        self.assertEqual(tok_penalized.item(), 1, "Token 1 should be selected after penalizing token 0.")
+        tok_penalized = sample_logits(
+            logits.clone(),
+            temperature=0.0,
+            repetition_penalty=5.0,
+            prev_tokens=gen_tokens,
+        )
+        self.assertEqual(
+            tok_penalized.item(),
+            1,
+            "Token 1 should be selected after penalizing token 0.",
+        )
 
     def test_kv_cache_state_reset_and_reuse(self):
         """Verify that reusing the model with and without cache reset produces deterministic outputs."""
         import tiktoken
+
         enc = tiktoken.get_encoding("gpt2")
-        cfg = GPTConfig(n_layer=2, n_head=4, n_kv_head=2, n_embd=64, vocab_size=50304, norm_type="rmsnorm", pos_emb="rope", mlp_type="swiglu")
+        cfg = GPTConfig(
+            n_layer=2,
+            n_head=4,
+            n_kv_head=2,
+            n_embd=64,
+            vocab_size=50304,
+            norm_type="rmsnorm",
+            pos_emb="rope",
+            mlp_type="swiglu",
+        )
         model = GPT(cfg)
         model.eval()
 
-        samples1 = generate_with_cache(model, enc, device="cpu", prompt="def forward", max_length=15, temperature=0.0)
-        samples2 = generate_with_cache(model, enc, device="cpu", prompt="def forward", max_length=15, temperature=0.0)
-        self.assertEqual(samples1, samples2, "Consecutive cached generations must be 100% deterministic.")
+        samples1 = generate_with_cache(
+            model,
+            enc,
+            device="cpu",
+            prompt="def forward",
+            max_length=15,
+            temperature=0.0,
+        )
+        samples2 = generate_with_cache(
+            model,
+            enc,
+            device="cpu",
+            prompt="def forward",
+            max_length=15,
+            temperature=0.0,
+        )
+        self.assertEqual(
+            samples1,
+            samples2,
+            "Consecutive cached generations must be 100% deterministic.",
+        )
 
     def test_directory_safetensors_and_config_loading(self):
         """Verify generate.py load_model correctly loads exported directories."""
         import tempfile
-        from axiomlm.engine import export_checkpoint_to_hf, load_model
+        from axiomlm.engine import load_model
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = GPTConfig(n_layer=2, n_head=4, n_kv_head=2, n_embd=64, vocab_size=300, norm_type="rmsnorm", pos_emb="rope", mlp_type="swiglu")
+            cfg = GPTConfig(
+                n_layer=2,
+                n_head=4,
+                n_kv_head=2,
+                n_embd=64,
+                vocab_size=300,
+                norm_type="rmsnorm",
+                pos_emb="rope",
+                mlp_type="swiglu",
+            )
             model = GPT(cfg)
             ckpt_path = os.path.join(tmpdir, "model.pt")
-            torch.save({"model_state_dict": model.state_dict(), "config": cfg, "step": 42}, ckpt_path)
+            torch.save(
+                {"model_state_dict": model.state_dict(), "config": cfg, "step": 42},
+                ckpt_path,
+            )
 
             export_dir = os.path.join(tmpdir, "hf_dir")
             export_checkpoint_to_hf(ckpt_path, export_dir, "TestModel")
 
             # Load from directory path
-            loaded_model, loaded_cfg = load_model(checkpoint_path=export_dir, arch="modern", device="cpu")
+            loaded_model, loaded_cfg = load_model(
+                checkpoint_path=export_dir, arch="modern", device="cpu"
+            )
             self.assertEqual(loaded_cfg.n_layer, 2)
             self.assertEqual(loaded_cfg.n_kv_head, 2)
             self.assertEqual(loaded_cfg.norm_type, "rmsnorm")
@@ -841,22 +948,40 @@ class TestOptimizerSchedulingAndInvariants(unittest.TestCase):
 
     def test_cosine_learning_rate_schedule(self):
         """Verify learning rate schedule correctly executes warmup, cosine decay, and min_lr floor."""
-        from axiomlm.optim import get_lr
+
         max_lr = 6e-4
         min_lr = max_lr * 0.1
         warmup_steps = 100
         max_steps = 1000
 
         # Step 0: lr starts at zero / initial ramp
-        lr_0 = get_lr(0, warmup_steps=warmup_steps, max_steps=max_steps, max_lr=max_lr, min_lr=min_lr)
+        lr_0 = get_lr(
+            0,
+            warmup_steps=warmup_steps,
+            max_steps=max_steps,
+            max_lr=max_lr,
+            min_lr=min_lr,
+        )
         self.assertAlmostEqual(lr_0, max_lr / (warmup_steps + 1), delta=1e-5)
 
         # Step = warmup_steps: reaches peak max_lr
-        lr_warmup = get_lr(warmup_steps, warmup_steps=warmup_steps, max_steps=max_steps, max_lr=max_lr, min_lr=min_lr)
+        lr_warmup = get_lr(
+            warmup_steps,
+            warmup_steps=warmup_steps,
+            max_steps=max_steps,
+            max_lr=max_lr,
+            min_lr=min_lr,
+        )
         self.assertAlmostEqual(lr_warmup, max_lr, places=5)
 
         # Step > max_steps: strictly bounded by min_lr floor
-        lr_end = get_lr(max_steps + 50, warmup_steps=warmup_steps, max_steps=max_steps, max_lr=max_lr, min_lr=min_lr)
+        lr_end = get_lr(
+            max_steps + 50,
+            warmup_steps=warmup_steps,
+            max_steps=max_steps,
+            max_lr=max_lr,
+            min_lr=min_lr,
+        )
         self.assertEqual(lr_end, min_lr)
 
     def test_tied_weight_gradient_flow(self):
@@ -880,6 +1005,7 @@ class TestTopLevelAxiomLMPackageAPI(unittest.TestCase):
     def test_top_level_package_imports(self):
         """Verify import axiomlm as ax and version inspection."""
         import axiomlm as ax
+
         self.assertTrue(hasattr(ax, "__version__"))
         self.assertEqual(ax.__version__, "0.1.0")
         self.assertTrue(hasattr(ax, "Transformer"))
@@ -892,7 +1018,10 @@ class TestTopLevelAxiomLMPackageAPI(unittest.TestCase):
     def test_transformer_instantiation_via_package(self):
         """Verify Transformer forward and loss computation via top-level ax."""
         import axiomlm as ax
-        config = ax.ModelConfig(arch="modern", n_layer=2, n_head=4, n_embd=64, vocab_size=500)
+
+        config = ax.ModelConfig(
+            arch="modern", n_layer=2, n_head=4, n_embd=64, vocab_size=500
+        )
         model = ax.Transformer(config)
         self.assertEqual(model.config.norm_type, "rmsnorm")
         self.assertEqual(model.config.pos_emb, "rope")
@@ -906,7 +1035,10 @@ class TestTopLevelAxiomLMPackageAPI(unittest.TestCase):
     def test_inference_engine_via_package(self):
         """Verify InferenceEngine generation and streaming via top-level ax."""
         import axiomlm as ax
-        config = ax.ModelConfig(arch="modern", n_layer=2, n_head=4, n_embd=64, vocab_size=50304)
+
+        config = ax.ModelConfig(
+            arch="modern", n_layer=2, n_head=4, n_embd=64, vocab_size=50304
+        )
         model = ax.Transformer(config)
         engine = ax.InferenceEngine(model, device="cpu")
 
@@ -922,7 +1054,10 @@ class TestTopLevelAxiomLMPackageAPI(unittest.TestCase):
     def test_muon_optimizer_via_package(self):
         """Verify ax.optim.Muon dual routing via top-level ax."""
         import axiomlm as ax
-        config = ax.ModelConfig(arch="modern", n_layer=2, n_head=4, n_embd=64, vocab_size=500)
+
+        config = ax.ModelConfig(
+            arch="modern", n_layer=2, n_head=4, n_embd=64, vocab_size=500
+        )
         model = ax.Transformer(config)
         optimizers = model.configure_optimizers(optimizer_type="muon", muon_lr=0.02)
         self.assertEqual(len(optimizers), 2)
@@ -932,5 +1067,3 @@ class TestTopLevelAxiomLMPackageAPI(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-
-

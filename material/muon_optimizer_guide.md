@@ -75,10 +75,10 @@ Muon is mathematically designed for **2D linear transformations**. Applying orth
 graph TD
     P[Model Parameters] --> M[2D Internal Weight Matrices]
     P --> A[1D Vectors & Embeddings]
-    
+
     M --> |Attention Q/K/V/Out, MLP Projections| MUON[Muon Matrix Optimizer]
     MUON --> |lr = 0.02, Orthogonal Updates| W1[Rotated Weight Matrices]
-    
+
     A --> |Embeddings wte/wpe, RMSNorm scales, Biases| ADAMW[AdamW Vector Optimizer]
     ADAMW --> |lr = 6e-4, Coordinate Updates| W2[Scaled Vector Parameters]
 ```
@@ -117,18 +117,18 @@ def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5, eps: float = 1e
     a, b, c = (3.4445, -4.7750, 2.0315)
     X = G.bfloat16() if G.dtype == torch.bfloat16 else G.float()
     X = X / (X.norm() + eps)
-    
+
     if G.size(0) > G.size(1):
         X = X.T
-        
+
     for _ in range(steps):
         A = X @ X.T
         B = b * A + c * (A @ A)
         X = a * X + B @ X
-        
+
     if G.size(0) > G.size(1):
         X = X.T
-        
+
     return X.type_as(G)
 
 
@@ -186,4 +186,3 @@ Controlled pretraining benchmarks on TinyStories (20M tokens) demonstrate signif
 * **Convergence Speedup**: Reaches target validation cross-entropy loss ($L = 3.5$) in **1,420 steps** with Muon + Modern Spec vs. **2,450 steps** with AdamW baseline (**~42% reduction in pretraining steps**).
 * **Gradient Stability**: Eliminates loss spikes during early training phases due to orthogonal normalization bounding update norms.
 * **Hardware Efficiency**: Newton-Schulz matmuls execute in BF16 directly on systolic matrix units, adding less than 2% runtime overhead per step while saving 40%+ total compute steps.
-

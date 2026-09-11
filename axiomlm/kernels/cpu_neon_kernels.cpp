@@ -170,14 +170,14 @@ rmsnorm_backward_neon(torch::Tensor grad_y, torch::Tensor x,
 
 // Vectorized exponential approximation for float32x4_t
 inline float32x4_t vexpq_f32_approx(float32x4_t x) {
-    float32x4_t x_log2 = vmulq_f32(x, vdupq_n_f32(1.4426950408889634f)); 
+    float32x4_t x_log2 = vmulq_f32(x, vdupq_n_f32(1.4426950408889634f));
     x_log2 = vmaxq_f32(x_log2, vdupq_n_f32(-126.0f));
     x_log2 = vminq_f32(x_log2, vdupq_n_f32(126.0f));
 
     // round to nearest integer
     int32x4_t n = vcvtnq_s32_f32(x_log2);
     float32x4_t n_f = vcvtq_f32_s32(n);
-    
+
     // fractional part
     float32x4_t f = vsubq_f32(x_log2, n_f);
 
@@ -185,7 +185,7 @@ inline float32x4_t vexpq_f32_approx(float32x4_t x) {
     poly = vmlaq_f32(vdupq_n_f32(0.693147f), f, poly);
     poly = vmlaq_f32(vdupq_n_f32(1.0f), f, poly);
 
-    int32x4_t n_shifted = vshlq_n_s32(n, 23); 
+    int32x4_t n_shifted = vshlq_n_s32(n, 23);
     n_shifted = vaddq_s32(n_shifted, vdupq_n_s32(127 << 23));
     float32x4_t two_to_n = vreinterpretq_f32_s32(n_shifted);
 
@@ -270,7 +270,7 @@ swiglu_backward_neon(torch::Tensor grad_y, torch::Tensor gate,
 
       float32x4_t sig = vsigmoidq_f32(g);
       float32x4_t silu_g = vmulq_f32(g, sig);
-      
+
       // grad_up = gy * silu_g
       float32x4_t gu = vmulq_f32(gy, silu_g);
       vst1q_f32(gu_ptr + i, gu);
@@ -279,7 +279,7 @@ swiglu_backward_neon(torch::Tensor grad_y, torch::Tensor gate,
       float32x4_t one_minus_sig = vsubq_f32(vdupq_n_f32(1.0f), sig);
       float32x4_t d_silu = vmlaq_f32(vdupq_n_f32(1.0f), g, one_minus_sig);
       d_silu = vmulq_f32(sig, d_silu);
-      
+
       // grad_gate = gy * u * d_silu
       float32x4_t gg = vmulq_f32(vmulq_f32(gy, u), d_silu);
       vst1q_f32(gg_ptr + i, gg);

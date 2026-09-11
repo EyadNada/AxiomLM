@@ -23,7 +23,7 @@ A comprehensive lecture breakdown, notes, architectural analysis, and study guid
 
 ```
                                STANFORD CS25 (KARPATHY) ROADMAP
-                               
+
 ┌─────────────────────────┐     ┌─────────────────────────┐     ┌─────────────────────────┐
 │  Historical Evolution   │ ──► │ Attention Core Machine  │ ──► │  Self vs Cross-Attn     │
 │  (RNNs ➔ Transformers)  │     │   (Q, K, V Mechanics)   │     │ (Enc-Dec vs Dec-Only)   │

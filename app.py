@@ -7,7 +7,7 @@ multi-candidate probability inspector, and live streaming duel benchmark.
 import os
 import sys
 import time
-from typing import Generator, Tuple, Optional, List
+from typing import Generator, Tuple
 import tiktoken
 import torch
 import torch.nn.functional as F
@@ -17,13 +17,13 @@ import gradio as gr
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import __main__
 from axiomlm import (
-    Transformer,
     ModelConfig,
     GPT,
     GPTConfig,
     sample_logits,
     load_model,
 )
+
 if not hasattr(__main__, "GPTConfig"):
     setattr(__main__, "GPTConfig", GPTConfig)
 if not hasattr(__main__, "ModelConfig"):
@@ -48,21 +48,29 @@ ENCODER = tiktoken.get_encoding("gpt2")
 _MODEL_CACHE = {}
 
 
-def get_or_load_model(source_type: str, checkpoint_path: str, arch: str) -> Tuple[GPT, GPTConfig]:
+def get_or_load_model(
+    source_type: str, checkpoint_path: str, arch: str
+) -> Tuple[GPT, GPTConfig]:
     """Retrieves cached model or loads from disk/HuggingFace."""
     cache_key = f"{source_type}:{checkpoint_path}:{arch}"
     if cache_key in _MODEL_CACHE:
         return _MODEL_CACHE[cache_key]
 
     if source_type == "pretrained_gpt2":
-        model, config = load_model(checkpoint_path=None, pretrained="gpt2", arch="classic", device=DEVICE)
+        model, config = load_model(
+            checkpoint_path=None, pretrained="gpt2", arch="classic", device=DEVICE
+        )
     else:
         actual_path = checkpoint_path.strip()
         if actual_path and (os.path.isfile(actual_path) or os.path.isdir(actual_path)):
-            model, config = load_model(checkpoint_path=actual_path, pretrained=None, arch=arch, device=DEVICE)
+            model, config = load_model(
+                checkpoint_path=actual_path, pretrained=None, arch=arch, device=DEVICE
+            )
         else:
             # Fallback for fresh clones / CI runners where checkpoint weights are not stored in git
-            print(f"[AxiomLM] Checkpoint not found at '{actual_path}'; initializing fresh {arch} in-memory instance.")
+            print(
+                f"[AxiomLM] Checkpoint not found at '{actual_path}'; initializing fresh {arch} in-memory instance."
+            )
             config = GPTConfig(
                 block_size=1024,
                 vocab_size=50304,
@@ -119,7 +127,11 @@ def stream_inference(
         yield "", "Top Candidates:\n  Waiting for input...", "Error: Prompt cannot be empty."
         return
 
-    checkpoint_target = custom_checkpoint if custom_checkpoint.strip() else "checkpoints/model_latest.pt"
+    checkpoint_target = (
+        custom_checkpoint
+        if custom_checkpoint.strip()
+        else "checkpoints/model_latest.pt"
+    )
 
     try:
         model, config = get_or_load_model(source_type, checkpoint_target, arch)
@@ -207,7 +219,9 @@ def stream_inference(
                 t_now = time.perf_counter()
                 dt = t_now - t_start
                 throughput = tokens_generated / dt if dt > 0 else 0.0
-                latency = (dt / tokens_generated) * 1000.0 if tokens_generated > 0 else 0.0
+                latency = (
+                    (dt / tokens_generated) * 1000.0 if tokens_generated > 0 else 0.0
+                )
                 progress_pct = (tokens_generated / effective_max_tokens) * 100.0
                 telemetry = (
                     f"• Decoded Tokens:   {tokens_generated:3d} / {effective_max_tokens} ({progress_pct:4.1f}%)   |  Step Latency: {latency:5.1f} ms/token\n"
@@ -244,7 +258,9 @@ def stream_inference(
                 t_now = time.perf_counter()
                 dt = t_now - t_start
                 throughput = tokens_generated / dt if dt > 0 else 0.0
-                latency = (dt / tokens_generated) * 1000.0 if tokens_generated > 0 else 0.0
+                latency = (
+                    (dt / tokens_generated) * 1000.0 if tokens_generated > 0 else 0.0
+                )
                 progress_pct = (tokens_generated / effective_max_tokens) * 100.0
                 telemetry = (
                     f"• Decoded Tokens:   {tokens_generated:3d} / {effective_max_tokens} ({progress_pct:4.1f}%)   |  Step Latency: {latency:5.1f} ms/token\n"
@@ -263,7 +279,9 @@ def stream_inference(
     t_end = time.perf_counter()
     dt_total = t_end - t_start
     throughput_final = tokens_generated / dt_total if dt_total > 0 else 0.0
-    latency_final = (dt_total / tokens_generated) * 1000.0 if tokens_generated > 0 else 0.0
+    latency_final = (
+        (dt_total / tokens_generated) * 1000.0 if tokens_generated > 0 else 0.0
+    )
     telemetry_final = (
         f"• Status:           COMPLETED ({tokens_generated} tokens in {dt_total:.2f}s)\n"
         f"• Average Latency:  {latency_final:5.1f} ms/token          |  Overall Throughput: {throughput_final:5.1f} tokens/second\n"
@@ -290,7 +308,11 @@ def stream_side_by_side_benchmark(
         yield "", "", "Status: Prompt is empty.", "Status: Prompt is empty.", "Please provide a valid prompt."
         return
 
-    checkpoint_target = custom_checkpoint if custom_checkpoint.strip() else "checkpoints/model_latest.pt"
+    checkpoint_target = (
+        custom_checkpoint
+        if custom_checkpoint.strip()
+        else "checkpoints/model_latest.pt"
+    )
     try:
         model, config = get_or_load_model(source_type, checkpoint_target, arch)
     except Exception as err:
@@ -304,20 +326,28 @@ def stream_side_by_side_benchmark(
 
     # Bound actual tokens to remaining context capacity
     actual_num_tokens = min(num_tokens, config.block_size - len(input_ids))
-    clamped_notice = f" (Clamped to {actual_num_tokens} tokens for context window)" if actual_num_tokens < num_tokens else ""
+    clamped_notice = (
+        f" (Clamped to {actual_num_tokens} tokens for context window)"
+        if actual_num_tokens < num_tokens
+        else ""
+    )
 
     x_init = torch.tensor(input_ids, dtype=torch.long, device=DEVICE).unsqueeze(0)
 
     text_cache = prompt
     text_naive = prompt
-    status_cache = "• Status:       Initializing...\n• Step Latency: Ready\n• Throughput:   Ready"
+    status_cache = (
+        "• Status:       Initializing...\n• Step Latency: Ready\n• Throughput:   Ready"
+    )
     status_naive = "• Status:       WAITING (Queued for Phase 2)...\n• Step Latency: Ready\n• Throughput:   Ready"
     summary_md = f"Executing Phase 1: Hardware-Accelerated O(1) Key-Value Cache Engine ({actual_num_tokens} tokens){clamped_notice}..."
 
     yield text_cache, text_naive, status_cache, status_naive, summary_md
 
     # Adaptive yield stride to ensure fluid 60fps browser rendering without SSE queue lag
-    yield_stride = 1 if actual_num_tokens <= 120 else (2 if actual_num_tokens <= 300 else 4)
+    yield_stride = (
+        1 if actual_num_tokens <= 120 else (2 if actual_num_tokens <= 300 else 4)
+    )
 
     try:
         # =========================================================================
@@ -360,7 +390,9 @@ def stream_side_by_side_benchmark(
                     dt_c_live = t_now - t0_cache
                     toks_done = step_i + 1
                     tok_s_curr = toks_done / dt_c_live if dt_c_live > 0 else 0.0
-                    ms_tok_curr = (dt_c_live / toks_done) * 1000.0 if toks_done > 0 else 0.0
+                    ms_tok_curr = (
+                        (dt_c_live / toks_done) * 1000.0 if toks_done > 0 else 0.0
+                    )
                     status_cache = (
                         f"• Status:       RUNNING (Token {toks_done}/{actual_num_tokens})\n"
                         f"• Step Latency: {ms_tok_curr:5.1f} ms/token (Flat O(1))\n"
@@ -376,7 +408,9 @@ def stream_side_by_side_benchmark(
         t1_cache = time.perf_counter()
         dt_cache = t1_cache - t0_cache
         tok_s_cache = actual_num_tokens / dt_cache if dt_cache > 0 else 0.0
-        ms_tok_cache = (dt_cache / actual_num_tokens) * 1000.0 if actual_num_tokens > 0 else 0.0
+        ms_tok_cache = (
+            (dt_cache / actual_num_tokens) * 1000.0 if actual_num_tokens > 0 else 0.0
+        )
 
         status_cache = (
             f"• Status:       FINISHED (1st Place)\n"
@@ -410,7 +444,9 @@ def stream_side_by_side_benchmark(
                     dt_n_live = t_now - t0_naive
                     toks_done = step_j + 1
                     tok_s_curr = toks_done / dt_n_live if dt_n_live > 0 else 0.0
-                    ms_tok_curr = (dt_n_live / toks_done) * 1000.0 if toks_done > 0 else 0.0
+                    ms_tok_curr = (
+                        (dt_n_live / toks_done) * 1000.0 if toks_done > 0 else 0.0
+                    )
                     status_naive = (
                         f"• Status:       RUNNING (Token {toks_done}/{actual_num_tokens})\n"
                         f"• Step Latency: {ms_tok_curr:5.1f} ms/token (Degrading O(T²))\n"
@@ -426,7 +462,9 @@ def stream_side_by_side_benchmark(
         t1_naive = time.perf_counter()
         dt_naive = t1_naive - t0_naive
         tok_s_naive = actual_num_tokens / dt_naive if dt_naive > 0 else 0.0
-        ms_tok_naive = (dt_naive / actual_num_tokens) * 1000.0 if actual_num_tokens > 0 else 0.0
+        ms_tok_naive = (
+            (dt_naive / actual_num_tokens) * 1000.0 if actual_num_tokens > 0 else 0.0
+        )
 
         status_naive = (
             f"• Status:       FINISHED\n"
@@ -435,7 +473,9 @@ def stream_side_by_side_benchmark(
         )
 
         speedup = dt_naive / dt_cache if dt_cache > 0 else 1.0
-        latency_reduction = (1.0 - ms_tok_cache / ms_tok_naive) * 100.0 if ms_tok_naive > 0 else 0.0
+        latency_reduction = (
+            (1.0 - ms_tok_cache / ms_tok_naive) * 100.0 if ms_tok_naive > 0 else 0.0
+        )
 
         summary_md = f"""
 ### Empirical Benchmark Results: KV-Cache Engine is {speedup:.2f}x Faster!
@@ -477,16 +517,16 @@ def _rmsnorm_fwd_kernel(
     row_idx = tl.program_id(0)
     cols = tl.arange(0, BLOCK_SIZE)
     mask = cols < N
-    
+
     # Load directly into fast on-chip SRAM register file
     x = tl.load(X_ptr + row_idx * stride_row + cols, mask=mask, other=0.0).to(tl.float32)
     w = tl.load(W_ptr + cols, mask=mask, other=0.0).to(tl.float32)
-    
+
     # Online RMS calculation in registers (Zero intermediate HBM round-trips)
     var = tl.sum(x * x, axis=0) / N
     rsqrt = 1.0 / tl.sqrt(var + eps)
     y = x * rsqrt * w
-    
+
     tl.store(Y_ptr + row_idx * stride_row + cols, y.to(tl.float16), mask=mask)
 
 def triton_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -499,7 +539,7 @@ def triton_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> 
         "math_explanation": """### Architecture Analysis: Fused RMSNorm vs Standard LayerNorm
 * **Standard PyTorch**: 3 separate High-Bandwidth Memory (HBM) read/write round-trips ($x^2 \\to \\text{mean} \\to \\text{rsqrt} \\to y$).
 * **AxiomLM Fused Triton**: 1 single SRAM register pass. Eliminates 74% of memory bandwidth bottlenecks on Tensor Cores.
-"""
+""",
     },
     "Fused SwiGLU (Swish-Gated Linear Unit FFN)": {
         "speedup": "3.42x",
@@ -519,15 +559,15 @@ def _swiglu_fwd_kernel(
     row_idx = tl.program_id(0)
     cols = tl.arange(0, BLOCK_SIZE)
     mask = cols < N
-    
+
     # Fused SRAM register load of Gate and Up projections
     g = tl.load(Gate_ptr + row_idx * stride_m + cols, mask=mask, other=0.0).to(tl.float32)
     u = tl.load(Up_ptr + row_idx * stride_m + cols, mask=mask, other=0.0).to(tl.float32)
-    
+
     # Fast SiLU(g) * u in registers
     silu_g = g * (1.0 / (1.0 + tl.exp(-g)))
     out = silu_g * u
-    
+
     tl.store(Out_ptr + row_idx * stride_m + cols, out.to(tl.float16), mask=mask)
 
 def triton_swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
@@ -540,7 +580,7 @@ def triton_swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
         "math_explanation": """### Architecture Analysis: Fused SwiGLU MLP
 * **Mathematical Formula**: $\\text{SwiGLU}(x) = (x W_{\\text{gate}} \\cdot \\sigma(x W_{\\text{gate}})) \\odot (x W_{\\text{up}})$
 * **Triton Optimization**: Fuses elementwise SiLU sigmoid and up-projection multiplication directly in SRAM registers.
-"""
+""",
     },
     "FlashAttention-Style Tiled Online Softmax": {
         "speedup": "4.20x",
@@ -566,24 +606,25 @@ def _flash_attn_fwd_kernel(
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_n = tl.arange(0, BLOCK_N)
     offs_d = tl.arange(0, BLOCK_DMODEL)
-    
+
     # Online Softmax scaling across SRAM threadgroup tiles
     # Keeps rolling max m_i and denominator l_i in registers
     pass
 """,
         "math_explanation": """### Architecture Analysis: Tiled Attention with Online Normalizer
 * **Complexity**: Reduces quadratic intermediate attention matrix $O(N^2)$ storage in HBM to linear $O(N)$ streaming tiles.
-"""
-    }
+""",
+    },
 }
+
 
 def calculate_cloud_savings(num_gpus: int, gpu_cost_hr: float, operator_name: str):
     info = KERNEL_CATALOG.get(operator_name, list(KERNEL_CATALOG.values())[0])
     speedup_mult = float(info["speedup"].replace("x", ""))
-    
+
     total_hours_month = 730
     baseline_cost = num_gpus * gpu_cost_hr * total_hours_month
-    
+
     effective_gain = 1.0 - (0.60 + 0.40 / speedup_mult)
     monthly_savings = baseline_cost * effective_gain
     annual_savings = monthly_savings * 12.0
@@ -845,9 +886,15 @@ def build_app():
                         )
 
                         with gr.Row():
-                            generate_btn = gr.Button("Generate Text", elem_classes=["primary-btn"], scale=4)
-                            stop_btn = gr.Button("Stop", elem_classes=["secondary-btn"], scale=1)
-                            clear_btn = gr.Button("Clear", elem_classes=["secondary-btn"], scale=1)
+                            generate_btn = gr.Button(
+                                "Generate Text", elem_classes=["primary-btn"], scale=4
+                            )
+                            stop_btn = gr.Button(
+                                "Stop", elem_classes=["secondary-btn"], scale=1
+                            )
+                            clear_btn = gr.Button(
+                                "Clear", elem_classes=["secondary-btn"], scale=1
+                            )
 
                         output_box = gr.Textbox(
                             label="Generated Output Stream",
@@ -876,10 +923,18 @@ def build_app():
 
                         gr.Examples(
                             examples=[
-                                ["import triton\nimport triton.language as tl\n\n@triton.jit\ndef _rmsnorm_fwd_kernel("],
-                                ["import torch\nimport torch.nn as nn\n\nclass SwiGLUMLP(nn.Module):"],
-                                ["class RooflineModel:\n    def __init__(self, peak_tflops: float, memory_bandwidth_gb_s: float):"],
-                                ["def calculate_mfu(model, tokens_per_sec, context_len, peak_tflops):"],
+                                [
+                                    "import triton\nimport triton.language as tl\n\n@triton.jit\ndef _rmsnorm_fwd_kernel("
+                                ],
+                                [
+                                    "import torch\nimport torch.nn as nn\n\nclass SwiGLUMLP(nn.Module):"
+                                ],
+                                [
+                                    "class RooflineModel:\n    def __init__(self, peak_tflops: float, memory_bandwidth_gb_s: float):"
+                                ],
+                                [
+                                    "def calculate_mfu(model, tokens_per_sec, context_len, peak_tflops):"
+                                ],
                             ],
                             inputs=prompt_box,
                             label="Prompt Presets (Systems ML & Code)",
@@ -890,7 +945,9 @@ def build_app():
                     if source == "local":
                         return gr.update(visible=True), gr.update(visible=True)
                     else:
-                        return gr.update(visible=False), gr.update(visible=False, value="classic")
+                        return gr.update(visible=False), gr.update(
+                            visible=False, value="classic"
+                        )
 
                 source_radio.change(
                     fn=on_source_change,
@@ -956,12 +1013,20 @@ def build_app():
                     )
 
                 with gr.Row():
-                    bm_run_btn = gr.Button("Start Live Execution Duel", elem_classes=["primary-btn"], scale=4)
-                    bm_stop_btn = gr.Button("Stop", elem_classes=["secondary-btn"], scale=1)
+                    bm_run_btn = gr.Button(
+                        "Start Live Execution Duel",
+                        elem_classes=["primary-btn"],
+                        scale=4,
+                    )
+                    bm_stop_btn = gr.Button(
+                        "Stop", elem_classes=["secondary-btn"], scale=1
+                    )
 
                 with gr.Row():
                     with gr.Column(scale=1):
-                        gr.Markdown("#### 1. Hardware KV-Cache Engine (O(1) Flat Latency)")
+                        gr.Markdown(
+                            "#### 1. Hardware KV-Cache Engine (O(1) Flat Latency)"
+                        )
                         bm_cache_out = gr.Textbox(
                             label="KV-Cache Generated Stream",
                             lines=8,
@@ -978,7 +1043,9 @@ def build_app():
                         )
 
                     with gr.Column(scale=1):
-                        gr.Markdown("#### 2. Naive Eager Engine (O(T²) Quadratic Degradation)")
+                        gr.Markdown(
+                            "#### 2. Naive Eager Engine (O(T²) Quadratic Degradation)"
+                        )
                         bm_naive_out = gr.Textbox(
                             label="Naive Eager Generated Stream",
                             lines=8,
@@ -994,7 +1061,9 @@ def build_app():
                             value="• Status:       Ready\n• Step Latency: Ready\n• Throughput:   Ready",
                         )
 
-                bm_summary_md = gr.Markdown("Click 'Start Live Execution Duel' to watch the real-time benchmark race.")
+                bm_summary_md = gr.Markdown(
+                    "Click 'Start Live Execution Duel' to watch the real-time benchmark race."
+                )
 
                 bm_event = bm_run_btn.click(
                     fn=stream_side_by_side_benchmark,
@@ -1005,7 +1074,13 @@ def build_app():
                         arch_radio,
                         bm_tokens_slider,
                     ],
-                    outputs=[bm_cache_out, bm_naive_out, bm_status_cache, bm_status_naive, bm_summary_md],
+                    outputs=[
+                        bm_cache_out,
+                        bm_naive_out,
+                        bm_status_cache,
+                        bm_status_naive,
+                        bm_summary_md,
+                    ],
                 )
 
                 bm_stop_btn.click(fn=None, cancels=[bm_event])
@@ -1043,10 +1118,15 @@ def build_app():
                                 step=0.10,
                                 label="Cloud GPU Rate ($/hr per GPU)",
                             )
-                        calculate_btn = gr.Button("Synthesize Fused GPU Kernel & Compute Savings", elem_classes=["primary-btn"])
+                        calculate_btn = gr.Button(
+                            "Synthesize Fused GPU Kernel & Compute Savings",
+                            elem_classes=["primary-btn"],
+                        )
 
                     with gr.Column(scale=5):
-                        cost_report_md = gr.Markdown("Select an operator and fleet size to calculate enterprise cloud savings.")
+                        cost_report_md = gr.Markdown(
+                            "Select an operator and fleet size to calculate enterprise cloud savings."
+                        )
 
                 with gr.Row():
                     with gr.Column(scale=1):
@@ -1059,7 +1139,9 @@ def build_app():
                         )
                     with gr.Column(scale=1):
                         gr.Markdown("#### Mathematical & Memory Bandwidth Derivation")
-                        math_expl_md = gr.Markdown(list(KERNEL_CATALOG.values())[0]["math_explanation"])
+                        math_expl_md = gr.Markdown(
+                            list(KERNEL_CATALOG.values())[0]["math_explanation"]
+                        )
 
                 calculate_btn.click(
                     fn=calculate_cloud_savings,

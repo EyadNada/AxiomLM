@@ -1,6 +1,7 @@
 """
 AxiomLM Accelerated Inference Engine & Text Generation CLI.
 """
+
 from typing import Optional, List, Tuple, Generator, Union, Any
 import os
 import sys
@@ -13,7 +14,7 @@ import tiktoken
 from .paged_cache import PagedKVCache, SequenceContext
 
 
-from ..models.transformer import Transformer, ModelConfig, GPT, GPTConfig
+from ..models.transformer import Transformer, ModelConfig
 
 
 def sample_logits(
@@ -36,7 +37,11 @@ def sample_logits(
         for b in range(B):
             unique_toks = torch.unique(prev_tokens[b])
             tok_logits = logits[b, unique_toks]
-            penalized = torch.where(tok_logits > 0, tok_logits / repetition_penalty, tok_logits * repetition_penalty)
+            penalized = torch.where(
+                tok_logits > 0,
+                tok_logits / repetition_penalty,
+                tok_logits * repetition_penalty,
+            )
             logits[b, unique_toks] = penalized
 
     if temperature <= 1e-4:
@@ -47,7 +52,7 @@ def sample_logits(
     if top_k is not None and top_k > 0:
         k = min(top_k, logits.size(-1))
         val, _ = torch.topk(logits, k)
-        logits[logits < val[:, [-1]]] = -float('Inf')
+        logits[logits < val[:, [-1]]] = -float("Inf")
 
     probs = F.softmax(logits, dim=-1)
 
@@ -90,7 +95,11 @@ def generate_samples(
     """Generates autoregressive text samples using standard eager re-computation (O(T^2))."""
     model.eval()
     tokens = enc.encode(prompt)
-    tokens = torch.tensor(tokens, dtype=torch.long, device=device).unsqueeze(0).repeat(num_samples, 1)
+    tokens = (
+        torch.tensor(tokens, dtype=torch.long, device=device)
+        .unsqueeze(0)
+        .repeat(num_samples, 1)
+    )
 
     while tokens.size(1) < max_length:
         with torch.no_grad():
@@ -132,7 +141,11 @@ def generate_with_cache(
     """
     model.eval()
     prompt_tokens = enc.encode(prompt)
-    x = torch.tensor(prompt_tokens, dtype=torch.long, device=device).unsqueeze(0).repeat(num_samples, 1)
+    x = (
+        torch.tensor(prompt_tokens, dtype=torch.long, device=device)
+        .unsqueeze(0)
+        .repeat(num_samples, 1)
+    )
 
     with torch.no_grad():
         if num_samples == 1:
@@ -143,13 +156,13 @@ def generate_with_cache(
                 n_kv_head=model.config.n_kv_head or model.config.n_head,
                 head_dim=model.config.n_embd // model.config.n_head,
                 dtype=torch.float32,
-                device=device
+                device=device,
             )
             seq_context = SequenceContext(paged_cache)
             kv_caches = [seq_context] * model.config.n_layer
         else:
             kv_caches = [None] * model.config.n_layer
-            
+
         logits, _, kv_caches = model(x, kv_caches=kv_caches)
 
         next_token = sample_logits(
@@ -192,11 +205,17 @@ def benchmark_generation_speed(
 ) -> None:
     """Benchmarks generation throughput (tokens/sec) comparing Naive O(T^2) vs KV-Cache O(1)."""
     model.eval()
-    print(f"\n[Axiom-LM Benchmark] Benchmarking generation to {max_length} tokens on {device}...")
+    print(
+        f"\n[Axiom-LM Benchmark] Benchmarking generation to {max_length} tokens on {device}..."
+    )
 
     # Warmup
-    _ = generate_samples(model, enc, device, prompt=prompt, num_samples=1, max_length=20)
-    _ = generate_with_cache(model, enc, device, prompt=prompt, num_samples=1, max_length=20)
+    _ = generate_samples(
+        model, enc, device, prompt=prompt, num_samples=1, max_length=20
+    )
+    _ = generate_with_cache(
+        model, enc, device, prompt=prompt, num_samples=1, max_length=20
+    )
 
     # 1. Benchmark Naive Eager O(T^2)
     if device == "mps" and hasattr(torch.mps, "synchronize"):
@@ -204,7 +223,9 @@ def benchmark_generation_speed(
     elif device == "cuda" and hasattr(torch.cuda, "synchronize"):
         torch.cuda.synchronize()
     t0 = time.perf_counter()
-    _ = generate_samples(model, enc, device, prompt=prompt, num_samples=1, max_length=max_length)
+    _ = generate_samples(
+        model, enc, device, prompt=prompt, num_samples=1, max_length=max_length
+    )
     if device == "mps" and hasattr(torch.mps, "synchronize"):
         torch.mps.synchronize()
     elif device == "cuda" and hasattr(torch.cuda, "synchronize"):
@@ -213,7 +234,9 @@ def benchmark_generation_speed(
 
     # 2. Benchmark KV-Cache O(1)
     t0 = time.perf_counter()
-    _ = generate_with_cache(model, enc, device, prompt=prompt, num_samples=1, max_length=max_length)
+    _ = generate_with_cache(
+        model, enc, device, prompt=prompt, num_samples=1, max_length=max_length
+    )
     if device == "mps" and hasattr(torch.mps, "synchronize"):
         torch.mps.synchronize()
     elif device == "cuda" and hasattr(torch.cuda, "synchronize"):
@@ -221,8 +244,12 @@ def benchmark_generation_speed(
     t_cache = time.perf_counter() - t0
 
     speedup = t_naive / t_cache if t_cache > 0 else 1.0
-    print(f"  • Naive Eager O(T^2) Time:  {t_naive:.4f}s ({max_length / t_naive:.2f} tok/s)")
-    print(f"  • KV-Cache Engine O(1) Time: {t_cache:.4f}s ({max_length / t_cache:.2f} tok/s)")
+    print(
+        f"  • Naive Eager O(T^2) Time:  {t_naive:.4f}s ({max_length / t_naive:.2f} tok/s)"
+    )
+    print(
+        f"  • KV-Cache Engine O(1) Time: {t_cache:.4f}s ({max_length / t_cache:.2f} tok/s)"
+    )
     print(f"  • KV-Cache Acceleration:    {speedup:.2f}x Faster\n")
 
 
@@ -261,7 +288,7 @@ def load_model(
         if safetensors_file:
             print(f"[AxiomLM] Loading safetensors model from: {safetensors_file}")
             from safetensors.torch import load_file
-            
+
             if config_file and os.path.exists(config_file):
                 with open(config_file, "r") as f:
                     cfg_dict = json.load(f)
@@ -271,7 +298,9 @@ def load_model(
                     n_layer=cfg_dict.get("num_hidden_layers", 12),
                     n_head=cfg_dict.get("num_attention_heads", 12),
                     n_embd=cfg_dict.get("hidden_size", 768),
-                    n_kv_head=cfg_dict.get("num_key_value_heads", 4 if arch == "modern" else None),
+                    n_kv_head=cfg_dict.get(
+                        "num_key_value_heads", 4 if arch == "modern" else None
+                    ),
                     norm_type="rmsnorm" if arch == "modern" else "layernorm",
                     pos_emb="rope" if arch == "modern" else "learned",
                     mlp_type="swiglu" if arch == "modern" else "gelu",
@@ -308,19 +337,25 @@ def load_model(
                 )
             model = Transformer(config)
             raw_sd = ckpt["model"] if "model" in ckpt else ckpt
-            cleaned_sd = {k.replace("_orig_mod.", "").replace("module.", ""): v for k, v in raw_sd.items()}
+            cleaned_sd = {
+                k.replace("_orig_mod.", "").replace("module.", ""): v
+                for k, v in raw_sd.items()
+            }
             model.load_state_dict(cleaned_sd, strict=False)
             model.to(device)
             model.eval()
             return model, config
 
-    raise FileNotFoundError(f"Could not resolve model checkpoint or safetensors file at: {checkpoint_path}")
+    raise FileNotFoundError(
+        f"Could not resolve model checkpoint or safetensors file at: {checkpoint_path}"
+    )
 
 
 class InferenceEngine:
     """
     High-level, user-friendly Python Inference Engine for AxiomLM models.
     """
+
     def __init__(
         self,
         model: Union[Transformer, str],
@@ -386,7 +421,9 @@ class InferenceEngine:
         """Yields generated tokens one by one as they are decoded."""
         self.model.eval()
         prompt_tokens = self.tokenizer.encode(prompt)
-        x = torch.tensor(prompt_tokens, dtype=torch.long, device=self.device).unsqueeze(0)
+        x = torch.tensor(prompt_tokens, dtype=torch.long, device=self.device).unsqueeze(
+            0
+        )
 
         with torch.no_grad():
             paged_cache = PagedKVCache(
@@ -396,11 +433,11 @@ class InferenceEngine:
                 n_kv_head=self.config.n_kv_head or self.config.n_head,
                 head_dim=self.config.n_embd // self.config.n_head,
                 dtype=torch.float32,
-                device=self.device
+                device=self.device,
             )
             seq_context = SequenceContext(paged_cache)
             kv_caches = [seq_context] * self.config.n_layer
-            
+
             logits, _, kv_caches = self.model(x, kv_caches=kv_caches)
 
             next_token = sample_logits(
@@ -435,7 +472,9 @@ def main():
     parser.add_argument("--checkpoint", type=str, default="checkpoints/model_latest.pt")
     parser.add_argument("--pretrained", type=str, default=None)
     parser.add_argument("--arch", type=str, default="modern")
-    parser.add_argument("--prompt", type=str, default="import torch\nimport torch.nn as nn\n")
+    parser.add_argument(
+        "--prompt", type=str, default="import torch\nimport torch.nn as nn\n"
+    )
     parser.add_argument("--max_tokens", type=int, default=50)
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top_k", type=int, default=50)
@@ -445,7 +484,10 @@ def main():
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
 
-    engine = InferenceEngine(model=args.checkpoint if not args.pretrained else args.pretrained, device=args.device)
+    engine = InferenceEngine(
+        model=args.checkpoint if not args.pretrained else args.pretrained,
+        device=args.device,
+    )
     print(f"\n[AxiomLM Prompt]: {args.prompt}\n[AxiomLM Generation]:\n")
     for token in engine.stream(
         prompt=args.prompt,
