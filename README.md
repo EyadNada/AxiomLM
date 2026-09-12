@@ -229,12 +229,14 @@ import torch
 import axiomlm as ax
 
 # 1. Rotary Position Embeddings (RoPE)
-freqs_cis = ax.precompute_rope_frequencies(dim=64, end=1024)
+freqs_cis = ax.precompute_rope_frequencies(head_dim=64, max_seq_len=1024)
 q, k = torch.randn(2, 1024, 12, 64), torch.randn(2, 1024, 4, 64)
-q_rope, k_rope = ax.apply_rope(q, k, freqs_cis)
+q_rope = ax.apply_rope(q, freqs_cis)
+k_rope = ax.apply_rope(k, freqs_cis)
 
 # 2. SwiGLU Feed-Forward Networks
-swiglu = ax.SwiGLUMLP(dim=768, hidden_dim=2048)
+config = ax.ModelConfig(n_embd=768)
+swiglu = ax.SwiGLUMLP(config, hidden_dim=2048)
 out = swiglu(torch.randn(16, 1024, 768))
 ```
 
