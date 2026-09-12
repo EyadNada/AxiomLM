@@ -45,6 +45,7 @@ jobs:
       - name: Run Hardware Kernel Test Suite (SIMD, Metal MSL, Triton)
         run: |
           python tests/test_kernels.py
+          python tests/test_unit_edge_cases.py
 
       - name: End-to-End Micro Training & Export Smoke Test
         run: |
