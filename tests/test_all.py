@@ -12,7 +12,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from axiomlm import (
+from axiomlm import (  # noqa: E402
     GPT,
     CausalSelfAttention,
     DataLoaderLite,
@@ -761,15 +761,16 @@ class TestHuggingFaceExport(unittest.TestCase):
             )
             self.assertTrue(os.path.exists(os.path.join(export_dir, "README.md")))
 
-            # Verify safetensors weights can be loaded
+            # Verify safetensors weights were exported with HF formatting
             weights = load_file(os.path.join(export_dir, "model.safetensors"))
-            self.assertIn("transformer.wte.weight", weights)
+            self.assertIn("model.embed_tokens.weight", weights)
             self.assertIn("lm_head.weight", weights)
+            self.assertIn("model.layers.0.self_attn.q_proj.weight", weights)
 
-            # Load into fresh GPT instance
-            fresh_model = GPT(cfg)
-            fresh_model.load_state_dict(weights)
-            fresh_model.eval()
+            # Load into fresh GPT instance using the public InferenceEngine API
+            from axiomlm.engine.inference import load_model
+
+            fresh_model, _ = load_model(export_dir, arch="modern", device="cpu")
 
             # Test forward pass
             x = torch.randint(0, 500, (1, 8))
