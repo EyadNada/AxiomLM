@@ -62,6 +62,16 @@ class DataLoaderLite:
 
         self.shards = shards
         self.total_tokens = sum(os.path.getsize(s) // 2 for s in self.shards)
+
+        required_tokens = B * T * num_processes + 1
+        if self.total_tokens < required_tokens:
+            raise ValueError(
+                f"Dataset split '{split}' is too small ({self.total_tokens:,} tokens) "
+                f"to form a single batch of size {required_tokens:,} "
+                f"(B={B} * T={T} * processes={num_processes} + 1 for targets). "
+                f"Please reduce batch_size/sequence_length or provide a larger dataset."
+            )
+
         self.reset()
 
         if process_rank == 0:
