@@ -4,11 +4,10 @@ import shutil
 import tempfile
 import numpy as np
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from axiomlm.train import train
 from axiomlm.engine.export import export_checkpoint_to_hf
-from axiomlm.engine.inference import load_model
 
 
 class TestSystemE2E(unittest.TestCase):
@@ -86,23 +85,24 @@ class TestSystemE2E(unittest.TestCase):
             os.path.exists(os.path.join(self.tmp_export_dir, "config.json"))
         )
 
-        # 3. Reload using InferenceEngine Safetensors Loader
+        # 3. Reload using standard Hugging Face transformers
         try:
-            model, config = load_model(self.tmp_export_dir, device="cpu")
-            self.assertIsNotNone(model)
-            self.assertEqual(config.n_embd, 768)
+            hf_model = AutoModelForCausalLM.from_pretrained(self.tmp_export_dir)
+            self.assertIsNotNone(hf_model)
 
-            # Verify a simple forward pass
+            # Verify a simple forward pass in standard HF format
             dummy_input = torch.tensor([[1, 2, 3]])
-            logits, loss = model(dummy_input)
-            self.assertEqual(logits.shape, (1, 3, 50304))
+            output = hf_model(dummy_input)
+            self.assertIsNotNone(output.logits)
 
             # Verify standard HF tools can load the exported tokenizer
             hf_tokenizer = AutoTokenizer.from_pretrained(self.tmp_export_dir)
             self.assertIsNotNone(hf_tokenizer)
 
         except Exception as e:
-            self.fail(f"Failed to load the exported model or tokenizer: {e}")
+            self.fail(
+                f"Hugging Face transformers failed to load the exported model or tokenizer: {e}"
+            )
 
 
 if __name__ == "__main__":

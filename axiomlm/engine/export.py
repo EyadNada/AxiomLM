@@ -7,6 +7,7 @@ import json
 import argparse
 from typing import Dict
 import torch
+import re
 
 from ..models.transformer import ModelConfig
 
@@ -18,9 +19,8 @@ def export_checkpoint_to_hf(
     license_type: str = "mit",
 ) -> None:
     """
-    Loads an AxiomLM PyTorch .pt checkpoint, converts its tensors to safetensors format,
-    and exports config.json, generation_config.json, tokenizer_config.json, vocab.json,
-    merges.txt, tokenizer.json, and a model card.
+    Loads an AxiomLM PyTorch .pt checkpoint, converts its tensors to standard Hugging Face
+    Llama (Modern) or GPT2 (Classic) formats, and exports all required assets.
     """
     try:
         from safetensors.torch import save_file
@@ -74,15 +74,86 @@ def export_checkpoint_to_hf(
         raw_state_dict = checkpoint
 
     cleaned_state_dict: Dict[str, torch.Tensor] = {}
+    is_modern = cfg.norm_type == "rmsnorm"
 
     for k, v in raw_state_dict.items():
         if not isinstance(v, torch.Tensor):
             continue
         clean_key = k.replace("_orig_mod.", "").replace("module.", "")
-        if not clean_key.endswith(".attn.bias") and not clean_key.endswith(
-            ".freqs_cis"
-        ):
-            cleaned_state_dict[clean_key] = v.clone().contiguous()
+        if clean_key.endswith(".attn.bias") or clean_key.endswith(".freqs_cis"):
+            continue
+
+        # ---------------------------------------------------------
+        # NATIVE HUGGING FACE ARCHITECTURE TRANSLATION
+        # ---------------------------------------------------------
+        if is_modern:
+            # Map AxiomLM Modern -> Hugging Face LlamaForCausalLM
+            if clean_key == "transformer.wte.weight":
+                cleaned_state_dict["model.embed_tokens.weight"] = v
+            elif clean_key == "transformer.ln_f.weight":
+                cleaned_state_dict["model.norm.weight"] = v
+            elif clean_key == "lm_head.weight":
+                cleaned_state_dict["lm_head.weight"] = v
+            else:
+                match = re.match(r"transformer\.h\.(\d+)\.(.*)", clean_key)
+                if match:
+                    layer_idx = match.group(1)
+                    sub_key = match.group(2)
+
+                    if sub_key == "ln_1.weight":
+                        cleaned_state_dict[
+                            f"model.layers.{layer_idx}.input_layernorm.weight"
+                        ] = v
+                    elif sub_key == "ln_2.weight":
+                        cleaned_state_dict[
+                            f"model.layers.{layer_idx}.post_attention_layernorm.weight"
+                        ] = v
+                    elif sub_key == "mlp.w_gate.weight":
+                        cleaned_state_dict[
+                            f"model.layers.{layer_idx}.mlp.gate_proj.weight"
+                        ] = v
+                    elif sub_key == "mlp.w_up.weight":
+                        cleaned_state_dict[
+                            f"model.layers.{layer_idx}.mlp.up_proj.weight"
+                        ] = v
+                    elif sub_key == "mlp.w_down.weight":
+                        cleaned_state_dict[
+                            f"model.layers.{layer_idx}.mlp.down_proj.weight"
+                        ] = v
+                    elif sub_key == "attn.c_proj.weight":
+                        cleaned_state_dict[
+                            f"model.layers.{layer_idx}.self_attn.o_proj.weight"
+                        ] = v
+                    elif sub_key == "attn.c_attn.weight":
+                        # Split c_attn into q_proj, k_proj, v_proj
+                        head_dim = cfg.n_embd // cfg.n_head
+                        n_kv_head = (
+                            cfg.n_kv_head if cfg.n_kv_head is not None else cfg.n_head
+                        )
+                        q_dim = cfg.n_head * head_dim
+                        kv_dim = n_kv_head * head_dim
+
+                        cleaned_state_dict[
+                            f"model.layers.{layer_idx}.self_attn.q_proj.weight"
+                        ] = v[:q_dim, :]
+                        cleaned_state_dict[
+                            f"model.layers.{layer_idx}.self_attn.k_proj.weight"
+                        ] = v[q_dim : q_dim + kv_dim, :]
+                        cleaned_state_dict[
+                            f"model.layers.{layer_idx}.self_attn.v_proj.weight"
+                        ] = v[q_dim + kv_dim :, :]
+        else:
+            # Map AxiomLM Classic -> Hugging Face GPT2LMHeadModel
+            # GPT-2 in HF expects linear weights in Conv1D format [in_features, out_features]
+            if (
+                "attn.c_attn.weight" in clean_key
+                or "attn.c_proj.weight" in clean_key
+                or "mlp.c_fc.weight" in clean_key
+                or "mlp.c_proj.weight" in clean_key
+            ):
+                cleaned_state_dict[clean_key] = v.t()
+            else:
+                cleaned_state_dict[clean_key] = v
 
     # 1. Export model.safetensors
     safetensors_path = os.path.join(output_dir, "model.safetensors")
@@ -94,26 +165,37 @@ def export_checkpoint_to_hf(
     )
 
     # 2. Export config.json
-    hf_config = {
-        "architectures": ["AxiomLMForCausalLM"],
-        "model_type": "axiomlm",
-        "vocab_size": cfg.vocab_size,
-        "hidden_size": cfg.n_embd,
-        "num_hidden_layers": cfg.n_layer,
-        "num_attention_heads": cfg.n_head,
-        "num_key_value_heads": (
-            cfg.n_kv_head if cfg.n_kv_head is not None else cfg.n_head
-        ),
-        "intermediate_size": int(2 * (4 * cfg.n_embd) / 3),
-        "max_position_embeddings": cfg.block_size,
-        "rms_norm_eps": 1e-6 if cfg.norm_type == "rmsnorm" else 1e-5,
-        "norm_type": cfg.norm_type,
-        "pos_emb": cfg.pos_emb,
-        "mlp_type": cfg.mlp_type,
-        "rope_theta": getattr(cfg, "rope_theta", 10000.0),
-        "torch_dtype": "float32",
-        "transformers_version": "4.44.0",
-    }
+    n_kv_head = (
+        cfg.n_kv_head if getattr(cfg, "n_kv_head", None) is not None else cfg.n_head
+    )
+    if is_modern:
+        hf_config = {
+            "architectures": ["LlamaForCausalLM"],
+            "model_type": "llama",
+            "vocab_size": cfg.vocab_size,
+            "hidden_size": cfg.n_embd,
+            "num_hidden_layers": cfg.n_layer,
+            "num_attention_heads": cfg.n_head,
+            "num_key_value_heads": n_kv_head,
+            "intermediate_size": int(2 * (4 * cfg.n_embd) / 3),
+            "max_position_embeddings": cfg.block_size,
+            "rms_norm_eps": getattr(cfg, "eps", 1e-6),
+            "rope_theta": getattr(cfg, "rope_theta", 10000.0),
+            "torch_dtype": "float32",
+        }
+    else:
+        hf_config = {
+            "architectures": ["GPT2LMHeadModel"],
+            "model_type": "gpt2",
+            "vocab_size": cfg.vocab_size,
+            "n_embd": cfg.n_embd,
+            "n_layer": cfg.n_layer,
+            "n_head": cfg.n_head,
+            "n_positions": cfg.block_size,
+            "n_inner": 4 * cfg.n_embd,
+            "torch_dtype": "float32",
+        }
+
     config_path = os.path.join(output_dir, "config.json")
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(hf_config, f, indent=2)
@@ -177,17 +259,15 @@ license: {license_type}
 
 # {model_name}
 
-AxiomLM Modern 124M autoregressive language model trained using the **Muon (5-step Newton-Schulz) optimizer**, **LLaMA-3 architectural specifications (RoPE + RMSNorm + SwiGLU + GQA)**, and bare-metal fused kernels.
+AxiomLM 124M autoregressive language model trained using the **Muon (5-step Newton-Schulz) optimizer** and bare-metal fused kernels.
+Fully native Hugging Face compatibility.
 
 ## Model Specifications
 * **Parameters**: ~{total_params / 1e6:.1f}M
 * **Layers**: {cfg.n_layer}
 * **Hidden Size**: {cfg.n_embd}
-* **Attention Heads (Query / KV)**: {cfg.n_head} / {cfg.n_kv_head} (Grouped-Query Attention)
+* **Attention Heads (Query / KV)**: {cfg.n_head} / {n_kv_head}
 * **Context Length**: {cfg.block_size} tokens
-* **Activation**: SwiGLU Gated Feed-Forward
-* **Normalization**: Root Mean Square Normalization (RMSNorm)
-* **Positional Encoding**: Rotary Position Embedding (RoPE)
 """
     readme_path = os.path.join(output_dir, "README.md")
     with open(readme_path, "w", encoding="utf-8") as f:
