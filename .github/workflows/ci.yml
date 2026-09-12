@@ -46,6 +46,7 @@ jobs:
         run: |
           python tests/test_kernels.py
           python tests/test_unit_edge_cases.py
+          python tests/test_integration.py
 
       - name: End-to-End Micro Training & Export Smoke Test
         run: |
