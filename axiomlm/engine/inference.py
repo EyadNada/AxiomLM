@@ -317,6 +317,71 @@ def load_model(
 
             model = Transformer(config)
             state_dict = load_file(safetensors_file, device=device)
+
+            # Auto-reverse Hugging Face translations (e.g., Llama/GPT2 -> AxiomLM internal)
+            is_llama = any(k.startswith("model.layers.") for k in state_dict.keys())
+            if is_llama:
+                import re
+
+                new_sd = {}
+                for k, v in state_dict.items():
+                    if k == "model.embed_tokens.weight":
+                        new_sd["transformer.wte.weight"] = v
+                    elif k == "model.norm.weight":
+                        new_sd["transformer.ln_f.weight"] = v
+                    elif k == "lm_head.weight":
+                        new_sd["lm_head.weight"] = v
+                    else:
+                        match = re.match(r"model\.layers\.(\d+)\.(.*)", k)
+                        if match:
+                            l_idx = match.group(1)
+                            s_key = match.group(2)
+                            if s_key == "input_layernorm.weight":
+                                new_sd[f"transformer.h.{l_idx}.ln_1.weight"] = v
+                            elif s_key == "post_attention_layernorm.weight":
+                                new_sd[f"transformer.h.{l_idx}.ln_2.weight"] = v
+                            elif s_key == "mlp.gate_proj.weight":
+                                new_sd[f"transformer.h.{l_idx}.mlp.w_gate.weight"] = v
+                            elif s_key == "mlp.up_proj.weight":
+                                new_sd[f"transformer.h.{l_idx}.mlp.w_up.weight"] = v
+                            elif s_key == "mlp.down_proj.weight":
+                                new_sd[f"transformer.h.{l_idx}.mlp.w_down.weight"] = v
+                            elif s_key == "self_attn.o_proj.weight":
+                                new_sd[f"transformer.h.{l_idx}.attn.c_proj.weight"] = v
+                            elif s_key == "self_attn.q_proj.weight":
+                                q = v
+                                k_w = state_dict[
+                                    f"model.layers.{l_idx}.self_attn.k_proj.weight"
+                                ]
+                                v_w = state_dict[
+                                    f"model.layers.{l_idx}.self_attn.v_proj.weight"
+                                ]
+                                import torch
+
+                                new_sd[f"transformer.h.{l_idx}.attn.c_attn.weight"] = (
+                                    torch.cat([q, k_w, v_w], dim=0)
+                                )
+                state_dict = new_sd
+            else:
+                is_gpt2 = any(
+                    "c_attn.weight" in k and v.shape[0] < v.shape[1]
+                    for k, v in state_dict.items()
+                    if isinstance(v, torch.Tensor)
+                )
+                if is_gpt2:
+                    new_sd = {}
+                    for k, v in state_dict.items():
+                        if (
+                            "attn.c_attn.weight" in k
+                            or "attn.c_proj.weight" in k
+                            or "mlp.c_fc.weight" in k
+                            or "mlp.c_proj.weight" in k
+                        ):
+                            new_sd[k] = v.t()
+                        else:
+                            new_sd[k] = v
+                    state_dict = new_sd
+
             model.load_state_dict(state_dict, strict=False)
             model.to(device)
             model.eval()
