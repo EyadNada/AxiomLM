@@ -47,6 +47,7 @@ jobs:
           python tests/test_kernels.py
           python tests/test_unit_edge_cases.py
           python tests/test_integration.py
+          python tests/test_system_e2e.py
 
       - name: End-to-End Micro Training & Export Smoke Test
         run: |
