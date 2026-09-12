@@ -89,11 +89,11 @@ def export_checkpoint_to_hf(
         if is_modern:
             # Map AxiomLM Modern -> Hugging Face LlamaForCausalLM
             if clean_key == "transformer.wte.weight":
-                cleaned_state_dict["model.embed_tokens.weight"] = v
+                cleaned_state_dict["model.embed_tokens.weight"] = v.clone().contiguous()
             elif clean_key == "transformer.ln_f.weight":
-                cleaned_state_dict["model.norm.weight"] = v
+                cleaned_state_dict["model.norm.weight"] = v.clone().contiguous()
             elif clean_key == "lm_head.weight":
-                cleaned_state_dict["lm_head.weight"] = v
+                cleaned_state_dict["lm_head.weight"] = v.clone().contiguous()
             else:
                 match = re.match(r"transformer\.h\.(\d+)\.(.*)", clean_key)
                 if match:
@@ -103,27 +103,27 @@ def export_checkpoint_to_hf(
                     if sub_key == "ln_1.weight":
                         cleaned_state_dict[
                             f"model.layers.{layer_idx}.input_layernorm.weight"
-                        ] = v
+                        ] = v.clone().contiguous()
                     elif sub_key == "ln_2.weight":
                         cleaned_state_dict[
                             f"model.layers.{layer_idx}.post_attention_layernorm.weight"
-                        ] = v
+                        ] = v.clone().contiguous()
                     elif sub_key == "mlp.w_gate.weight":
                         cleaned_state_dict[
                             f"model.layers.{layer_idx}.mlp.gate_proj.weight"
-                        ] = v
+                        ] = v.clone().contiguous()
                     elif sub_key == "mlp.w_up.weight":
                         cleaned_state_dict[
                             f"model.layers.{layer_idx}.mlp.up_proj.weight"
-                        ] = v
+                        ] = v.clone().contiguous()
                     elif sub_key == "mlp.w_down.weight":
                         cleaned_state_dict[
                             f"model.layers.{layer_idx}.mlp.down_proj.weight"
-                        ] = v
+                        ] = v.clone().contiguous()
                     elif sub_key == "attn.c_proj.weight":
                         cleaned_state_dict[
                             f"model.layers.{layer_idx}.self_attn.o_proj.weight"
-                        ] = v
+                        ] = v.clone().contiguous()
                     elif sub_key == "attn.c_attn.weight":
                         # Split c_attn into q_proj, k_proj, v_proj
                         head_dim = cfg.n_embd // cfg.n_head
@@ -135,13 +135,13 @@ def export_checkpoint_to_hf(
 
                         cleaned_state_dict[
                             f"model.layers.{layer_idx}.self_attn.q_proj.weight"
-                        ] = v[:q_dim, :]
+                        ] = (v[:q_dim, :].clone().contiguous())
                         cleaned_state_dict[
                             f"model.layers.{layer_idx}.self_attn.k_proj.weight"
-                        ] = v[q_dim : q_dim + kv_dim, :]
+                        ] = (v[q_dim : q_dim + kv_dim, :].clone().contiguous())
                         cleaned_state_dict[
                             f"model.layers.{layer_idx}.self_attn.v_proj.weight"
-                        ] = v[q_dim + kv_dim :, :]
+                        ] = (v[q_dim + kv_dim :, :].clone().contiguous())
         else:
             # Map AxiomLM Classic -> Hugging Face GPT2LMHeadModel
             # GPT-2 in HF expects linear weights in Conv1D format [in_features, out_features]
@@ -151,9 +151,9 @@ def export_checkpoint_to_hf(
                 or "mlp.c_fc.weight" in clean_key
                 or "mlp.c_proj.weight" in clean_key
             ):
-                cleaned_state_dict[clean_key] = v.t()
+                cleaned_state_dict[clean_key] = v.t().clone().contiguous()
             else:
-                cleaned_state_dict[clean_key] = v
+                cleaned_state_dict[clean_key] = v.clone().contiguous()
 
     # 1. Export model.safetensors
     safetensors_path = os.path.join(output_dir, "model.safetensors")
