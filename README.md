@@ -73,7 +73,7 @@ To contextualize the bare-metal performance gains, here is how AxiomLM scales ag
 | **HuggingFace (Transformers)** | Standard PyTorch (MPS) | 2,800 | 20.9% | $O(T^2)$ Dynamic Allocations |
 | **Llama.cpp** | Native C/C++ (Metal) | ~6,100 | ~44.5% | Static Block Pre-allocation |
 | **Apple MLX** | Swift / C++ Array API | ~7,200 | ~51.2% | Streamlined Array Ops |
-| $\color{#EAB308}{\textsf{\textbf{AxiomLM}}}$ | $\color{#EAB308}{\textsf{\textbf{Fused MSL / ARM NEON}}}$ | $\color{#EAB308}{\textsf{\textbf{9,200}}}$ | $\color{#EAB308}{\textsf{\textbf{68.7\%}}}$ | $\color{#EAB308}{\textsf{\textbf{O(1) Streaming Cache}}}$ |
+| **AxiomLM** | **Fused MSL / ARM NEON** | **9,200** | **68.7%** | **O(1) Streaming Cache** |
 
 --------------------------------------------------------------------------------
 
