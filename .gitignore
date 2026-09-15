@@ -44,3 +44,11 @@ TODO_ROADMAP.md
 *.egg-info/
 build/
 dist/
+
+# Generated Research Papers & Scripts
+AxiomLM_Extended_Research_Paper.docx
+AxiomLM_Extended_Research_Paper.txt
+make_docx_extended.py
+AxiomLM_Paper_Draft.docx
+generate_docx.py
+~$*.docx
