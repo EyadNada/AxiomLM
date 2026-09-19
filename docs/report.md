@@ -3,6 +3,8 @@
 **Technical Report & Architectural Whitepaper**
 *AxiomLM Engineering & Deep Learning Systems Research*
 
+[Download Complete Paper Draft (PDF) :octicons-file-badge-16:](assets/AxiomLM_Research_Paper_Draft.pdf){ .md-button .md-button--primary }
+
 ---
 
 ## 1. Executive Summary

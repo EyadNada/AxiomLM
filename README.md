@@ -11,8 +11,13 @@
 [![PyPI version](https://badge.fury.io/py/axiomlm.svg)](https://badge.fury.io/py/axiomlm)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x-EE4C2C.svg)](https://pytorch.org/)
+[![Paper Draft](https://img.shields.io/badge/Paper-Draft%20(PDF)-red.svg)](docs/assets/AxiomLM_Research_Paper_Draft.pdf)
+[![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-blue.svg)](https://eyadnada.github.io/AxiomLM/)
 [![Hardware](https://img.shields.io/badge/Hardware-Apple%20Silicon%20%7C%20CUDA-green.svg)]()
 [![Kernel](https://img.shields.io/badge/Kernel-Apple%20Metal%20%7C%20OpenAI%20Triton-silver.svg)]()
+
+> 📄 **Research Paper Draft**: Read the complete manuscript, systems analysis, and architectural derivations:
+> **[Read AxiomLM Research Paper Draft (PDF)](docs/assets/AxiomLM_Research_Paper_Draft.pdf)** | **[Live Web Documentation (GitHub Pages)](https://eyadnada.github.io/AxiomLM/)**
 
 AxiomLM is a high-performance PyTorch library for modern autoregressive Transformer modeling, custom hardware kernel acceleration, and spectral matrix optimization. Engineered from first principles, it bridges the gap between theoretical deep learning and bare-metal hardware execution, maximizing Model FLOPs Utilization (MFU) on constrained hardware architectures.
 
@@ -22,6 +27,7 @@ AxiomLM features custom Metal Shading Language (MSL) and ARM NEON C++ SIMD kerne
 --------------------------------------------------------------------------------
 
 ## Table of Contents
+- [Research Paper Draft](#research-paper-draft)
 - [Key Features](#key-features)
 - [Apple Silicon (MPS) Kernel Benchmarks](#apple-silicon-mps-kernel-benchmarks)
 - [Installation](#installation)
@@ -32,6 +38,16 @@ AxiomLM features custom Metal Shading Language (MSL) and ARM NEON C++ SIMD kerne
 - [Technical Report & Documentation](#technical-report--documentation)
 - [Citation](#citation)
 - [License](#license)
+
+--------------------------------------------------------------------------------
+
+## Research Paper Draft
+
+The comprehensive manuscript detailing AxiomLM's architectural transformations, polar decomposition convergence proofs, and bare-metal kernel acceleration is available as a research paper draft:
+
+- 📄 **Direct PDF Manuscript**: [AxiomLM Research Paper Draft (PDF)](docs/assets/AxiomLM_Research_Paper_Draft.pdf)
+- 🌐 **Interactive Documentation**: [AxiomLM Documentation Site](https://eyadnada.github.io/AxiomLM/)
+- 📝 **Markdown Architecture Whitepaper**: [Technical Report](AxiomLM_Technical_Report.md)
 
 --------------------------------------------------------------------------------
 
@@ -310,8 +326,10 @@ kernels/
 
 ## Technical Report & Documentation
 
-For mathematical derivations, convergence proofs, and hardware Roofline analysis, refer to the [Technical Report](AxiomLM_Technical_Report.md).
-Additionally, 27 technical reference guides and mathematical notes are available in the `material/` directory.
+- 📄 **Research Paper Draft (PDF)**: [Read the AxiomLM Research Paper Draft (PDF)](docs/assets/AxiomLM_Research_Paper_Draft.pdf)
+- 🌐 **Online Documentation (GitHub Pages)**: [https://eyadnada.github.io/AxiomLM/](https://eyadnada.github.io/AxiomLM/)
+- 📖 **Architecture Whitepaper**: For markdown derivations, convergence proofs, and hardware Roofline analysis, refer to the [Technical Report](AxiomLM_Technical_Report.md).
+- 📚 Additionally, 27 technical reference guides and mathematical notes are available in the `material/` directory.
 
 --------------------------------------------------------------------------------
 

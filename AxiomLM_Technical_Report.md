@@ -2,6 +2,7 @@
 
 **Technical Report & Architectural Whitepaper**
 *AxiomLM Engineering & Deep Learning Systems Research*
+📄 **PDF Manuscript**: [AxiomLM Research Paper Draft (PDF)](docs/assets/AxiomLM_Research_Paper_Draft.pdf)
 
 ---
 

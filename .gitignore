@@ -44,6 +44,9 @@ TODO_ROADMAP.md
 *.egg-info/
 build/
 dist/
+site/
+*.pkg
+*.dmg
 
 # Generated Research Papers & Scripts
 AxiomLM_Extended_Research_Paper.docx
