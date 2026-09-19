@@ -98,7 +98,7 @@ To contextualize the bare-metal performance gains, here is how AxiomLM scales ag
 ### Prerequisites
 * Python 3.10 or greater
 * PyTorch 2.0 or greater
-* macOS (Apple Silicon M1/M2/M3/M4) or Linux (NVIDIA CUDA)
+* macOS (Apple Silicon M1/M2/M3/M4/M5)-base/pro/max/ultra or Linux (NVIDIA CUDA)
 
 ```bash
 pip install axiomlm
