@@ -100,16 +100,6 @@ To contextualize the bare-metal performance gains, here is how AxiomLM scales ag
 * PyTorch 2.0 or greater
 * macOS (Apple Silicon M1/M2/M3/M4) or Linux (NVIDIA CUDA)
 
-### From Source (Recommended for Kernel Development)
-
-```bash
-git clone https://github.com/EyadNada/AxiomLM.git
-cd AxiomLM
-pip install -e .
-```
-
-### Direct via pip
-
 ```bash
 pip install axiomlm
 ```

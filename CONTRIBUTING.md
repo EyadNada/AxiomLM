@@ -22,7 +22,7 @@ Thank you for your interest in contributing to **AxiomLM**! We welcome contribut
 
 3. **Install optional developer dependencies (for linting & formatting):**
    ```bash
-   pip install -e ".[dev]"
+   pip install ".[dev]"
    ```
 
 ---
