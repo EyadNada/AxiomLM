@@ -41,7 +41,7 @@ class FusedRMSNormFunction(torch.autograd.Function):
         ctx.eps = eps
 
         if x.device.type == "cuda" and HAS_TRITON:
-            y, rsqrt = _triton_kernels.rmsnorm_forward(x, weight, eps)
+            y, rsqrt = _triton_kernels.triton_rmsnorm_forward(x, weight, eps)
             ctx.save_for_backward(x, weight, rsqrt)
             return y
         elif (
@@ -59,11 +59,11 @@ class FusedRMSNormFunction(torch.autograd.Function):
         elif (
             _METAL_MOD is not None
             and x.device.type == "mps"
-            and x.dtype == torch.float32
+            and x.dtype in (torch.float32, torch.float16)
         ):
             orig_shape = x.shape
             x_flat = x.contiguous().view(-1, orig_shape[-1])
-            weight_flat = weight.contiguous()
+            weight_flat = weight.to(x.dtype).contiguous()
             y, rsqrt = _METAL_MOD.rmsnorm_forward_mps(x_flat, weight_flat, eps)
             ctx.save_for_backward(x, weight, rsqrt)
             ctx.orig_shape = orig_shape
@@ -80,7 +80,7 @@ class FusedRMSNormFunction(torch.autograd.Function):
         eps = ctx.eps
 
         if grad_y.device.type == "cuda" and HAS_TRITON:
-            grad_x, grad_w = _triton_kernels.rmsnorm_backward(
+            grad_x, grad_w = _triton_kernels.triton_rmsnorm_backward(
                 grad_y, x, weight, rsqrt, eps
             )
             return grad_x, grad_w, None
@@ -99,15 +99,20 @@ class FusedRMSNormFunction(torch.autograd.Function):
         elif (
             _METAL_MOD is not None
             and grad_y.device.type == "mps"
-            and grad_y.dtype == torch.float32
+            and grad_y.dtype in (torch.float32, torch.float16)
         ):
-            grad_out_flat = grad_y.contiguous().view(-1, ctx.orig_shape[-1])
-            x_flat = x.contiguous().view(-1, ctx.orig_shape[-1])
-            weight_flat = weight.contiguous()
+            orig_dtype = grad_y.dtype
+            grad_out_flat = grad_y.float().contiguous().view(-1, ctx.orig_shape[-1])
+            x_flat = x.float().contiguous().view(-1, ctx.orig_shape[-1])
+            weight_flat = weight.float().contiguous()
             grad_x, grad_w = _METAL_MOD.rmsnorm_backward_mps(
-                grad_out_flat, x_flat, weight_flat, rsqrt
+                grad_out_flat, x_flat, weight_flat, rsqrt.float()
             )
-            return grad_x.view(ctx.orig_shape), grad_w, None
+            return (
+                grad_x.to(orig_dtype).view(ctx.orig_shape),
+                grad_w.to(weight.dtype),
+                None,
+            )
 
         raise RuntimeError("RMSNorm backward kernel missing for device.")
 
@@ -121,9 +126,24 @@ def fused_rmsnorm(
         (device.type == "cuda" and HAS_TRITON)
         or (_NEON_MOD is not None and device.type == "cpu" and x.dtype == torch.float32)
         or (
-            _METAL_MOD is not None and device.type == "mps" and x.dtype == torch.float32
+            _METAL_MOD is not None
+            and device.type == "mps"
+            and x.dtype in (torch.float32, torch.float16)
         )
     ):
+        if (
+            not torch.is_grad_enabled()
+            and _METAL_MOD is not None
+            and device.type == "mps"
+            and x.dtype in (torch.float32, torch.float16)
+        ):
+            x_c = x if x.is_contiguous() else x.contiguous()
+            weight_flat = (
+                weight
+                if (weight.dtype == x.dtype and weight.is_contiguous())
+                else weight.to(x.dtype).contiguous()
+            )
+            return _METAL_MOD.rmsnorm_infer_mps(x_c, weight_flat, eps)
         return FusedRMSNormFunction.apply(x, weight, eps)
 
     # Fallback to standard PyTorch eager execution to avoid Python autograd overhead
@@ -132,12 +152,46 @@ def fused_rmsnorm(
 
 
 class FusedRMSNorm(nn.Module):
-    def __init__(self, hidden_size: int, eps: float = 1e-6):
+    def __init__(
+        self,
+        hidden_size: Optional[int] = None,
+        eps: float = 1e-6,
+        dim: Optional[int] = None,
+    ):
         super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
+        resolved_dim = hidden_size if hidden_size is not None else dim
+        if resolved_dim is None:
+            raise ValueError("Specify hidden_size (or dim) for FusedRMSNorm.")
+        self.weight = nn.Parameter(torch.ones(resolved_dim))
         self.eps = eps
+        self._cached_weight: Optional[torch.Tensor] = None
+
+    def train(self, mode: bool = True):
+        self._cached_weight = None
+        return super().train(mode)
+
+    def _apply(self, fn):
+        self._cached_weight = None
+        return super()._apply(fn)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.training and not torch.is_grad_enabled():
+            if (
+                self._cached_weight is None
+                or self._cached_weight.device != x.device
+                or self._cached_weight.dtype != x.dtype
+            ):
+                self._cached_weight = self.weight.to(
+                    device=x.device, dtype=x.dtype
+                ).contiguous()
+            if (
+                _METAL_MOD is not None
+                and x.device.type == "mps"
+                and x.dtype in (torch.float32, torch.float16)
+                and x.is_contiguous()
+            ):
+                return _METAL_MOD.rmsnorm_infer_mps(x, self._cached_weight, self.eps)
+            return fused_rmsnorm(x, self._cached_weight, self.eps)
         return fused_rmsnorm(x, self.weight, self.eps)
 
 
@@ -150,7 +204,7 @@ class FusedSwiGLUFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, gate, up):
         if gate.device.type == "cuda" and HAS_TRITON:
-            out = _triton_kernels.swiglu_forward(gate, up)
+            out = _triton_kernels.triton_swiglu_forward(gate, up)
             ctx.save_for_backward(gate, up)
             return out
         elif (
@@ -164,9 +218,9 @@ class FusedSwiGLUFunction(torch.autograd.Function):
         elif (
             _METAL_MOD is not None
             and gate.device.type == "mps"
-            and gate.dtype == torch.float32
+            and gate.dtype in (torch.float32, torch.float16)
         ):
-            out = _METAL_MOD.swiglu_forward_mps(gate, up)
+            out = _METAL_MOD.swiglu_forward_mps(gate.contiguous(), up.contiguous())
             ctx.save_for_backward(gate, up)
             return out
 
@@ -180,7 +234,9 @@ class FusedSwiGLUFunction(torch.autograd.Function):
         up = up.contiguous()
 
         if grad_y.device.type == "cuda" and HAS_TRITON:
-            grad_gate, grad_up = _triton_kernels.swiglu_backward(grad_y, gate, up)
+            grad_gate, grad_up = _triton_kernels.triton_swiglu_backward(
+                grad_y, gate, up
+            )
             return grad_gate, grad_up
         elif (
             _NEON_MOD is not None
@@ -192,10 +248,15 @@ class FusedSwiGLUFunction(torch.autograd.Function):
         elif (
             _METAL_MOD is not None
             and grad_y.device.type == "mps"
-            and grad_y.dtype == torch.float32
+            and grad_y.dtype in (torch.float32, torch.float16)
         ):
-            grad_gate, grad_up = _METAL_MOD.swiglu_backward_mps(grad_y, gate, up)
-            return grad_gate, grad_up
+            orig_dtype = grad_y.dtype
+            grad_gate, grad_up = _METAL_MOD.swiglu_backward_mps(
+                grad_y.float().contiguous(),
+                gate.float().contiguous(),
+                up.float().contiguous(),
+            )
+            return grad_gate.to(orig_dtype), grad_up.to(orig_dtype)
 
         raise RuntimeError("SwiGLU backward kernel missing for device.")
 
@@ -208,8 +269,16 @@ def fused_swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     # Note: We intentionally bypass _NEON_MOD for SwiGLU on CPU because PyTorch's native C++ F.silu is highly
     # optimized, faster, and perfectly accurate, whereas our custom NEON kernel uses a less precise exp approximation.
     if (device.type == "cuda" and HAS_TRITON) or (
-        _METAL_MOD is not None and device.type == "mps" and gate.dtype == torch.float32
+        _METAL_MOD is not None
+        and device.type == "mps"
+        and gate.dtype in (torch.float32, torch.float16)
     ):
+        if (
+            not torch.is_grad_enabled()
+            and _METAL_MOD is not None
+            and device.type == "mps"
+        ):
+            return _METAL_MOD.swiglu_forward_mps(gate.contiguous(), up.contiguous())
         return FusedSwiGLUFunction.apply(gate, up)
 
     # Standard PyTorch eager fallback (native C++ autograd)
@@ -218,20 +287,58 @@ def fused_swiglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
 
 class FusedSwiGLUMLP(nn.Module):
     """
-    Fused SwiGLU Multi-Layer Perceptron (LLaMA-3 spec) with custom fused kernel.
+    Fused SwiGLU Multi-Layer Perceptron (LLaMA-3 spec) with custom fused kernel
+    and single-dispatch Gate+Up GEMM fusion during inference.
     """
 
     def __init__(self, config: Any):
         super().__init__()
         hidden_dim = int(2 * (4 * config.n_embd) / 3)
         hidden_dim = 64 * ((hidden_dim + 64 - 1) // 64)
+        self.hidden_dim = hidden_dim
         bias = getattr(config, "bias", False)
         self.w_gate = nn.Linear(config.n_embd, hidden_dim, bias=bias)
         self.w_up = nn.Linear(config.n_embd, hidden_dim, bias=bias)
         self.w_down = nn.Linear(hidden_dim, config.n_embd, bias=bias)
         setattr(self.w_down, "NANOGPT_SCALE_INIT", 1)
+        self._cached_gate_up_w: Optional[torch.Tensor] = None
+        self._cached_gate_up_b: Optional[torch.Tensor] = None
+
+    def train(self, mode: bool = True):
+        self._cached_gate_up_w = None
+        self._cached_gate_up_b = None
+        return super().train(mode)
+
+    def _apply(self, fn):
+        self._cached_gate_up_w = None
+        self._cached_gate_up_b = None
+        return super()._apply(fn)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.training and not torch.is_grad_enabled():
+            if (
+                self._cached_gate_up_w is None
+                or self._cached_gate_up_w.device != x.device
+                or self._cached_gate_up_w.dtype != x.dtype
+            ):
+                self._cached_gate_up_w = torch.cat(
+                    [self.w_gate.weight, self.w_up.weight], dim=0
+                ).to(device=x.device, dtype=x.dtype)
+                if self.w_gate.bias is not None and self.w_up.bias is not None:
+                    self._cached_gate_up_b = torch.cat(
+                        [self.w_gate.bias, self.w_up.bias], dim=0
+                    ).to(device=x.device, dtype=x.dtype)
+            gate_up = F.linear(x, self._cached_gate_up_w, self._cached_gate_up_b)
+            if (
+                _METAL_MOD is not None
+                and x.device.type == "mps"
+                and x.dtype in (torch.float32, torch.float16)
+                and (self.hidden_dim % 4 == 0)
+                and gate_up.is_contiguous()
+            ):
+                return self.w_down(_METAL_MOD.swiglu_gate_up_mps(gate_up))
+            gate, up = gate_up.split(self.hidden_dim, dim=-1)
+            return self.w_down(fused_swiglu(gate, up))
         gate = self.w_gate(x)
         up = self.w_up(x)
         return self.w_down(fused_swiglu(gate, up))
@@ -256,6 +363,18 @@ class FusedSDPAFunction(torch.autograd.Function):
         if device.type == "cuda" and HAS_TRITON:
             out = _triton_kernels.triton_fused_sdpa_forward(
                 q, k, v, is_causal=is_causal, sliding_window=sliding_window
+            )
+        elif (
+            _METAL_MOD is not None
+            and device.type == "mps"
+            and q.dtype == torch.float32
+            and sliding_window is None
+            and q.size(1) == k.size(1)
+            and q.size(2) == k.size(2)
+            and q.size(3) <= 128
+        ):
+            out = _METAL_MOD.flash_attention_forward_mps(
+                q.contiguous(), k.contiguous(), v.contiguous(), is_causal
             )
         else:
             if sliding_window is not None and is_causal:
@@ -309,38 +428,94 @@ def fused_sdpa(
     is_causal: bool = False,
     sliding_window: Optional[int] = None,
 ) -> torch.Tensor:
-    """Functional interface for Fused SDPA (FlashAttention) with Sliding Window Support."""
+    """Functional interface for Fused SDPA (FlashAttention) with Sliding Window & Zero-Copy GQA Support."""
+    enable_gqa = q.size(1) != k.size(1)
+    if (
+        not torch.is_grad_enabled()
+        and not (q.device.type == "cuda" and HAS_TRITON)
+        and sliding_window is None
+    ):
+        return F.scaled_dot_product_attention(
+            q, k, v, is_causal=is_causal, enable_gqa=enable_gqa
+        )
+    if enable_gqa and (
+        sliding_window is not None or (q.device.type == "cuda" and HAS_TRITON)
+    ):
+        n_rep = q.size(1) // k.size(1)
+        B, n_kv_head, T_k, head_dim = k.shape
+        k = (
+            k[:, :, None, :, :]
+            .expand(B, n_kv_head, n_rep, T_k, head_dim)
+            .reshape(B, n_kv_head * n_rep, T_k, head_dim)
+        )
+        v = (
+            v[:, :, None, :, :]
+            .expand(B, n_kv_head, n_rep, T_k, head_dim)
+            .reshape(B, n_kv_head * n_rep, T_k, head_dim)
+        )
+    elif enable_gqa:
+        return F.scaled_dot_product_attention(
+            q, k, v, is_causal=is_causal, enable_gqa=True
+        )
     return FusedSDPAFunction.apply(q, k, v, is_causal, sliding_window)
 
 
-# ----------------------------------------------------------------------------
-# 4. Fused Rotary Position Embeddings (RoPE) Autograd Function
-# ----------------------------------------------------------------------------
+def flash_attention_mps(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    is_causal: bool = True,
+) -> torch.Tensor:
+    """Direct dispatch to the custom Metal tiled SRAM FlashAttention forward kernel."""
+    if _METAL_MOD is not None and q.device.type == "mps" and q.dtype == torch.float32:
+        if q.size(1) != k.size(1):
+            n_rep = q.size(1) // k.size(1)
+            B, n_kv_head, T_k, head_dim = k.shape
+            k = (
+                k[:, :, None, :, :]
+                .expand(B, n_kv_head, n_rep, T_k, head_dim)
+                .reshape(B, n_kv_head * n_rep, T_k, head_dim)
+            )
+            v = (
+                v[:, :, None, :, :]
+                .expand(B, n_kv_head, n_rep, T_k, head_dim)
+                .reshape(B, n_kv_head * n_rep, T_k, head_dim)
+            )
+        return _METAL_MOD.flash_attention_forward_mps(
+            q.contiguous(), k.contiguous(), v.contiguous(), is_causal
+        )
+    return F.scaled_dot_product_attention(
+        q, k, v, is_causal=is_causal, enable_gqa=(q.size(1) != k.size(1))
+    )
 
 
 class FusedRoPEFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, freqs_cis):
-        ctx.save_for_backward(freqs_cis)
+        if freqs_cis.is_complex():
+            freqs_real = torch.view_as_real(freqs_cis).contiguous()
+        else:
+            freqs_real = (
+                freqs_cis if freqs_cis.is_contiguous() else freqs_cis.contiguous()
+            )
+        ctx.save_for_backward(freqs_real)
         if (
             _METAL_MOD is not None
             and x.device.type == "mps"
-            and x.dtype == torch.float32
+            and x.dtype in (torch.float32, torch.float16)
         ):
-            freqs_real = torch.view_as_real(freqs_cis).contiguous()
             out = _METAL_MOD.apply_rope_mps(x.contiguous(), freqs_real, True)
             return out
         raise RuntimeError("FusedRoPEFunction called without available kernel.")
 
     @staticmethod
     def backward(ctx, grad_out):
-        (freqs_cis,) = ctx.saved_tensors
+        (freqs_real,) = ctx.saved_tensors
         if (
             _METAL_MOD is not None
             and grad_out.device.type == "mps"
-            and grad_out.dtype == torch.float32
+            and grad_out.dtype in (torch.float32, torch.float16)
         ):
-            freqs_real = torch.view_as_real(freqs_cis).contiguous()
             grad_x = _METAL_MOD.apply_rope_mps(grad_out.contiguous(), freqs_real, False)
             return grad_x, None
         raise RuntimeError("FusedRoPEFunction backward kernel missing for device.")
@@ -351,14 +526,31 @@ def fused_apply_rope(
 ) -> torch.Tensor:
     """Functional interface for Fused RoPE."""
     B, n_head, T, head_dim = x.shape
-    freqs_slice = freqs_cis[start_pos : start_pos + T, :]
+    freqs_slice = freqs_cis[start_pos : start_pos + T]
 
-    if _METAL_MOD is not None and x.device.type == "mps" and x.dtype == torch.float32:
+    if (
+        _METAL_MOD is not None
+        and x.device.type == "mps"
+        and x.dtype in (torch.float32, torch.float16)
+    ):
+        if not torch.is_grad_enabled():
+            if freqs_slice.is_complex():
+                freqs_real = torch.view_as_real(freqs_slice).contiguous()
+            else:
+                freqs_real = (
+                    freqs_slice
+                    if freqs_slice.is_contiguous()
+                    else freqs_slice.contiguous()
+                )
+            x_c = x if x.is_contiguous() else x.contiguous()
+            return _METAL_MOD.apply_rope_mps(x_c, freqs_real, True)
         return FusedRoPEFunction.apply(x, freqs_slice)
 
     # Standard PyTorch eager fallback
     orig_dtype = x.dtype
     x_complex = torch.view_as_complex(x.float().reshape(B, n_head, T, -1, 2))
+    if not freqs_slice.is_complex():
+        freqs_slice = torch.view_as_complex(freqs_slice.float().contiguous())
     freqs_slice_expanded = freqs_slice.view(1, 1, T, -1).to(x.device)
     x_rotated = torch.view_as_real(x_complex * freqs_slice_expanded).reshape(
         B, n_head, T, head_dim
@@ -407,7 +599,7 @@ def fused_cross_entropy(
     ):
         orig_shape = logits.shape
         logits_flat = logits.view(-1, orig_shape[-1])
-        targets_flat = targets.view(-1)
+        targets_flat = targets.view(-1).to(torch.int32)
 
         losses = FusedCrossEntropyFunction.apply(
             logits_flat, targets_flat, ignore_index

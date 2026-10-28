@@ -9,14 +9,17 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from axiomlm.kernels import (
+from axiomlm.kernels import (  # noqa: E402
     fused_rmsnorm,
     fused_swiglu,
     FusedSwiGLUMLP,
     fused_sdpa,
+    flash_attention_mps,
     _NEON_MOD,
+    _METAL_MOD,
 )
-from axiomlm.models import RMSNorm, SwiGLUMLP, GPTConfig
+from axiomlm.kernels import triton_kernels as _triton_kernels  # noqa: E402
+from axiomlm.models import RMSNorm, SwiGLUMLP, GPTConfig  # noqa: E402
 
 IS_ARM64 = platform.machine().lower() in ["arm64", "aarch64"]
 
@@ -237,6 +240,40 @@ class TestCustomKernels(unittest.TestCase):
             )
             self.assertLess(
                 grad_v_diff, 1e-4, f"SDPA grad_v diff {grad_v_diff} on {device}"
+            )
+
+    def test_metal_flash_attention_parity(self):
+        """Test custom Metal tiled SRAM FlashAttention kernel (flash_attention_forward_mps) matches reference."""
+        if "mps" not in self.devices or _METAL_MOD is None:
+            self.skipTest("MPS Metal module not available")
+        B, H, T, D = 2, 4, 32, 64
+        q = torch.randn(B, H, T, D, device="mps", dtype=torch.float32)
+        k = torch.randn(B, H, T, D, device="mps", dtype=torch.float32)
+        v = torch.randn(B, H, T, D, device="mps", dtype=torch.float32)
+
+        ref_out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        metal_out = flash_attention_mps(q, k, v, is_causal=True)
+        max_diff = (ref_out - metal_out).abs().max().item()
+        self.assertLess(
+            max_diff, 1e-4, f"Metal FlashAttention diff {max_diff} exceeds tolerance"
+        )
+
+    def test_triton_wrapper_names_alignment(self):
+        """Verify triton_kernels exports both triton_* and short aliases expected by ops.py."""
+        for fn_name in [
+            "triton_rmsnorm_forward",
+            "triton_rmsnorm_backward",
+            "triton_swiglu_forward",
+            "triton_swiglu_backward",
+            "rmsnorm_forward",
+            "rmsnorm_backward",
+            "swiglu_forward",
+            "swiglu_backward",
+            "triton_fused_sdpa_forward",
+        ]:
+            self.assertTrue(
+                hasattr(_triton_kernels, fn_name),
+                f"Missing {fn_name} in triton_kernels.py",
             )
 
 

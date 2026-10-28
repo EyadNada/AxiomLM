@@ -88,5 +88,5 @@ def create_profiler(output_dir: str = "./log/profiler_trace"):
 [ GPU Stream ]  ====== gemm_kernel ====== flash_attn_fwd ====== rmsnorm_fwd ===== ns_matmul =====
 ```
 
-* **GEMM Bands:** Large solid blocks indicate compute-bound Tensor Core / Metal AMX operations.
+* **GEMM Bands:** Large solid blocks indicate compute-bound GPU Tensor Core / Metal `simdgroup` (or CPU AMX / Accelerate) matrix operations.
 * **Gaps between Bands:** Reveal CPU dispatch bubbles, data loader stalls, or synchronous barriers.

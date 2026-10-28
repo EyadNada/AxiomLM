@@ -9,17 +9,20 @@ from torch.nn import functional as F
 
 try:
     from ..kernels import FusedRMSNorm, FusedSwiGLUMLP
+    from ..kernels.ops import fused_apply_rope
 
     HAS_CUSTOM_KERNELS = True
 except (ImportError, ValueError):
     try:
         from kernels import FusedRMSNorm, FusedSwiGLUMLP
+        from kernels.ops import fused_apply_rope
 
         HAS_CUSTOM_KERNELS = True
     except ImportError:
         HAS_CUSTOM_KERNELS = False
         FusedRMSNorm = None  # type: ignore
         FusedSwiGLUMLP = None  # type: ignore
+        fused_apply_rope = None  # type: ignore
 
 
 class RMSNorm(nn.Module):
@@ -67,13 +70,8 @@ def apply_rope(
     Returns:
         Rotated tensor of same shape and dtype as x.
     """
-    if HAS_CUSTOM_KERNELS:
-        try:
-            from ..kernels.ops import fused_apply_rope
-
-            return fused_apply_rope(x, freqs_cis, start_pos)
-        except ImportError:
-            pass
+    if HAS_CUSTOM_KERNELS and fused_apply_rope is not None:
+        return fused_apply_rope(x, freqs_cis, start_pos)
 
     orig_dtype = x.dtype
     B, n_head, T, head_dim = x.shape
@@ -104,6 +102,7 @@ class SwiGLUMLP(nn.Module):
     """
     SwiGLU Gated Feed-Forward Network.
     Computes: SwiGLU(x) = (SiLU(x @ W_gate) * (x @ W_up)) @ W_down
+    During inference/eval, fuses W_gate and W_up into a single GEMM dispatch.
     """
 
     def __init__(
@@ -118,9 +117,22 @@ class SwiGLUMLP(nn.Module):
         if hidden_dim is None:
             hidden_dim = int(2 * (4 * n_embd) / 3)
             hidden_dim = 64 * ((hidden_dim + 64 - 1) // 64)
+        self.hidden_dim = hidden_dim
         self.w_gate = nn.Linear(n_embd, hidden_dim, bias=bias)
         self.w_up = nn.Linear(n_embd, hidden_dim, bias=bias)
         self.w_down = nn.Linear(hidden_dim, n_embd, bias=bias)
+        self._cached_gate_up_w: Optional[torch.Tensor] = None
+        self._cached_gate_up_b: Optional[torch.Tensor] = None
+
+    def train(self, mode: bool = True):
+        self._cached_gate_up_w = None
+        self._cached_gate_up_b = None
+        return super().train(mode)
+
+    def _apply(self, fn):
+        self._cached_gate_up_w = None
+        self._cached_gate_up_b = None
+        return super()._apply(fn)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.w_down(F.silu(self.w_gate(x)) * self.w_up(x))

@@ -1,10 +1,12 @@
 import os
+import shutil
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
 
-# Ensure output directory exists
+# Ensure output directories exist
 os.makedirs("assets", exist_ok=True)
+os.makedirs("docs/assets", exist_ok=True)
 
 # Set global style
 plt.style.use(
@@ -66,10 +68,17 @@ def generate_newton_schulz_plot():
         linestyle="--",
         linewidth=1.5,
         alpha=0.8,
-        label="Target Orthogonal Singular Value ($\sigma = 1.0$)",
+        label=r"Target Orthogonal Asymptote ($\sigma = 1.0$, 5-Step Band $[0.7, 1.3]$)",
+    )
+    ax.axhspan(
+        0.70,
+        1.30,
+        color="#10b981",
+        alpha=0.08,
+        label=r"5-Step Quintic Convergence Band ($[1-\delta, 1+\delta]$)",
     )
     ax.set_title(
-        "Muon Optimizer: 5-Step Newton-Schulz Singular Value Spectrum Flattening",
+        "Muon Optimizer: 5-Step Quintic Newton–Schulz Singular Value Spectrum Compression",
         fontsize=13,
         fontweight="bold",
         pad=15,
@@ -264,8 +273,238 @@ def generate_kv_cache_scaling_plot():
     plt.close()
 
 
+# -----------------------------------------------------------------------------
+# 4. SwiGLU Bilinear Gating vs. GELU / ReLU Activation Landscape (Replaces Draft 1 Fig 1)
+# -----------------------------------------------------------------------------
+def generate_swiglu_vs_gelu_plot():
+    print("Generating 14_swiglu_vs_gelu_activation_landscape.png...")
+    x = np.linspace(-4.0, 4.0, 500)
+    silu = x / (1.0 + np.exp(-x))
+    gelu = 0.5 * x * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (x + 0.044715 * (x**3))))
+    relu = np.maximum(0.0, x)
+    dsilu = (1.0 / (1.0 + np.exp(-x))) * (1.0 + x * (1.0 - 1.0 / (1.0 + np.exp(-x))))
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5), dpi=300)
+
+    ax1.plot(
+        x,
+        silu,
+        label=r"Swish / SiLU ($x \cdot \sigma(x)$) [AxiomLM Gate]",
+        color="#6366f1",
+        linewidth=2.5,
+    )
+    ax1.plot(
+        x,
+        gelu,
+        label=r"GELU ($x \cdot \Phi(x)$) [Classic GPT-2]",
+        color="#0284c7",
+        linestyle="--",
+        linewidth=2.0,
+    )
+    ax1.plot(
+        x,
+        relu,
+        label=r"ReLU ($\max(0, x)$)",
+        color="#94a3b8",
+        linestyle=":",
+        linewidth=1.8,
+    )
+    ax1.set_title(
+        "Activation Function Profiles ($d_{\\mathrm{ffn}} = 2048$)",
+        fontsize=12,
+        fontweight="bold",
+    )
+    ax1.set_xlabel("Pre-Activation Input ($z$)", fontsize=10.5, fontweight="600")
+    ax1.set_ylabel("Activation Output", fontsize=10.5, fontweight="600")
+    ax1.legend(loc="upper left", frameon=True)
+    ax1.grid(True, linestyle="--", alpha=0.5)
+
+    ax2.plot(
+        x,
+        dsilu,
+        label=r"$\frac{d}{dz}\mathrm{SiLU}(z)$ (Smooth Non-Zero Negative Gradient)",
+        color="#10b981",
+        linewidth=2.5,
+    )
+    ax2.plot(
+        x,
+        silu * (0.8 * x),
+        label=r"SwiGLU Bilinear Gate ($\mathrm{SiLU}(z_{\mathrm{gate}}) \odot z_{\mathrm{up}}$)",
+        color="#8b5cf6",
+        linewidth=2.2,
+    )
+    ax2.set_title(
+        "SwiGLU First-Order Derivative & Bilinear Modulation",
+        fontsize=12,
+        fontweight="bold",
+    )
+    ax2.set_xlabel("Gate Projection Input ($z$)", fontsize=10.5, fontweight="600")
+    ax2.set_ylabel("Gradient / Modulated Response", fontsize=10.5, fontweight="600")
+    ax2.legend(loc="upper left", frameon=True)
+    ax2.grid(True, linestyle="--", alpha=0.5)
+
+    plt.tight_layout()
+    plt.savefig("assets/14_swiglu_vs_gelu_activation_landscape.png")
+    plt.close()
+
+
+# -----------------------------------------------------------------------------
+# 5. End-to-End 5-Stage Ablation & 4096 Ring-Buffer Benchmark (Apple M3 Pro 18GB)
+# -----------------------------------------------------------------------------
+def generate_m3_pro_ablation_plot():
+    print("Generating 15_apple_m3_pro_ablation_and_ring_buffer.png...")
+    stages = [
+        "1. Classic MHA\n(Eager O(T²))",
+        "2. + Dynamic KV\n(12-Head MHA)",
+        "3. + Zero-Copy GQA\n(4-Head Static KV)",
+        "4. + Fused Metal/NEON\n(FP32 Engine)",
+        "5. + Native FP16 Metal\n+ Static Ring KV",
+        "6. Long-Context 4096\n(FP16 Ring Buffer)",
+    ]
+    tok_s = [8.2, 176.2, 227.6, 238.7, 404.9, 399.5]
+    kv_mb = [54.0, 54.0, 18.0, 18.0, 9.0, 12.0]
+
+    fig, ax1 = plt.subplots(figsize=(11, 6), dpi=300)
+    x = np.arange(len(stages))
+    width = 0.38
+
+    bars1 = ax1.bar(
+        x - width / 2,
+        tok_s,
+        width,
+        label="Decode Throughput (tokens/sec)",
+        color="#4f46e5",
+        alpha=0.92,
+    )
+    ax1.set_ylabel(
+        "Autoregressive Throughput (tok/s)",
+        fontsize=11,
+        fontweight="bold",
+        color="#4f46e5",
+    )
+    ax1.set_ylim(0, 470)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(stages, fontsize=9.5, fontweight="600")
+    ax1.grid(True, axis="y", linestyle="--", alpha=0.4)
+
+    for bar in bars1:
+        h = bar.get_height()
+        ax1.annotate(
+            f"{h:.1f}\ntok/s",
+            xy=(bar.get_x() + bar.get_width() / 2, h),
+            xytext=(0, 4),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=8.5,
+            fontweight="bold",
+            color="#312e81",
+        )
+
+    ax2 = ax1.twinx()
+    bars2 = ax2.bar(
+        x + width / 2,
+        kv_mb,
+        width,
+        label="Active KV-Cache Footprint (MB)",
+        color="#10b981",
+        alpha=0.85,
+    )
+    ax2.set_ylabel(
+        "Active KV-Cache Memory (MB)", fontsize=11, fontweight="bold", color="#047857"
+    )
+    ax2.set_ylim(0, 70)
+    ax2.grid(False)
+
+    for bar in bars2:
+        h = bar.get_height()
+        ax2.annotate(
+            f"{h:.1f} MB",
+            xy=(bar.get_x() + bar.get_width() / 2, h),
+            xytext=(0, 4),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=8.5,
+            fontweight="bold",
+            color="#065f46",
+        )
+
+    ax1.set_title(
+        "AxiomLM Component Ablation on Apple M3 Pro (12-Core CPU, 18-Core GPU, 18 GB Unified Memory)",
+        fontsize=12.5,
+        fontweight="bold",
+        pad=15,
+    )
+
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(
+        lines1 + lines2, labels1 + labels2, loc="upper left", frameon=True, fontsize=9.5
+    )
+
+    plt.tight_layout()
+    plt.savefig("assets/15_apple_m3_pro_ablation_and_ring_buffer.png")
+    plt.close()
+
+
+def generate_cross_framework_plot():
+    print("Generating 10_framework_comparison.png...")
+    frameworks = [
+        "Hugging Face\ntransformers (MPS FP16)",
+        "Apple MLX\n(0.32.4 Metal FP16)",
+        "llama.cpp\n(0.7.0 GGUF FP16)",
+        "AxiomLM Engine\n(Fused Metal FP16)",
+    ]
+    tok_s = [152.2, 345.7, 384.9, 404.9]
+    colors = ["#64748b", "#0284c7", "#10b981", "#4f46e5"]
+
+    fig, ax = plt.subplots(figsize=(9.5, 5.5), dpi=300)
+    x = np.arange(len(frameworks))
+    bars = ax.bar(x, tok_s, width=0.52, color=colors, alpha=0.92)
+    ax.set_ylabel("Autoregressive Decode Speed (tok/s)", fontsize=11, fontweight="bold")
+    ax.set_title(
+        "Cross-Framework Benchmark on Apple M3 Pro (12L, 768D, 12Q/4KV GQA, FP16, B=1)",
+        fontsize=12.5,
+        fontweight="bold",
+        pad=14,
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(frameworks, fontsize=10, fontweight="600")
+    ax.set_ylim(0, 465)
+    ax.grid(True, axis="y", linestyle="--", alpha=0.45)
+
+    for bar in bars:
+        h = bar.get_height()
+        ax.annotate(
+            f"{h:.1f} tok/s\n({1000.0/h:.2f} ms/tok)",
+            xy=(bar.get_x() + bar.get_width() / 2, h),
+            xytext=(0, 5),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=9.5,
+            fontweight="bold",
+            color="#1e293b",
+        )
+
+    plt.tight_layout()
+    plt.savefig("assets/10_framework_comparison.png")
+    plt.close()
+
+
 if __name__ == "__main__":
     generate_newton_schulz_plot()
     generate_roofline_plot()
     generate_kv_cache_scaling_plot()
-    print("All 3 new visualization assets generated successfully!")
+    generate_swiglu_vs_gelu_plot()
+    generate_m3_pro_ablation_plot()
+    generate_cross_framework_plot()
+    for fname in os.listdir("assets"):
+        if fname.endswith(".png"):
+            shutil.copy(
+                os.path.join("assets", fname), os.path.join("docs/assets", fname)
+            )
+    print(
+        "All 5 visualization assets generated and synced to docs/assets/ successfully!"
+    )

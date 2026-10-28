@@ -238,6 +238,70 @@ def triton_swiglu_forward(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def triton_rmsnorm_backward(
+    grad_y: torch.Tensor,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    rsqrt_cache: torch.Tensor,
+    eps: float = 1e-6,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Triton implementation of RMSNorm backward pass."""
+    if not HAS_TRITON or triton is None:
+        raise RuntimeError(
+            "OpenAI Triton is not installed or available on this system."
+        )
+    M = x.numel() // x.size(-1)
+    N = x.size(-1)
+    dy_2d = grad_y.contiguous().view(M, N)
+    x_2d = x.contiguous().view(M, N)
+    dx_2d = torch.empty_like(x_2d)
+    dw_2d = torch.empty((M, N), device=x.device, dtype=torch.float32)
+
+    BLOCK_SIZE = triton.next_power_of_2(N)
+    _rmsnorm_backward_kernel[(M,)](
+        dy_2d,
+        x_2d,
+        weight,
+        rsqrt_cache,
+        dx_2d,
+        dw_2d,
+        dy_2d.stride(0),
+        x_2d.stride(0),
+        dx_2d.stride(0),
+        dw_2d.stride(0),
+        N,
+        BLOCK_SIZE=BLOCK_SIZE,
+    )
+    grad_w = dw_2d.sum(dim=0).to(weight.dtype)
+    return dx_2d.view_as(x), grad_w
+
+
+def triton_swiglu_backward(
+    grad_y: torch.Tensor, gate: torch.Tensor, up: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Triton implementation of SwiGLU backward pass."""
+    if not HAS_TRITON or triton is None:
+        raise RuntimeError(
+            "OpenAI Triton is not installed or available on this system."
+        )
+    grad_gate = torch.empty_like(gate)
+    grad_up = torch.empty_like(up)
+    N = gate.numel()
+    BLOCK_SIZE = 1024
+    grid = (triton.cdiv(N, BLOCK_SIZE),)
+    _swiglu_backward_kernel[grid](
+        grad_y, gate, up, grad_gate, grad_up, N, BLOCK_SIZE=BLOCK_SIZE
+    )
+    return grad_gate, grad_up
+
+
+# Aliases for seamless dispatch compatibility with ops.py
+rmsnorm_forward = triton_rmsnorm_forward
+rmsnorm_backward = triton_rmsnorm_backward
+swiglu_forward = triton_swiglu_forward
+swiglu_backward = triton_swiglu_backward
+
+
 # ----------------------------------------------------------------------------
 # 3. Fused Scaled Dot-Product Attention (Tiled SDPA)
 # ----------------------------------------------------------------------------

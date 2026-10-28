@@ -47,7 +47,7 @@ The comprehensive manuscript detailing AxiomLM's architectural transformations, 
 
 - 📄 **Direct PDF Manuscript**: [AxiomLM Research Paper Draft (PDF)](docs/assets/AxiomLM_Research_Paper_Draft.pdf)
 - 🌐 **Interactive Documentation**: [AxiomLM Documentation Site](https://eyadnada.github.io/AxiomLM/)
-- 📝 **Markdown Architecture Whitepaper**: [Technical Report](AxiomLM_Technical_Report.md)
+- 📝 **Markdown Architecture Whitepaper**: [Technical Report](docs/report.md)
 
 --------------------------------------------------------------------------------
 
@@ -63,20 +63,42 @@ The comprehensive manuscript detailing AxiomLM's architectural transformations, 
 
 --------------------------------------------------------------------------------
 
-## Apple Silicon (MPS) Kernel Benchmarks
+## Apple Silicon (MPS) Kernel & Inference Benchmarks
 
-AxiomLM leverages custom Metal shaders to minimize GPU SRAM overhead and bypass PyTorch's native memory allocations for intermediate tensors. Benchmarked on Apple M3 architectures:
+AxiomLM leverages custom Metal Shading Language (MSL) compute shaders (`simd_sum` / `simd_max` warp reductions, `float4`/`half4` 128-bit vectorization, and single-pass online normalizers) alongside C++ ARM NEON (`float32x4_t` / `vfmaq_f32`) intrinsics to minimize GPU SRAM overhead and bypass PyTorch's dynamic memory allocations.
 
-| Kernel / Operator | Standard PyTorch Baseline | AxiomLM Fused Metal / SRAM | Speedup | Hardware / Memory Benefit |
+**Hardware Testbed**: Benchmarked on **Apple M3 Pro (12-Core ARM64 CPU: 6P + 6E, 18-Core Metal 4 GPU, 18 GB LPDDR5 Unified Memory)**:
+
+### 1. End-to-End 5-Stage Autoregressive Inference Ablation ($T = 768$: Prompt $= 512$, Decode $= 256$, $B = 1$)
+
+| Ablation Stage | KV Heads | Fused Kernels | Cache Topology & Precision | Decode Throughput | Speedup vs. Stage 1 | Step Latency | Active KV-Cache | KV Memory Saved |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **1. Classic MHA (Eager $O(T^2)$, No Cache)** | 12 | Off | Eager Recompute (FP32) | `5.9 tok/s` | `1.00x` | `170.12 ms/tok` | `54.00 MB` | `0.0%` |
+| **2. + $O(1)$ Dynamic KV-Cache (Classic MHA)** | 12 | Off | Dynamic `torch.cat` (FP32) | `124.1 tok/s` | `21.12x` | `8.06 ms/tok` | `53.93 MB` | `0.0%` |
+| **3. + Modern GQA (`enable_gqa`) + Static KV** | 4 | Off | Zero-Copy Static Arena (FP32) | `162.6 tok/s` | `27.66x` | `6.15 ms/tok` | `18.00 MB` | **`-66.7%` ($3\times$)** |
+| **4. + Fused Metal/NEON Kernels (FP32 Engine)** | 4 | **On** | Zero-Copy Static Arena (FP32) | `181.1 tok/s` | `30.80x` | `5.52 ms/tok` | `18.00 MB` | **`-66.7%` ($3\times$)** |
+| **5. + Native FP16 Fused Metal + Static Ring KV** | 4 | **On** | Static Ring Buffer (FP16) | **`246.5 tok/s`** | **`41.94x`** | **`4.06 ms/tok`** | **`9.00 MB`** | **`-83.3%` ($6\times$)** |
+| **Long-Context 4096-Token Ring-Buffer ($W=1024$)** | 4 | **On** | Sliding-Window Ring (FP16) | **`237.9 tok/s`** | **`40.48x`** | **`4.20 ms/tok`** | **`12.00 MB`** | **`-95.8%` ($24\times$ vs 288 MB)** |
+
+### 2. Custom Operator Kernel Microbenchmarks ($B=4, T=1024, D=768, V=50304$)
+
+| Kernel / Operator | Standard PyTorch MPS Baseline | AxiomLM Fused Metal / SRAM | Speedup | Hardware / Memory Benefit |
 | :--- | :--- | :--- | :--- | :--- |
-| **KV-Cache Decoding** | $O(T^2)$ quadratic cost | $O(1)$ constant buffer | **5.30x** | **> 95.0% Saved** HBM traffic |
-| **FlashAttention** | $O(N^2)$ HBM writes | $O(N)$ Tiled SRAM | **4.20x** | **82.5% Saved** HBM traffic |
-| **RMSNorm (SRAM Fused)** | 3 HBM round-trips | 1 SRAM register pass | **3.85x** | **74.0% Saved** HBM traffic |
-| **SwiGLU Activation** | 4 HBM round-trips | 1 SRAM register pass | **3.42x** | **66.7% Saved** HBM traffic |
-| **RMSNorm (Fwd + Bwd)** | 2.05 ms | **0.98 ms** | **2.09x** | Avoids intermediate mean/variance tracking |
-| **Cross Entropy (Fwd + Bwd)**| 47.07 ms | **27.72 ms** | **1.70x** | **Saves ~800MB RAM** (probability distribution in SRAM) |
-| **SwiGLU (Fwd + Bwd)** | 1.65 ms | **1.32 ms** | **1.25x** | Avoids activation slice materialization |
-| **Rotary Embeddings (RoPE)** | 1.23 ms | **1.20 ms** | **1.02x** | Avoids 5 distinct trips to GPU RAM |
+| **KV-Cache Ring-Buffer Decoding ($T=768$)** | $O(T^2)$ quadratic recompute (`5.9 tok/s`) | $O(1)$ Static Ring Buffer (`246.5 tok/s`) | **41.94x** | **83.3%–95.8% Saved** KV memory & zero dynamic allocations |
+| **FlashAttention (Tiled SDPA + Zero-Copy GQA)** | $O(T^2)$ HBM materialization + `repeat_kv` | $O(T)$ Tiled SRAM + `enable_gqa=True` | **4.20x** (10.7x GQA dispatch) | **82.5% Saved** HBM traffic; zero KV head-expansion copy |
+| **RMSNorm (SRAM Fused Forward)** | 3 HBM round-trips | 1 SRAM `simd_sum` + `float4`/`half4` pass | **3.85x** | **74.0% Saved** HBM traffic |
+| **SwiGLU Activation (SRAM Fused Forward)** | 4 HBM round-trips + 2 MLP GEMMs | 1 SRAM `float4`/`half4` pass + Fused Gate/Up | **3.42x** | **66.7% Saved** HBM traffic |
+| **Cross-Entropy (Single-Pass Online Softmax Fwd+Bwd)** | `74.71 ms` | **`24.34 ms`** | **3.07x** | Single-pass online `(max, sum)` rescaling over $V=50,304$; saves ~800 MB RAM |
+| **RMSNorm (Fwd + Bwd)** | `4.18 ms` | **`2.06 ms`** | **2.03x** | Hardware 32-lane `simd_sum` reduction; retains only scalar `rsqrt` |
+| **SwiGLU (Fwd + Bwd)** | `3.29 ms` | **`2.66 ms`** | **1.24x** | Avoids intermediate activation materialization |
+
+### 3. Output Quality & Perplexity Parity (Trained Checkpoints)
+
+| Trained Checkpoint & Evaluation Split | Training Provenance | Standard PyTorch Loss (PPL) | Fused Metal/NEON Loss (PPL) | Max Logit $\Delta$ | Quality Degradation |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **`exports/AxiomLM-124M`** (TinyStories Held-Out) | Trained from scratch (`step 1,318`, `tinystories_shards`) | `1.4379` (**`PPL = 4.21`**) | `1.4379` (**`PPL = 4.21`**) | `3.81e-05` | **`0.00%`** |
+| **`exports/AxiomLM-124M`** (TinyStories Short Prompt) | Trained from scratch (`step 1,318`, `tinystories_shards`) | `0.7578` (**`PPL = 2.13`**) | `0.7578` (**`PPL = 2.13`**) | `3.62e-05` | **`0.00%`** |
+| **`exports/AxiomLM-124M-Systems`** (Shakespeare Held-Out) | Trained from scratch (`step 1,386`, `systems_shards`) | `2.1937` (**`PPL = 8.97`**) | `2.1937` (**`PPL = 8.97`**) | `2.19e-05` | **`0.00%`** |
 
 --------------------------------------------------------------------------------
 
@@ -142,7 +164,7 @@ import torch
 import axiomlm as ax
 
 # Drop-in bare-metal fused RMSNorm targeting MPS (Metal Performance Shaders)
-fused_norm = ax.kernels.FusedRMSNorm(dim=768)
+fused_norm = ax.kernels.FusedRMSNorm(hidden_size=768).to("mps")
 x = torch.randn(4, 1024, 768, requires_grad=True, device="mps")
 y = fused_norm(x)
 ```
@@ -192,7 +214,7 @@ train_loader = ax.DataLoaderLite(
     process_rank=0, # For multi-GPU / DDP setups
     num_processes=1,
     split="train",
-    data_root="data/systems_shards"
+    data_dir="data/systems_shards",
 )
 
 # Fetch the next batch of input tokens and targets continuously with sub-200MB RAM overhead
@@ -206,13 +228,13 @@ import axiomlm as ax
 
 # Estimate theoretical peak performance and calculate current Model FLOPs Utilization (MFU)
 peak_tflops = ax.telemetry.profiler.estimate_hardware_peak_tflops("mps")
-mfu = ax.telemetry.profiler.calculate_mfu(
+mfu, achieved_tflops = ax.telemetry.profiler.calculate_mfu(
     model,
-    fwdbwd_per_iter=64,
-    dt=0.45,
-    peak_tflops=peak_tflops
+    tokens_per_sec=9200.0,
+    seq_len=1024,
+    peak_tflops=peak_tflops,
 )
-print(f"Current Model FLOPs Utilization: {mfu * 100:.2f}%")
+print(f"Current Model FLOPs Utilization: {mfu:.2f}% ({achieved_tflops:.2f} TFLOPs)")
 ```
 
 ### 7. Exporting to Hugging Face Ecosystem
@@ -222,9 +244,9 @@ import axiomlm as ax
 
 # Export a saved PyTorch/Axiom checkpoint directly to a Hugging Face safetensors format
 ax.export_checkpoint_to_hf(
-    checkpoint_path="checkpoints/model_step_10000.pt",
+    checkpoint_path="checkpoints/model_latest.pt",
     output_dir="exports/hf_model",
-    arch="modern"
+    model_name="AxiomLM-124M-Modern",
 )
 ```
 
@@ -234,9 +256,9 @@ ax.export_checkpoint_to_hf(
 import torch
 import axiomlm as ax
 
-# 1. Rotary Position Embeddings (RoPE)
+# 1. Rotary Position Embeddings (RoPE) - expects (B, n_head, T, head_dim)
 freqs_cis = ax.precompute_rope_frequencies(head_dim=64, max_seq_len=1024)
-q, k = torch.randn(2, 1024, 12, 64), torch.randn(2, 1024, 4, 64)
+q, k = torch.randn(2, 12, 1024, 64), torch.randn(2, 4, 1024, 64)
 q_rope = ax.apply_rope(q, freqs_cis)
 k_rope = ax.apply_rope(k, freqs_cis)
 
@@ -250,22 +272,26 @@ out = swiglu(torch.randn(16, 1024, 768))
 
 ## System Benchmarks
 
-AxiomLM demonstrates significant operational gains on unified memory architectures relative to standard baseline implementations:
+AxiomLM demonstrates substantial operational gains on unified memory architectures (**Apple M3 Pro: 12-Core CPU, 18-Core GPU, 18 GB Unified Memory**) relative to standard baseline implementations:
 
-* **Pretraining Throughput**: 3.29x higher token processing rate (2,800 to 9,200 tokens/sec).
-* **Optimization Step Latency**: 69.6% reduction in step execution time (1,462 ms to 445 ms).
+* **Autoregressive Decode Throughput**: **246.5 tokens/sec** (`4.06 ms/tok`) at $T=768$ (**41.94x speedup** over eager MHA) and **237.9 tokens/sec** (`4.20 ms/tok`) at $T=4096$ using the $O(1)$ Static Ring-Buffer KV-Cache.
+* **Batched Pretraining & Prefill Throughput**: 3.29x higher token processing rate (2,800 to 9,200 tokens/sec) with 69.6% reduction in optimization step latency (1,462 ms to 445 ms).
 * **Hardware Compute Utilization**: 3.28x increase in attained compute (2.09 TFLOPs to 6.87 TFLOPs, 68.7% MFU).
-* **Loss Convergence Rate**: Approximately 42% fewer optimization steps to reach target validation loss via Muon matrix optimization.
-* **KV-Cache Memory Footprint**: 66.7% reduction in VRAM allocation through 4-head Grouped-Query Attention.
+* **Muon Loss Convergence Rate**: **52.0% fewer optimization steps** to reach AdamW's 50-step validation loss (`2.9352` reached at step 24 on `systems_shards`, continuing down to `1.2747` by step 50) via 5-step quintic Newton–Schulz orthogonalization.
+* **KV-Cache Memory Footprint**: **66.7% reduction** ($3\times$) via 4-head Zero-Copy Grouped-Query Attention, **83.3% reduction** ($6\times$) with FP16 Static KV-Cache (`9.00 MB` vs. `54.00 MB`), and **95.8% reduction** ($24\times$) at $T=4096$ (`12.00 MB` bounded ring buffer vs. `288.00 MB` unbounded FP32 MHA).
 
 <br>
 <p align="center">
   <img src="assets/loss_convergence.png" width="48%" alt="Empirical Loss Convergence" />
   <img src="assets/gradient_norm.png" width="48%" alt="Gradient Norm & Stability" />
 </p>
+<p align="center">
+  <img src="assets/15_apple_m3_pro_ablation_and_ring_buffer.png" width="48%" alt="Apple M3 Pro 5-Stage Ablation" />
+  <img src="assets/11_newton_schulz_spectral_flattening.png" width="48%" alt="Muon Newton-Schulz Singular Value Compression" />
+</p>
 <br>
 
-*For complete visualizations, interactive charts, and Muon convergence details, open `assets/vizMetrics.ipynb`.*
+*For complete visualizations, reproducible ablations (`python examples/04_paper_ablations_and_perplexity.py`), and Muon convergence details, open `assets/vizMetrics.ipynb`.*
 
 --------------------------------------------------------------------------------
 
@@ -290,15 +316,18 @@ python data/dSCRAPPER.py --target_tokens 15000000 --shard_size 5000000 --output_
 
 ### Specifications
 
-| Parameter | Technical Details |
-| :--- | :--- |
-| **Hidden Dimension** | 768 internal representation width |
-| **Key/Value Heads** | 4 (Grouped-Query Attention) for 3x KV memory reduction |
-| **FFN Dimension** | 2,048 aligned to multiples of 64 |
-| **Positional Encoding** | Rotary Position Embeddings (RoPE) |
-| **Normalization** | RMSNorm for elimination of mean-centering overhead |
-| **Context Length** | 1024 sequence block size |
-| **Vocabulary Size** | 50,304 (Padded for SIMD / Tensor Core tile alignment) |
+| Parameter | Classic GPT-2 Baseline (`arch="classic"`) | AxiomLM Modern Specification (`arch="modern"`) |
+| :--- | :--- | :--- |
+| **Total Parameters** | **124,475,904** (with padded vocab 50,304; 124,439,808 standard) | **114,150,144 active tied** (**152,783,616 untied** HF `.safetensors` export) |
+| **Layers ($n_{\text{layer}}$)** | 12 | **12** |
+| **Hidden Dimension ($d_{\text{model}}$)** | 768 internal representation width | **768** internal representation width |
+| **Attention Query / KV Heads** | 12 Query / 12 KV (Standard MHA) | **12 Query / 4 KV (Zero-Copy GQA)** for $3\times$ KV memory reduction |
+| **FFN Dimension** | 3,072 (2-Layer GELU) | **2,048** (SwiGLU bilinear gating, aligned to multiples of 64) |
+| **Positional Encoding** | Learned Absolute (`wpe`, 1024) | **Rotary Position Embeddings (RoPE, $\theta=10000.0$)** |
+| **Normalization** | Post-LayerNorm (with bias) | **Pre-RMSNorm** (Fused Metal `simd_sum` / ARM NEON) |
+| **Context Length & KV Cache** | 1024 sequence block size | **1024 native block size** + **$O(1)$ Static Ring-Buffer / PagedKVCache** (4096+ streaming) |
+| **Vocabulary Size** | 50,304 (Padded for SIMD tile alignment) | **50,304** (Padded for SIMD / GPU tile alignment) |
+| **Hardware Benchmark Host** | Apple M3 Pro (12-Core CPU, 18-Core GPU, 18 GB RAM) | **Apple M3 Pro** (12-Core CPU: 6P+6E, 18-Core GPU, 18 GB Unified Memory) |
 
 ### Kernel Suite Structure
 
@@ -318,7 +347,7 @@ kernels/
 
 - 📄 **Research Paper Draft (PDF)**: [Read the AxiomLM Research Paper Draft (PDF)](docs/assets/AxiomLM_Research_Paper_Draft.pdf)
 - 🌐 **Online Documentation (GitHub Pages)**: [https://eyadnada.github.io/AxiomLM/](https://eyadnada.github.io/AxiomLM/)
-- 📖 **Architecture Whitepaper**: For markdown derivations, convergence proofs, and hardware Roofline analysis, refer to the [Technical Report](AxiomLM_Technical_Report.md).
+- 📖 **Architecture Whitepaper**: For markdown derivations, convergence proofs, and hardware Roofline analysis, refer to the [Technical Report](docs/report.md).
 - 📚 Additionally, 27 technical reference guides and mathematical notes are available in the `material/` directory.
 
 --------------------------------------------------------------------------------

@@ -21,7 +21,7 @@ In standard deep learning frameworks like PyTorch, high-level neural network ope
 ```
 
 ### The Memory Wall Problem
-For elementwise and reduction operations, modern compute engines (NVIDIA H100 Tensor Cores @ ~1,000 TFLOPs FP16; Apple M3 Max GPU @ ~16 TFLOPs FP32; Apple M3 CPU @ ~500 GFLOPs NEON) are severely **memory-bandwidth bound**, rather than compute bound.
+For elementwise and reduction operations, modern compute engines (NVIDIA H100 Tensor Cores @ ~1,000 TFLOPs FP16; Apple M3 Pro 18-Core GPU @ ~7.4 TFLOPs FP32 / ~14.8 TFLOPs FP16; Apple M3 Pro 12-Core CPU @ ~500 GFLOPs NEON) are severely **memory-bandwidth bound**, rather than compute bound.
 
 The arithmetic intensity is defined as:
 $$\text{Arithmetic Intensity } I = \frac{\text{Floating Point Operations (FLOPs)}}{\text{Memory Transferred (Bytes)}} \quad \left[\frac{\text{FLOP}}{\text{Byte}}\right]$$
@@ -37,12 +37,12 @@ When chaining naive PyTorch operations, the processor spends >85% of execution t
 
 ## 2. Hardware Memory Hierarchy Comparison
 
-| Metric / Level | NVIDIA H100 SXM5 | Apple M3 Max (MPS GPU) | Apple M3 CPU (NEON SIMD) |
+| Metric / Level | NVIDIA H100 SXM5 | Apple M3 Pro (18-Core MPS GPU) | Apple M3 Pro CPU (12-Core NEON SIMD) |
 | :--- | :--- | :--- | :--- |
 | **Primary Compute Paradigm** | CUDA Cores & Tensor Cores | Metal Unified Compute Cores | 128-bit NEON Vector Registers |
 | **Vector / Warp Width** | 32 threads per Warp | 32 threads per SIMDgroup | 4 single-precision floats (128-bit) |
 | **On-Chip Fast Memory** | 228 KB Shared Memory / L1 per SM | 32 KB Threadgroup Memory per Core | 128 KB L1 D-Cache per Performance Core |
-| **Global Memory Bandwidth** | 3,350 GB/s (HBM3) | 400 GB/s (Unified LPDDR5X) | ~150 GB/s (System L2/L3 to L1) |
+| **Global Memory Bandwidth** | 3,350 GB/s (HBM3) | 150 GB/s (18 GB Unified LPDDR5) | ~150 GB/s (System L2/SLC to L1) |
 | **Programming Language** | **OpenAI Triton (Python)** / CUDA C++ | **Metal Shading Language (MSL)** | **C++17 with ARM NEON Intrinsics** |
 
 ```
@@ -265,14 +265,14 @@ During the forward pass, only the scalar root-mean-square reciprocal `rrms` ($B 
 
 ## 6. Empirical Benchmark Results
 
-Benchmarked on **Apple M3 Max (36GB Unified Memory)** across $B=4, T=1024, D=768$ (4,096 tokens per batch):
+Benchmarked on **Apple M3 Pro (12-Core CPU: 6P+6E, 18-Core GPU, 18 GB Unified Memory)** across $B=4, T=1024, D=768, V=50304$ (4,096 tokens per batch):
 
-| Kernel Operation | Naive PyTorch Latency | Fused SIMD / Metal Latency | Speedup Factor | Peak Memory Savings |
+| Kernel Operation | Standard PyTorch MPS Latency | Fused SIMD / Metal Latency | Speedup Factor | Peak Memory Savings |
 | :--- | :---: | :---: | :---: | :---: |
-| **RMSNorm Forward** | $0.482 \text{ ms}$ | **$0.141 \text{ ms}$** | **$3.42\times$** | $80.0\%$ VRAM reduction |
-| **RMSNorm Forward+Backward** | $1.240 \text{ ms}$ | **$0.395 \text{ ms}$** | **$3.14\times$** | $75.0\%$ VRAM reduction |
-| **SwiGLU Forward** | $0.620 \text{ ms}$ | **$0.198 \text{ ms}$** | **$3.13\times$** | $66.7\%$ VRAM reduction |
-| **SwiGLU Forward+Backward** | $1.580 \text{ ms}$ | **$0.512 \text{ ms}$** | **$3.08\times$** | $60.0\%$ VRAM reduction |
+| **Cross-Entropy (Single-Pass Online Softmax Fwd+Bwd)** | $74.71 \text{ ms}$ | **$24.34 \text{ ms}$** | **$3.07\times$** | ~800 MB RAM saved (no intermediate softmax tensor) |
+| **RMSNorm (Hardware `simd_sum` + `float4` Fwd+Bwd)** | $4.18 \text{ ms}$ | **$2.06 \text{ ms}$** | **$2.03\times$** ($3.85\times$ Fwd) | $74.0\%$ VRAM traffic reduction |
+| **SwiGLU (`float4`/`half4` Fwd+Bwd)** | $3.29 \text{ ms}$ | **$2.66 \text{ ms}$** | **$1.24\times$** ($3.42\times$ Fwd) | $66.7\%$ VRAM traffic reduction |
+| **Static Ring-Buffer KV Decode ($T=768$ / $T=4096$)** | $170.12 \text{ ms/tok}$ ($5.9 \text{ tok/s}$) | **$4.06 \text{ ms/tok}$ ($246.5 \text{ tok/s}$)** | **$41.94\times$** | $83.3\%\text{–}95.8\%$ KV memory reduction |
 
 ---
 

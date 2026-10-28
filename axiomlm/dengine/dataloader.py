@@ -4,7 +4,7 @@ AxiomLM Multi-Shard Streaming Binary DataLoader.
 
 import os
 import glob
-from typing import Tuple
+from typing import Tuple, Optional
 import numpy as np
 import torch
 
@@ -23,7 +23,10 @@ class DataLoaderLite:
         num_processes: int = 1,
         split: str = "train",
         data_dir: str = "data",
+        data_root: Optional[str] = None,
     ):
+        if data_root is not None:
+            data_dir = data_root
         self.B = B
         self.T = T
         self.process_rank = process_rank

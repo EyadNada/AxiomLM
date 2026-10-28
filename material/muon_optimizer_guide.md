@@ -59,7 +59,7 @@ $$A = X_k X_k^T$$
 $$B = b A + c A^2$$
 $$X_{k+1} = a X_k + B X_k$$
 
-After just **5 iterations** ($k = 5$), the singular values of $X_5$ satisfy $\sigma_i(X_5) \in [0.999, 1.001]$, yielding a near-perfect orthogonal update matrix!
+After just **5 iterations** ($k = 5$), the singular values of $X_5$ are compressed from an ill-conditioned exponential decay into the bounded interval $\sigma_i(X_5) \in [1 - \delta, 1 + \delta] \approx [0.70, 1.30]$ around $1.0$, yielding an effective approximate orthogonal update matrix!
 
 ```
 Gradient G ──► Heavy-Ball / Nesterov Momentum M ──► Scale X0 ──► [ Matmul Triplet Iteration ] (x5) ──► Orthogonal Update U ──► Weight W

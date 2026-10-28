@@ -15,6 +15,7 @@ from .paged_cache import PagedKVCache, SequenceContext
 
 
 from ..models.transformer import Transformer, ModelConfig
+from ..kernels.ops import _METAL_MOD
 
 
 def sample_logits(
@@ -30,6 +31,16 @@ def sample_logits(
     Applies temperature scaling, repetition penalty, Top-K, Min-P, and Top-P (Nucleus) truncation.
     Returns: Next token index tensor of shape (B, 1).
     """
+    if (
+        temperature <= 1e-4
+        and repetition_penalty == 1.0
+        and _METAL_MOD is not None
+        and logits.device.type == "mps"
+        and logits.dtype == torch.float16
+        and logits.size(0) == 1
+    ):
+        return _METAL_MOD.argmax_last_token_mps(logits)
+
     logits = logits.clone()
 
     if repetition_penalty != 1.0 and prev_tokens is not None:
@@ -356,19 +367,37 @@ def load_model(
                                 v_w = state_dict[
                                     f"model.layers.{l_idx}.self_attn.v_proj.weight"
                                 ]
-                                import torch
-
                                 new_sd[f"transformer.h.{l_idx}.attn.c_attn.weight"] = (
                                     torch.cat([q, k_w, v_w], dim=0)
                                 )
                 state_dict = new_sd
             else:
+                is_legacy_split_qkv = any(
+                    k.endswith(".attn.q_proj.weight") for k in state_dict.keys()
+                )
                 is_gpt2 = any(
                     "c_attn.weight" in k and v.shape[0] < v.shape[1]
                     for k, v in state_dict.items()
                     if isinstance(v, torch.Tensor)
                 )
-                if is_gpt2:
+                if is_legacy_split_qkv:
+                    new_sd = {}
+                    for k, v in state_dict.items():
+                        if k.endswith(".attn.q_proj.weight"):
+                            prefix = k[: -len("q_proj.weight")]
+                            k_w = state_dict[prefix + "k_proj.weight"]
+                            v_w = state_dict[prefix + "v_proj.weight"]
+                            new_sd[prefix + "c_attn.weight"] = torch.cat(
+                                [v, k_w, v_w], dim=0
+                            )
+                        elif k.endswith(".attn.k_proj.weight") or k.endswith(
+                            ".attn.v_proj.weight"
+                        ):
+                            continue
+                        else:
+                            new_sd[k] = v
+                    state_dict = new_sd
+                elif is_gpt2:
                     new_sd = {}
                     for k, v in state_dict.items():
                         if (

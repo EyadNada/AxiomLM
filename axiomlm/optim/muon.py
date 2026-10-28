@@ -11,12 +11,20 @@ def zeropower_via_newtonschulz5(
 ) -> torch.Tensor:
     """
     Computes the polar orthogonalization factor of 2D matrix G using 5-step quintic Newton-Schulz iteration.
-    Transforms matrix singular values toward sigma_i = 1.0.
+    Transforms matrix singular values toward sigma_i = 1.0 (specifically within [0.7, 1.2]).
+    Uses native FP16 on Apple Silicon (MPS) for maximum hardware matrix throughput.
     """
     assert len(G.shape) == 2, "G must be a 2D tensor"
     a, b, c = (3.4445, -4.7750, 2.0315)
-    X = G.bfloat16() if G.dtype in [torch.float32, torch.bfloat16] else G.float()
-    X = X / (X.norm() + eps)
+    if G.device.type == "mps":
+        X = G.float()
+        X = (X / (X.norm() + eps)).half()
+    elif G.device.type == "cuda":
+        X = G.bfloat16() if G.dtype in [torch.float32, torch.bfloat16] else G.float()
+        X = X / (X.norm() + eps)
+    else:
+        X = G.float()
+        X = X / (X.norm() + eps)
     if G.size(0) > G.size(1):
         X = X.T
     for _ in range(steps):

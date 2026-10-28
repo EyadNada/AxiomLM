@@ -5,7 +5,7 @@ AxiomLM Hugging Face Safetensors Model Exporter.
 import os
 import json
 import argparse
-from typing import Dict
+from typing import Dict, Optional
 import torch
 import re
 
@@ -17,6 +17,7 @@ def export_checkpoint_to_hf(
     output_dir: str,
     model_name: str = "AxiomLM-124M-Modern",
     license_type: str = "mit",
+    arch: Optional[str] = None,
 ) -> None:
     """
     Loads an AxiomLM PyTorch .pt checkpoint, converts its tensors to standard Hugging Face

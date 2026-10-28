@@ -39,6 +39,7 @@ log/
 TODO_ROADMAP.md
 .TODO.md
 *.local.md
+mlxKiller.md
 
 # Build and packaging artifacts
 *.egg-info/
@@ -48,7 +49,7 @@ site/
 *.pkg
 *.dmg
 
-# Generated Research Papers & Scripts
+# Generated Research Papers, Reports & Scripts
 AxiomLM_Extended_Research_Paper.docx
 AxiomLM_Extended_Research_Paper.txt
 make_docx_extended.py
@@ -57,3 +58,6 @@ generate_docx.py
 ~$*.docx
 research_paper.docx
 AXIOM_PUBLISHING_STRATEGY.md
+AxiomLM_Technical_Report.md
+docs/assets/AxiomLM_Research_Paper_Draft_v2.md
+reply.pdf

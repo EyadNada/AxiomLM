@@ -35,11 +35,23 @@ static id<MTLComputePipelineState> get_pipeline(id<MTLDevice> device, id<MTLLibr
 static id<MTLDevice> mtl_device = nil;
 static id<MTLLibrary> mtl_library = nil;
 static id<MTLComputePipelineState> rmsnorm_fwd_pso = nil;
+static id<MTLComputePipelineState> rmsnorm_fwd_half_pso = nil;
+static id<MTLComputePipelineState> add_rmsnorm_fwd_pso = nil;
+static id<MTLComputePipelineState> add_rmsnorm_fwd_half_pso = nil;
+static id<MTLComputePipelineState> embed_rmsnorm_fwd_pso = nil;
+static id<MTLComputePipelineState> embed_rmsnorm_fwd_half_pso = nil;
+static id<MTLComputePipelineState> argmax_half_pso = nil;
 static id<MTLComputePipelineState> rmsnorm_bwd_pso = nil;
 static id<MTLComputePipelineState> rmsnorm_bwd_weight_pso = nil;
 static id<MTLComputePipelineState> swiglu_fwd_pso = nil;
+static id<MTLComputePipelineState> swiglu_fwd_half_pso = nil;
+static id<MTLComputePipelineState> swiglu_gate_up_pso = nil;
+static id<MTLComputePipelineState> swiglu_gate_up_half_pso = nil;
 static id<MTLComputePipelineState> swiglu_bwd_pso = nil;
 static id<MTLComputePipelineState> rope_pso = nil;
+static id<MTLComputePipelineState> rope_half_pso = nil;
+static id<MTLComputePipelineState> rope_kv_write_pso = nil;
+static id<MTLComputePipelineState> rope_kv_write_half_pso = nil;
 static id<MTLComputePipelineState> ce_fwd_pso = nil;
 static id<MTLComputePipelineState> ce_bwd_pso = nil;
 static id<MTLComputePipelineState> fa_fwd_pso = nil;
@@ -52,11 +64,23 @@ void init_mps(std::string metal_path) {
         mtl_library = load_metal_library(mtl_device, ns_path);
         if (mtl_library) {
             rmsnorm_fwd_pso = get_pipeline(mtl_device, mtl_library, @"rmsnorm_forward_kernel");
+            rmsnorm_fwd_half_pso = get_pipeline(mtl_device, mtl_library, @"rmsnorm_forward_half_kernel");
+            add_rmsnorm_fwd_pso = get_pipeline(mtl_device, mtl_library, @"add_rmsnorm_forward_kernel");
+            add_rmsnorm_fwd_half_pso = get_pipeline(mtl_device, mtl_library, @"add_rmsnorm_forward_half_kernel");
+            embed_rmsnorm_fwd_pso = get_pipeline(mtl_device, mtl_library, @"embed_rmsnorm_forward_kernel");
+            embed_rmsnorm_fwd_half_pso = get_pipeline(mtl_device, mtl_library, @"embed_rmsnorm_forward_half_kernel");
+            argmax_half_pso = get_pipeline(mtl_device, mtl_library, @"argmax_half_kernel");
             rmsnorm_bwd_pso = get_pipeline(mtl_device, mtl_library, @"rmsnorm_backward_kernel");
             rmsnorm_bwd_weight_pso = get_pipeline(mtl_device, mtl_library, @"rmsnorm_backward_weight_kernel");
             swiglu_fwd_pso = get_pipeline(mtl_device, mtl_library, @"swiglu_forward_kernel");
+            swiglu_fwd_half_pso = get_pipeline(mtl_device, mtl_library, @"swiglu_forward_half_kernel");
+            swiglu_gate_up_pso = get_pipeline(mtl_device, mtl_library, @"swiglu_gate_up_kernel");
+            swiglu_gate_up_half_pso = get_pipeline(mtl_device, mtl_library, @"swiglu_gate_up_half_kernel");
             swiglu_bwd_pso = get_pipeline(mtl_device, mtl_library, @"swiglu_backward_kernel");
             rope_pso = get_pipeline(mtl_device, mtl_library, @"rope_kernel");
+            rope_half_pso = get_pipeline(mtl_device, mtl_library, @"rope_half_kernel");
+            rope_kv_write_pso = get_pipeline(mtl_device, mtl_library, @"rope_kv_cache_write_kernel");
+            rope_kv_write_half_pso = get_pipeline(mtl_device, mtl_library, @"rope_kv_cache_write_half_kernel");
             ce_fwd_pso = get_pipeline(mtl_device, mtl_library, @"cross_entropy_forward_kernel");
             ce_bwd_pso = get_pipeline(mtl_device, mtl_library, @"cross_entropy_backward_kernel");
             fa_fwd_pso = get_pipeline(mtl_device, mtl_library, @"flash_attention_forward_kernel");
@@ -123,7 +147,7 @@ std::tuple<torch::Tensor, torch::Tensor> rmsnorm_forward_mps(torch::Tensor x, to
     auto out = torch::empty_like(x);
     int64_t D = x.size(-1);
     int64_t num_rows = x.numel() / D;
-    auto rsqrt_cache = torch::empty({num_rows}, x.options());
+    auto rsqrt_cache = torch::empty({num_rows}, x.options().dtype(torch::kFloat32));
 
     id<MTLBuffer> x_buf = getMTLBufferStorage(x);
     id<MTLBuffer> w_buf = getMTLBufferStorage(weight);
@@ -133,7 +157,8 @@ std::tuple<torch::Tensor, torch::Tensor> rmsnorm_forward_mps(torch::Tensor x, to
     auto stream = at::mps::getCurrentMPSStream();
     id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
 
-    [encoder setComputePipelineState:rmsnorm_fwd_pso];
+    id<MTLComputePipelineState> pso = (x.scalar_type() == at::kHalf) ? rmsnorm_fwd_half_pso : rmsnorm_fwd_pso;
+    [encoder setComputePipelineState:pso];
     [encoder setBuffer:x_buf offset:x.storage_offset() * x.element_size() atIndex:0];
     [encoder setBuffer:w_buf offset:weight.storage_offset() * weight.element_size() atIndex:1];
     [encoder setBuffer:y_buf offset:out.storage_offset() * out.element_size() atIndex:2];
@@ -143,15 +168,135 @@ std::tuple<torch::Tensor, torch::Tensor> rmsnorm_forward_mps(torch::Tensor x, to
     [encoder setBytes:&eps length:sizeof(float) atIndex:5];
 
     MTLSize gridSize = MTLSizeMake(num_rows, 1, 1);
-    // MUST be a power of 2 for the reduction tree in metal_kernels.metal to work!
     NSUInteger threadGroupSize = 256;
     MTLSize threadsPerThreadgroup = MTLSizeMake(threadGroupSize, 1, 1);
 
     [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:threadsPerThreadgroup];
 
-    // PyTorch manages ending the encoder, so do not call [encoder endEncoding]
-
     return std::make_tuple(out, rsqrt_cache);
+}
+
+static inline void dispatch_rmsnorm_infer_into(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& x,
+    const torch::Tensor& weight,
+    torch::Tensor& out,
+    float eps) {
+    int64_t D = x.size(-1);
+    int64_t num_rows = x.numel() / D;
+    id<MTLComputePipelineState> pso = (x.scalar_type() == at::kHalf) ? rmsnorm_fwd_half_pso : rmsnorm_fwd_pso;
+    [encoder setComputePipelineState:pso];
+    [encoder setBuffer:getMTLBufferStorage(x) offset:x.storage_offset() * x.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(weight) offset:weight.storage_offset() * weight.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(out) offset:out.storage_offset() * out.element_size() atIndex:2];
+    [encoder setBuffer:nil offset:0 atIndex:3];
+    uint32_t D_uint = D;
+    [encoder setBytes:&D_uint length:sizeof(uint32_t) atIndex:4];
+    [encoder setBytes:&eps length:sizeof(float) atIndex:5];
+    NSUInteger threadGroupSize = (num_rows <= 4) ? 64 : 256;
+    [encoder dispatchThreadgroups:MTLSizeMake(num_rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(threadGroupSize, 1, 1)];
+}
+
+static inline void dispatch_embed_rmsnorm_infer_into(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& idx,
+    const torch::Tensor& wte_weight,
+    const torch::Tensor& ln1_weight,
+    torch::Tensor& x_out,
+    torch::Tensor& norm_out,
+    float eps) {
+    int64_t D = wte_weight.size(-1);
+    id<MTLComputePipelineState> pso = (wte_weight.scalar_type() == at::kHalf)
+        ? embed_rmsnorm_fwd_half_pso
+        : embed_rmsnorm_fwd_pso;
+    [encoder setComputePipelineState:pso];
+    [encoder setBuffer:getMTLBufferStorage(idx) offset:idx.storage_offset() * idx.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(wte_weight) offset:wte_weight.storage_offset() * wte_weight.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(ln1_weight) offset:ln1_weight.storage_offset() * ln1_weight.element_size() atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(x_out) offset:x_out.storage_offset() * x_out.element_size() atIndex:3];
+    [encoder setBuffer:getMTLBufferStorage(norm_out) offset:norm_out.storage_offset() * norm_out.element_size() atIndex:4];
+    uint32_t D_uint = D;
+    [encoder setBytes:&D_uint length:sizeof(uint32_t) atIndex:5];
+    [encoder setBytes:&eps length:sizeof(float) atIndex:6];
+    [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+}
+
+torch::Tensor argmax_last_token_mps(torch::Tensor logits) {
+    auto out = torch::empty({1, 1}, logits.options().dtype(torch::kLong));
+    uint32_t V = logits.size(-1);
+    NSUInteger row_offset = (logits.storage_offset() + (logits.numel() - V)) * logits.element_size();
+    auto stream = at::mps::getCurrentMPSStream();
+    id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+    [encoder setComputePipelineState:argmax_half_pso];
+    [encoder setBuffer:getMTLBufferStorage(logits) offset:row_offset atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(out) offset:0 atIndex:1];
+    [encoder setBytes:&V length:sizeof(uint32_t) atIndex:2];
+    [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+    return out;
+}
+
+torch::Tensor rmsnorm_infer_mps(torch::Tensor x, torch::Tensor weight, float eps) {
+    auto out = torch::empty_like(x);
+    auto stream = at::mps::getCurrentMPSStream();
+    dispatch_rmsnorm_infer_into(stream->commandEncoder(), x, weight, out, eps);
+    return out;
+}
+
+static inline void dispatch_add_rmsnorm_infer_into(
+    id<MTLComputeCommandEncoder> encoder,
+    torch::Tensor& x_inout,
+    const torch::Tensor& residual,
+    const torch::Tensor& weight,
+    torch::Tensor& out,
+    float eps) {
+    int64_t D = x_inout.size(-1);
+    int64_t num_rows = x_inout.numel() / D;
+    id<MTLComputePipelineState> pso = (x_inout.scalar_type() == at::kHalf) ? add_rmsnorm_fwd_half_pso : add_rmsnorm_fwd_pso;
+    [encoder setComputePipelineState:pso];
+    [encoder setBuffer:getMTLBufferStorage(x_inout) offset:x_inout.storage_offset() * x_inout.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(residual) offset:residual.storage_offset() * residual.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(weight) offset:weight.storage_offset() * weight.element_size() atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(out) offset:out.storage_offset() * out.element_size() atIndex:3];
+    uint32_t D_uint = D;
+    [encoder setBytes:&D_uint length:sizeof(uint32_t) atIndex:4];
+    [encoder setBytes:&eps length:sizeof(float) atIndex:5];
+    NSUInteger threadGroupSize = (num_rows <= 4) ? 64 : 256;
+    [encoder dispatchThreadgroups:MTLSizeMake(num_rows, 1, 1) threadsPerThreadgroup:MTLSizeMake(threadGroupSize, 1, 1)];
+}
+
+torch::Tensor add_rmsnorm_infer_mps(torch::Tensor x_inout, torch::Tensor residual, torch::Tensor weight, float eps) {
+    auto out = torch::empty_like(x_inout);
+    auto stream = at::mps::getCurrentMPSStream();
+    dispatch_add_rmsnorm_infer_into(stream->commandEncoder(), x_inout, residual, weight, out, eps);
+    return out;
+}
+
+static inline void dispatch_swiglu_gate_up_into(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& gate_up,
+    torch::Tensor& out) {
+    int64_t D = out.size(-1);
+    uint32_t D_vec4 = D / 4;
+    uint32_t total_vec4 = out.numel() / 4;
+    id<MTLComputePipelineState> pso = (gate_up.scalar_type() == at::kHalf) ? swiglu_gate_up_half_pso : swiglu_gate_up_pso;
+    [encoder setComputePipelineState:pso];
+    [encoder setBuffer:getMTLBufferStorage(gate_up) offset:gate_up.storage_offset() * gate_up.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(out) offset:out.storage_offset() * out.element_size() atIndex:1];
+    [encoder setBytes:&D_vec4 length:sizeof(uint32_t) atIndex:2];
+    [encoder setBytes:&total_vec4 length:sizeof(uint32_t) atIndex:3];
+    NSUInteger threadGroupSize = 256;
+    [encoder dispatchThreadgroups:MTLSizeMake((total_vec4 + threadGroupSize - 1) / threadGroupSize, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(threadGroupSize, 1, 1)];
+}
+
+torch::Tensor swiglu_gate_up_mps(torch::Tensor gate_up) {
+    auto sizes = gate_up.sizes().vec();
+    int64_t D = sizes.back() / 2;
+    sizes.back() = D;
+    auto out = torch::empty(sizes, gate_up.options());
+    auto stream = at::mps::getCurrentMPSStream();
+    dispatch_swiglu_gate_up_into(stream->commandEncoder(), gate_up, out);
+    return out;
 }
 
 torch::Tensor swiglu_forward_mps(torch::Tensor gate, torch::Tensor up) {
@@ -165,14 +310,15 @@ torch::Tensor swiglu_forward_mps(torch::Tensor gate, torch::Tensor up) {
     auto stream = at::mps::getCurrentMPSStream();
     id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
 
-    [encoder setComputePipelineState:swiglu_fwd_pso];
+    id<MTLComputePipelineState> pso = (gate.scalar_type() == at::kHalf) ? swiglu_fwd_half_pso : swiglu_fwd_pso;
+    [encoder setComputePipelineState:pso];
     [encoder setBuffer:gate_buf offset:gate.storage_offset() * gate.element_size() atIndex:0];
     [encoder setBuffer:up_buf offset:up.storage_offset() * up.element_size() atIndex:1];
     [encoder setBuffer:y_buf offset:out.storage_offset() * out.element_size() atIndex:2];
     uint32_t n = num_vec4;
     [encoder setBytes:&n length:sizeof(uint32_t) atIndex:3];
 
-    NSUInteger threadGroupSize = swiglu_fwd_pso.maxTotalThreadsPerThreadgroup;
+    NSUInteger threadGroupSize = pso.maxTotalThreadsPerThreadgroup;
     MTLSize threadsPerThreadgroup = MTLSizeMake(threadGroupSize, 1, 1);
     MTLSize gridSize = MTLSizeMake((num_vec4 + threadGroupSize - 1) / threadGroupSize, 1, 1);
 
@@ -213,18 +359,12 @@ std::tuple<torch::Tensor, torch::Tensor> swiglu_backward_mps(torch::Tensor grad_
     return std::make_tuple(grad_gate, grad_up);
 }
 
-
-
 torch::Tensor apply_rope_mps(torch::Tensor x, torch::Tensor freqs_cis, bool is_forward) {
     auto out = torch::empty_like(x);
 
-    // x shape: (B, n_head, T, head_dim)
-    // freqs_cis shape: (T, head_dim // 2)
-    // We treat x as a flat array of float2 (size: numel / 2)
-
     uint32_t T = x.size(2);
     uint32_t half_head_dim = x.size(3) / 2;
-    uint32_t num_elements = x.numel() / 2; // number of float2 vectors
+    uint32_t num_elements = x.numel() / 2;
     uint32_t forward = is_forward ? 1 : 0;
 
     id<MTLBuffer> x_buf = getMTLBufferStorage(x);
@@ -234,7 +374,8 @@ torch::Tensor apply_rope_mps(torch::Tensor x, torch::Tensor freqs_cis, bool is_f
     auto stream = at::mps::getCurrentMPSStream();
     id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
 
-    [encoder setComputePipelineState:rope_pso];
+    id<MTLComputePipelineState> pso = (x.scalar_type() == at::kHalf) ? rope_half_pso : rope_pso;
+    [encoder setComputePipelineState:pso];
     [encoder setBuffer:x_buf offset:x.storage_offset() * x.element_size() atIndex:0];
     [encoder setBuffer:freqs_buf offset:freqs_cis.storage_offset() * freqs_cis.element_size() atIndex:1];
     [encoder setBuffer:out_buf offset:out.storage_offset() * out.element_size() atIndex:2];
@@ -243,7 +384,7 @@ torch::Tensor apply_rope_mps(torch::Tensor x, torch::Tensor freqs_cis, bool is_f
     [encoder setBytes:&forward length:sizeof(uint32_t) atIndex:5];
     [encoder setBytes:&num_elements length:sizeof(uint32_t) atIndex:6];
 
-    NSUInteger threadGroupSize = rope_pso.maxTotalThreadsPerThreadgroup;
+    NSUInteger threadGroupSize = pso.maxTotalThreadsPerThreadgroup;
     MTLSize threadsPerThreadgroup = MTLSizeMake(threadGroupSize, 1, 1);
     MTLSize gridSize = MTLSizeMake((num_elements + threadGroupSize - 1) / threadGroupSize, 1, 1);
 
@@ -252,6 +393,338 @@ torch::Tensor apply_rope_mps(torch::Tensor x, torch::Tensor freqs_cis, bool is_f
     return out;
 }
 
+torch::Tensor apply_rope_inplace_mps(torch::Tensor x, torch::Tensor freqs_cis, int64_t start_pos) {
+    uint32_t T = x.size(2);
+    uint32_t half_head_dim = x.size(3) / 2;
+    uint32_t num_elements = x.numel() / 2;
+    uint32_t forward = 1;
+
+    id<MTLBuffer> x_buf = getMTLBufferStorage(x);
+    id<MTLBuffer> freqs_buf = getMTLBufferStorage(freqs_cis);
+
+    auto stream = at::mps::getCurrentMPSStream();
+    id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+
+    id<MTLComputePipelineState> pso = (x.scalar_type() == at::kHalf) ? rope_half_pso : rope_pso;
+    [encoder setComputePipelineState:pso];
+    NSUInteger x_offset = x.storage_offset() * x.element_size();
+    NSUInteger freqs_offset = (freqs_cis.storage_offset() + start_pos * half_head_dim * 2) * freqs_cis.element_size();
+    [encoder setBuffer:x_buf offset:x_offset atIndex:0];
+    [encoder setBuffer:freqs_buf offset:freqs_offset atIndex:1];
+    [encoder setBuffer:x_buf offset:x_offset atIndex:2];
+    [encoder setBytes:&T length:sizeof(uint32_t) atIndex:3];
+    [encoder setBytes:&half_head_dim length:sizeof(uint32_t) atIndex:4];
+    [encoder setBytes:&forward length:sizeof(uint32_t) atIndex:5];
+    [encoder setBytes:&num_elements length:sizeof(uint32_t) atIndex:6];
+
+    NSUInteger threadGroupSize = 256;
+    MTLSize threadsPerThreadgroup = MTLSizeMake(threadGroupSize, 1, 1);
+    MTLSize gridSize = MTLSizeMake((num_elements + threadGroupSize - 1) / threadGroupSize, 1, 1);
+
+    [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:threadsPerThreadgroup];
+
+    return x;
+}
+
+static inline void dispatch_rope_kv_cache_write(
+    id<MTLComputeCommandEncoder> encoder,
+    torch::Tensor& qkv,
+    const torch::Tensor& freqs_cis,
+    torch::Tensor& k_cache,
+    torch::Tensor& v_cache,
+    uint32_t q_pairs,
+    uint32_t kv_pairs,
+    uint32_t half_head_dim,
+    uint32_t max_seq_len,
+    int64_t start_pos,
+    uint32_t write_pos) {
+    uint32_t total_pairs = q_pairs + (kv_pairs << 1);
+    id<MTLComputePipelineState> pso = (qkv.scalar_type() == at::kHalf) ? rope_kv_write_half_pso : rope_kv_write_pso;
+    [encoder setComputePipelineState:pso];
+
+    NSUInteger qkv_offset = qkv.storage_offset() * qkv.element_size();
+    NSUInteger freqs_offset = (freqs_cis.storage_offset() + start_pos * half_head_dim * 2) * freqs_cis.element_size();
+    NSUInteger k_offset = k_cache.storage_offset() * k_cache.element_size();
+    NSUInteger v_offset = v_cache.storage_offset() * v_cache.element_size();
+
+    [encoder setBuffer:getMTLBufferStorage(qkv) offset:qkv_offset atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(freqs_cis) offset:freqs_offset atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(k_cache) offset:k_offset atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(v_cache) offset:v_offset atIndex:3];
+    [encoder setBytes:&q_pairs length:sizeof(uint32_t) atIndex:4];
+    [encoder setBytes:&kv_pairs length:sizeof(uint32_t) atIndex:5];
+    [encoder setBytes:&half_head_dim length:sizeof(uint32_t) atIndex:6];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:7];
+    [encoder setBytes:&write_pos length:sizeof(uint32_t) atIndex:8];
+
+    NSUInteger threadGroupSize = 256;
+    [encoder dispatchThreadgroups:MTLSizeMake((total_pairs + threadGroupSize - 1) / threadGroupSize, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(threadGroupSize, 1, 1)];
+}
+
+void rope_kv_cache_write_mps(
+    torch::Tensor qkv,
+    torch::Tensor freqs_cis,
+    torch::Tensor k_cache,
+    torch::Tensor v_cache,
+    int64_t q_dim,
+    int64_t kv_dim,
+    int64_t head_dim,
+    int64_t start_pos,
+    int64_t write_pos) {
+    uint32_t q_pairs = q_dim / 2;
+    uint32_t kv_pairs = kv_dim / 2;
+    uint32_t half_head_dim = head_dim / 2;
+    uint32_t max_seq_len = k_cache.size(2);
+    auto stream = at::mps::getCurrentMPSStream();
+    dispatch_rope_kv_cache_write(
+        stream->commandEncoder(),
+        qkv,
+        freqs_cis,
+        k_cache,
+        v_cache,
+        q_pairs,
+        kv_pairs,
+        half_head_dim,
+        max_seq_len,
+        start_pos,
+        (uint32_t)write_pos);
+}
+
+torch::Tensor transformer_decode_step_mps(
+    torch::Tensor idx,
+    torch::Tensor wte_weight,
+    torch::Tensor freqs_real,
+    std::vector<torch::Tensor> ln1_weights,
+    std::vector<torch::Tensor> c_attn_weights,
+    std::vector<torch::Tensor> c_proj_weights,
+    std::vector<torch::Tensor> ln2_weights,
+    std::vector<torch::Tensor> gate_up_weights,
+    std::vector<torch::Tensor> w_down_weights,
+    torch::Tensor lnf_weight,
+    std::vector<torch::Tensor> k_caches,
+    std::vector<torch::Tensor> v_caches,
+    torch::Tensor norm_buf,
+    torch::Tensor qkv_buf,
+    torch::Tensor attn_out_buf,
+    torch::Tensor gate_up_buf,
+    torch::Tensor swiglu_buf,
+    torch::Tensor mlp_out_buf,
+    torch::Tensor logits_buf,
+    int64_t n_head,
+    int64_t n_kv_head,
+    int64_t head_dim,
+    int64_t start_pos,
+    int64_t write_pos,
+    int64_t active_len,
+    float eps) {
+    auto x = at::embedding(wte_weight, idx);
+    int64_t n_layer = ln1_weights.size();
+    int64_t q_dim = n_head * head_dim;
+    int64_t kv_dim = n_kv_head * head_dim;
+    uint32_t q_pairs = q_dim / 2;
+    uint32_t kv_pairs = kv_dim / 2;
+    uint32_t half_head_dim = head_dim / 2;
+    uint32_t max_seq_len = k_caches[0].size(2);
+    bool enable_gqa = (n_head != n_kv_head);
+
+    auto q_view = qkv_buf.slice(2, 0, q_dim).view({1, n_head, 1, head_dim});
+    auto stream = at::mps::getCurrentMPSStream();
+    dispatch_rmsnorm_infer_into(stream->commandEncoder(), x, ln1_weights[0], norm_buf, eps);
+
+    for (int64_t i = 0; i < n_layer; ++i) {
+        at::linear_out(qkv_buf, norm_buf, c_attn_weights[i]);
+        dispatch_rope_kv_cache_write(
+            stream->commandEncoder(),
+            qkv_buf,
+            freqs_real,
+            k_caches[i],
+            v_caches[i],
+            q_pairs,
+            kv_pairs,
+            half_head_dim,
+            max_seq_len,
+            start_pos,
+            (uint32_t)write_pos);
+
+        auto k_active = (active_len == max_seq_len)
+            ? k_caches[i]
+            : k_caches[i].slice(2, 0, active_len);
+        auto v_active = (active_len == max_seq_len)
+            ? v_caches[i]
+            : v_caches[i].slice(2, 0, active_len);
+
+        auto attn_y = at::scaled_dot_product_attention(
+            q_view, k_active, v_active, {}, 0.0, false, c10::nullopt, enable_gqa);
+        at::linear_out(attn_out_buf, attn_y.view({1, 1, q_dim}), c_proj_weights[i]);
+
+        dispatch_add_rmsnorm_infer_into(
+            stream->commandEncoder(), x, attn_out_buf, ln2_weights[i], norm_buf, eps);
+
+        at::linear_out(gate_up_buf, norm_buf, gate_up_weights[i]);
+        dispatch_swiglu_gate_up_into(stream->commandEncoder(), gate_up_buf, swiglu_buf);
+        at::linear_out(mlp_out_buf, swiglu_buf, w_down_weights[i]);
+
+        const torch::Tensor& next_ln_w = (i + 1 < n_layer) ? ln1_weights[i + 1] : lnf_weight;
+        dispatch_add_rmsnorm_infer_into(
+            stream->commandEncoder(), x, mlp_out_buf, next_ln_w, norm_buf, eps);
+    }
+
+    at::linear_out(logits_buf, norm_buf, wte_weight);
+    return logits_buf;
+}
+
+struct DecodeGraphState {
+    torch::Tensor wte_weight;
+    torch::Tensor freqs_real;
+    std::vector<torch::Tensor> ln1_weights;
+    std::vector<torch::Tensor> c_attn_weights;
+    std::vector<torch::Tensor> c_proj_weights;
+    std::vector<torch::Tensor> ln2_weights;
+    std::vector<torch::Tensor> gate_up_weights;
+    std::vector<torch::Tensor> w_down_weights;
+    torch::Tensor lnf_weight;
+    std::vector<torch::Tensor> k_caches;
+    std::vector<torch::Tensor> v_caches;
+    torch::Tensor x_buf;
+    torch::Tensor x_buf_2d;
+    torch::Tensor norm_buf;
+    torch::Tensor qkv_buf;
+    torch::Tensor q_view;
+    torch::Tensor attn_out_buf;
+    torch::Tensor gate_up_buf;
+    torch::Tensor swiglu_buf;
+    torch::Tensor mlp_out_buf;
+    torch::Tensor logits_buf;
+    int64_t n_layer = 0;
+    int64_t n_head = 0;
+    int64_t n_kv_head = 0;
+    int64_t head_dim = 0;
+    int64_t q_dim = 0;
+    int64_t kv_dim = 0;
+    uint32_t q_pairs = 0;
+    uint32_t kv_pairs = 0;
+    uint32_t half_head_dim = 0;
+    uint32_t max_seq_len = 0;
+    bool enable_gqa = false;
+    float eps = 1e-6f;
+    bool initialized = false;
+
+    DecodeGraphState(
+        torch::Tensor wte_w,
+        torch::Tensor freqs_r,
+        std::vector<torch::Tensor> ln1_ws,
+        std::vector<torch::Tensor> c_attn_ws,
+        std::vector<torch::Tensor> c_proj_ws,
+        std::vector<torch::Tensor> ln2_ws,
+        std::vector<torch::Tensor> gate_up_ws,
+        std::vector<torch::Tensor> w_down_ws,
+        torch::Tensor lnf_w,
+        std::vector<torch::Tensor> k_cs,
+        std::vector<torch::Tensor> v_cs,
+        int64_t n_h,
+        int64_t n_kvh,
+        int64_t hd,
+        float epsilon)
+        : wte_weight(wte_w),
+          freqs_real(freqs_r),
+          ln1_weights(std::move(ln1_ws)),
+          c_attn_weights(std::move(c_attn_ws)),
+          c_proj_weights(std::move(c_proj_ws)),
+          ln2_weights(std::move(ln2_ws)),
+          gate_up_weights(std::move(gate_up_ws)),
+          w_down_weights(std::move(w_down_ws)),
+          lnf_weight(lnf_w),
+          k_caches(std::move(k_cs)),
+          v_caches(std::move(v_cs)),
+          n_layer((int64_t)this->ln1_weights.size()),
+          n_head(n_h),
+          n_kv_head(n_kvh),
+          head_dim(hd),
+          q_dim(n_h * hd),
+          kv_dim(n_kvh * hd),
+          q_pairs((uint32_t)((n_h * hd) / 2)),
+          kv_pairs((uint32_t)((n_kvh * hd) / 2)),
+          half_head_dim((uint32_t)(hd / 2)),
+          max_seq_len((uint32_t)this->k_caches[0].size(2)),
+          enable_gqa(n_h != n_kvh),
+          eps(epsilon),
+          initialized(true) {
+        auto opts = wte_weight.options();
+        int64_t d_model = q_dim;
+        int64_t qkv_dim = q_dim + 2 * kv_dim;
+        int64_t gu_dim = gate_up_weights[0].size(0);
+        int64_t hidden_dim = gu_dim / 2;
+        int64_t vocab_size = wte_weight.size(0);
+
+        x_buf = torch::empty({1, 1, d_model}, opts);
+        x_buf_2d = x_buf.view({1, d_model});
+        norm_buf = torch::empty({1, 1, d_model}, opts);
+        qkv_buf = torch::empty({1, 1, qkv_dim}, opts);
+        q_view = qkv_buf.slice(2, 0, d_model).view({1, n_head, 1, head_dim});
+        attn_out_buf = torch::empty({1, 1, d_model}, opts);
+        gate_up_buf = torch::empty({1, 1, gu_dim}, opts);
+        swiglu_buf = torch::empty({1, 1, hidden_dim}, opts);
+        mlp_out_buf = torch::empty({1, 1, d_model}, opts);
+        logits_buf = torch::empty({1, 1, vocab_size}, opts);
+    }
+
+    torch::Tensor step(
+        torch::Tensor idx,
+        int64_t start_pos,
+        int64_t write_pos,
+        int64_t active_len) {
+        auto stream = at::mps::getCurrentMPSStream();
+        if (idx.scalar_type() == at::kLong) {
+            dispatch_embed_rmsnorm_infer_into(
+                stream->commandEncoder(), idx, wte_weight, ln1_weights[0], x_buf, norm_buf, eps);
+        } else {
+            at::index_select_out(x_buf_2d, wte_weight, 0, idx.view({-1}));
+            dispatch_rmsnorm_infer_into(stream->commandEncoder(), x_buf, ln1_weights[0], norm_buf, eps);
+        }
+
+        for (int64_t i = 0; i < n_layer; ++i) {
+            at::linear_out(qkv_buf, norm_buf, c_attn_weights[i]);
+            dispatch_rope_kv_cache_write(
+                stream->commandEncoder(),
+                qkv_buf,
+                freqs_real,
+                k_caches[i],
+                v_caches[i],
+                q_pairs,
+                kv_pairs,
+                half_head_dim,
+                max_seq_len,
+                start_pos,
+                (uint32_t)write_pos);
+
+            auto k_active = (active_len == max_seq_len)
+                ? k_caches[i]
+                : k_caches[i].slice(2, 0, active_len);
+            auto v_active = (active_len == max_seq_len)
+                ? v_caches[i]
+                : v_caches[i].slice(2, 0, active_len);
+
+            auto attn_y = at::scaled_dot_product_attention(
+                q_view, k_active, v_active, {}, 0.0, false, c10::nullopt, enable_gqa);
+            at::linear_out(attn_out_buf, attn_y.view({1, 1, q_dim}), c_proj_weights[i]);
+
+            dispatch_add_rmsnorm_infer_into(
+                stream->commandEncoder(), x_buf, attn_out_buf, ln2_weights[i], norm_buf, eps);
+
+            at::linear_out(gate_up_buf, norm_buf, gate_up_weights[i]);
+            dispatch_swiglu_gate_up_into(stream->commandEncoder(), gate_up_buf, swiglu_buf);
+            at::linear_out(mlp_out_buf, swiglu_buf, w_down_weights[i]);
+
+            const torch::Tensor& next_ln_w = (i + 1 < n_layer) ? ln1_weights[i + 1] : lnf_weight;
+            dispatch_add_rmsnorm_infer_into(
+                stream->commandEncoder(), x_buf, mlp_out_buf, next_ln_w, norm_buf, eps);
+        }
+
+        at::linear_out(logits_buf, norm_buf, wte_weight);
+        return logits_buf;
+    }
+};
 
 torch::Tensor cross_entropy_forward_mps(torch::Tensor logits, torch::Tensor targets, int ignore_index) {
     uint32_t N = logits.size(0);
@@ -315,9 +788,7 @@ torch::Tensor cross_entropy_backward_mps(torch::Tensor logits, torch::Tensor tar
     return grad_logits;
 }
 
-
 torch::Tensor flash_attention_forward_mps(torch::Tensor q, torch::Tensor k, torch::Tensor v, bool is_causal) {
-    // q, k, v expected to be (B, n_head, T, head_dim)
     uint32_t B = q.size(0);
     uint32_t n_head = q.size(1);
     uint32_t seq_len_q = q.size(2);
@@ -360,10 +831,35 @@ torch::Tensor flash_attention_forward_mps(torch::Tensor q, torch::Tensor k, torc
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("init_metal", &init_mps, "Initialize Metal with path");
   m.def("rmsnorm_forward_mps", &rmsnorm_forward_mps, "MPS RMSNorm Forward");
+  m.def("rmsnorm_infer_mps", &rmsnorm_infer_mps, "MPS RMSNorm Inference (Zero-Alloc)");
+  m.def("add_rmsnorm_infer_mps", &add_rmsnorm_infer_mps, "MPS Fused In-Place Add + RMSNorm Inference");
+  m.def("argmax_last_token_mps", &argmax_last_token_mps, "MPS Fast Argmax over Vocabulary");
   m.def("rmsnorm_backward_mps", &rmsnorm_backward_mps, "MPS RMSNorm Backward");
   m.def("swiglu_forward_mps", &swiglu_forward_mps, "MPS SwiGLU Forward");
+  m.def("swiglu_gate_up_mps", &swiglu_gate_up_mps, "MPS SwiGLU Gate+Up Single-Buffer Forward");
   m.def("swiglu_backward_mps", &swiglu_backward_mps, "MPS SwiGLU Backward");
   m.def("apply_rope_mps", &apply_rope_mps, "MPS Apply RoPE");
+  m.def("apply_rope_inplace_mps", &apply_rope_inplace_mps, "MPS Apply RoPE In-Place");
+  m.def("rope_kv_cache_write_mps", &rope_kv_cache_write_mps, "MPS Fused RoPE + KV Cache Direct Write");
+  m.def("transformer_decode_step_mps", &transformer_decode_step_mps, "MPS C++ 12-Layer Whole-Model Decode Step");
+  pybind11::class_<DecodeGraphState, std::shared_ptr<DecodeGraphState>>(m, "MPSDecodeRunner")
+      .def(pybind11::init<
+          torch::Tensor,
+          torch::Tensor,
+          std::vector<torch::Tensor>,
+          std::vector<torch::Tensor>,
+          std::vector<torch::Tensor>,
+          std::vector<torch::Tensor>,
+          std::vector<torch::Tensor>,
+          std::vector<torch::Tensor>,
+          torch::Tensor,
+          std::vector<torch::Tensor>,
+          std::vector<torch::Tensor>,
+          int64_t,
+          int64_t,
+          int64_t,
+          float>())
+      .def("step", &DecodeGraphState::step);
   m.def("cross_entropy_forward_mps", &cross_entropy_forward_mps, "MPS CE Fwd");
   m.def("cross_entropy_backward_mps", &cross_entropy_backward_mps, "MPS CE Bwd");
   m.def("flash_attention_forward_mps", &flash_attention_forward_mps, "MPS FlashAttention Fwd");

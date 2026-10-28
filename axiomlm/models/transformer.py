@@ -3,7 +3,7 @@ AxiomLM Transformer Architecture & Model Configuration.
 """
 
 from dataclasses import dataclass
-from typing import Optional, Tuple, List, Union
+from typing import Optional, Tuple, List, Union, Any
 import torch
 import torch.nn as nn
 from ..kernels.ops import fused_cross_entropy
@@ -19,17 +19,20 @@ from .attention import CausalSelfAttention
 
 try:
     from ..kernels import FusedRMSNorm, FusedSwiGLUMLP
+    from ..kernels.ops import _METAL_MOD
 
     HAS_CUSTOM_KERNELS = True
 except (ImportError, ValueError):
     try:
         from kernels import FusedRMSNorm, FusedSwiGLUMLP
+        from kernels.ops import _METAL_MOD
 
         HAS_CUSTOM_KERNELS = True
     except ImportError:
         HAS_CUSTOM_KERNELS = False
         FusedRMSNorm = None  # type: ignore
         FusedSwiGLUMLP = None  # type: ignore
+        _METAL_MOD = None  # type: ignore
 
 
 @dataclass
@@ -138,6 +141,29 @@ class Block(nn.Module):
         attn_out, new_kv_cache = self.attn(
             self.ln_1(x), freqs_cis=freqs_cis, kv_cache=kv_cache, use_cache=use_cache
         )
+        if (
+            not self.training
+            and not torch.is_grad_enabled()
+            and self.use_fused_kernels
+            and _METAL_MOD is not None
+            and x.device.type == "mps"
+            and hasattr(self.ln_2, "_cached_weight")
+            and x.is_contiguous()
+            and attn_out.is_contiguous()
+        ):
+            if (
+                self.ln_2._cached_weight is None
+                or self.ln_2._cached_weight.device != x.device
+                or self.ln_2._cached_weight.dtype != x.dtype
+            ):
+                self.ln_2._cached_weight = self.ln_2.weight.to(
+                    device=x.device, dtype=x.dtype
+                ).contiguous()
+            norm2 = _METAL_MOD.add_rmsnorm_infer_mps(
+                x, attn_out, self.ln_2._cached_weight, self.ln_2.eps
+            )
+            x = x + self.mlp(norm2)
+            return x, new_kv_cache
         x = x + attn_out
         x = x + self.mlp(self.ln_2(x))
         return x, new_kv_cache
@@ -187,11 +213,42 @@ class Transformer(nn.Module):
                 theta=config.rope_theta,
             )
             self.register_buffer("freqs_cis", freqs, persistent=False)
+            self.register_buffer(
+                "freqs_real",
+                torch.view_as_real(freqs).contiguous(),
+                persistent=False,
+            )
         else:
             self.freqs_cis = None
+            self.freqs_real = None
 
         # Initialize weights
         self.apply(self._init_weights)
+        self._mps_decode_cache_id: Optional[int] = None
+        self._mps_decode_dtype: Optional[torch.dtype] = None
+        self._mps_decode_runner: Optional[Any] = None
+
+    def train(self, mode: bool = True):
+        self._mps_decode_cache_id = None
+        self._mps_decode_runner = None
+        return super().train(mode)
+
+    def _apply(self, fn):
+        self._mps_decode_cache_id = None
+        self._mps_decode_runner = None
+        # Preserve complex64 dtype of freqs_cis and float32 dtype of freqs_real when model.to(dtype=torch.float16) is called
+        freqs_backup = self.freqs_cis
+        freqs_real_backup = self.freqs_real
+        self.freqs_cis = None
+        self.freqs_real = None
+        ret = super()._apply(fn)
+        if freqs_backup is not None:
+            target_dev = next(self.parameters()).device
+            self.freqs_cis = freqs_backup.to(device=target_dev, dtype=torch.complex64)
+            self.freqs_real = freqs_real_backup.to(
+                device=target_dev, dtype=torch.float32
+            ).contiguous()
+        return ret
 
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
@@ -219,6 +276,121 @@ class Transformer(nn.Module):
     ]:
         device = idx.device
         B, T = idx.size()
+
+        # Ultra-fast C++ Whole-Model Decode Graph Runner for T=1, B=1 on MPS
+        if (
+            T == 1
+            and B == 1
+            and targets is None
+            and not self.training
+            and not torch.is_grad_enabled()
+            and self.config.use_fused_kernels
+            and _METAL_MOD is not None
+            and device.type == "mps"
+            and self.config.pos_emb == "rope"
+            and self.config.norm_type == "rmsnorm"
+            and self.config.mlp_type == "swiglu"
+            and not self.config.bias
+            and self.config.sliding_window is None
+            and kv_caches is not None
+            and len(kv_caches) == self.config.n_layer
+            and hasattr(kv_caches[0], "k_caches")
+            and kv_caches[0].max_batch_size == 1
+        ):
+            cache0 = kv_caches[0]
+            w_dtype = self.transformer.wte.weight.dtype
+            if (
+                self._mps_decode_cache_id != id(cache0)
+                or self._mps_decode_dtype != w_dtype
+            ):
+                ln1_ws = []
+                c_attn_ws = []
+                c_proj_ws = []
+                ln2_ws = []
+                gu_ws = []
+                down_ws = []
+                for b in self.transformer.h:
+                    if (
+                        b.ln_1._cached_weight is None
+                        or b.ln_1._cached_weight.device != device
+                        or b.ln_1._cached_weight.dtype != w_dtype
+                    ):
+                        b.ln_1._cached_weight = b.ln_1.weight.to(
+                            device=device, dtype=w_dtype
+                        ).contiguous()
+                    if (
+                        b.ln_2._cached_weight is None
+                        or b.ln_2._cached_weight.device != device
+                        or b.ln_2._cached_weight.dtype != w_dtype
+                    ):
+                        b.ln_2._cached_weight = b.ln_2.weight.to(
+                            device=device, dtype=w_dtype
+                        ).contiguous()
+                    if (
+                        b.mlp._cached_gate_up_w is None
+                        or b.mlp._cached_gate_up_w.device != device
+                        or b.mlp._cached_gate_up_w.dtype != w_dtype
+                    ):
+                        b.mlp._cached_gate_up_w = torch.cat(
+                            [b.mlp.w_gate.weight, b.mlp.w_up.weight], dim=0
+                        ).to(device=device, dtype=w_dtype)
+                    ln1_ws.append(b.ln_1._cached_weight)
+                    c_attn_ws.append(b.attn.c_attn.weight)
+                    c_proj_ws.append(b.attn.c_proj.weight)
+                    ln2_ws.append(b.ln_2._cached_weight)
+                    gu_ws.append(b.mlp._cached_gate_up_w)
+                    down_ws.append(b.mlp.w_down.weight)
+
+                lnf_mod = self.transformer["ln_f"]
+                if (
+                    lnf_mod._cached_weight is None
+                    or lnf_mod._cached_weight.device != device
+                    or lnf_mod._cached_weight.dtype != w_dtype
+                ):
+                    lnf_mod._cached_weight = lnf_mod.weight.to(
+                        device=device, dtype=w_dtype
+                    ).contiguous()
+
+                n_kv_head = (
+                    self.config.n_kv_head
+                    if self.config.n_kv_head is not None
+                    else self.config.n_head
+                )
+                head_dim = self.config.n_embd // self.config.n_head
+                self._mps_decode_runner = _METAL_MOD.MPSDecodeRunner(
+                    self.transformer.wte.weight,
+                    self.freqs_real,
+                    ln1_ws,
+                    c_attn_ws,
+                    c_proj_ws,
+                    ln2_ws,
+                    gu_ws,
+                    down_ws,
+                    lnf_mod._cached_weight,
+                    cache0.k_caches,
+                    cache0.v_caches,
+                    self.config.n_head,
+                    n_kv_head,
+                    head_dim,
+                    lnf_mod.eps,
+                )
+                self._mps_decode_cache_id = id(cache0)
+                self._mps_decode_dtype = w_dtype
+
+            seen = cache0.total_seen_tokens[0]
+            max_seq = cache0.max_seq_len
+            write_pos = (
+                (seen % max_seq) if (cache0.ring_buffer or seen >= max_seq) else seen
+            )
+            new_seen = seen + 1
+            active_len = new_seen if new_seen <= max_seq else max_seq
+            rope_pos = seen % self.freqs_real.size(0)
+
+            logits = self._mps_decode_runner.step(idx, rope_pos, write_pos, active_len)
+            n_L = self.config.n_layer
+            cache0.total_seen_tokens[:] = [new_seen] * n_L
+            cache0.layer_seq_lens[:] = [active_len] * n_L
+            return logits, None, kv_caches
 
         if self.config.pos_emb == "learned":
             assert (
@@ -253,27 +425,32 @@ class Transformer(nn.Module):
                     use_reentrant=False,
                 )
             else:
+                freqs_arg = (
+                    self.freqs_real
+                    if (self.config.use_fused_kernels and self.freqs_real is not None)
+                    else self.freqs_cis
+                )
                 x, new_kv = block(
                     x,
-                    freqs_cis=self.freqs_cis,
+                    freqs_cis=freqs_arg,
                     kv_cache=block_kv,
                     use_cache=(kv_caches is not None),
                 )
             if new_kv is not None:
                 new_kv_caches.append(new_kv)
 
-        x = self.transformer.ln_f(x)
-
         if targets is not None:
+            x = self.transformer.ln_f(x)
             logits = self.lm_head(x)
             loss = fused_cross_entropy(
                 logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
             )
         else:
             if kv_caches is not None:
-                logits = self.lm_head(x[:, [-1], :])
+                x_last = x if T == 1 else x[:, -1:, :]
+                logits = self.lm_head(self.transformer.ln_f(x_last))
             else:
-                logits = self.lm_head(x)
+                logits = self.lm_head(self.transformer.ln_f(x))
             loss = None
 
         if kv_caches is not None:
@@ -372,7 +549,6 @@ class Transformer(nn.Module):
         )
         model = cls(config)
         sd = model.state_dict()
-        sd_keys = [k for k in sd.keys() if not k.endswith(".attn.bias")]
 
         model_hf = GPT2LMHeadModel.from_pretrained(model_type)
         sd_hf = model_hf.state_dict()

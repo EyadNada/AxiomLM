@@ -35,10 +35,12 @@ def estimate_hardware_peak_tflops(device: str) -> float:
 
 def calculate_mfu(
     model: Any,
-    tokens_per_sec: float,
+    tokens_per_sec: Optional[float] = None,
     seq_len: int = 1024,
     peak_tflops: float = 10.0,
     context_len: Optional[int] = None,
+    fwdbwd_per_iter: Optional[int] = None,
+    dt: Optional[float] = None,
 ) -> Tuple[float, float]:
     """
     Calculates Model FLOPs Utilization (MFU) based on standard scaling laws:
@@ -46,6 +48,11 @@ def calculate_mfu(
     """
     if context_len is not None:
         seq_len = context_len
+    if tokens_per_sec is None:
+        if fwdbwd_per_iter is not None and dt is not None and dt > 0:
+            tokens_per_sec = (fwdbwd_per_iter * seq_len) / dt
+        else:
+            tokens_per_sec = 0.0
 
     raw_model = model.module if hasattr(model, "module") else model
     config = raw_model.config

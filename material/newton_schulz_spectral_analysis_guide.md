@@ -54,15 +54,13 @@ $$a = 3.4445, \quad b = -4.7750, \quad c = 2.0315$$
 
 ### Singular Value Evolution Across 5 Iterations
 
-Let singular values $\sigma_0 \in (0, 1]$:
+Because $p(x) = 3.4445x - 4.7750x^3 + 2.0315x^5$ is a minimax quintic polynomial engineered with a steep slope at the origin ($p'(0) = 3.4445 > 3$) to rapidly lift tiny singular values within only $k=5$ iterations, singular values $\sigma_0 \in (0, 1]$ evolve into a bounded equioscillating interval $[1 - \delta, 1 + \delta] \approx [0.7, 1.3]$ around $1.0$:
 * **Step 0**: Normalized input $\sigma_0 \in (0.01, 1.00)$
-* **Step 1**: $\sigma_1 = p(\sigma_0) \in (0.034, 1.05)$
-* **Step 2**: $\sigma_2 = p(\sigma_1) \in (0.11, 1.02)$
-* **Step 3**: $\sigma_3 = p(\sigma_2) \in (0.37, 1.005)$
-* **Step 4**: $\sigma_4 = p(\sigma_3) \in (0.89, 1.001)$
-* **Step 5**: $\sigma_5 = p(\sigma_4) \in [0.9995, 1.0005]$
+* **Step 1**: $\sigma_1 = p(\sigma_0)$ lifts small modes by $\sim 3.44\times$
+* **Step 2–4**: Rapidly contracts the spectral spread across orders of magnitude
+* **Step 5**: $\sigma_5 = p(\sigma_4) \in [0.70, 1.30]$ around $1.0$
 
-In just 5 algebraic steps, every singular value across all non-zero dimensions is compressed tightly to $1.00 \pm 0.0005$.
+In just 5 algebraic steps, ill-conditioned singular spectra spanning $10^{-3}$ to $1.0$ are compressed into a tight band around unit singular value $1.0$ without requiring 15+ cubic iterations or exact SVD.
 
 ---
 
