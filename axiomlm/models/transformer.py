@@ -294,6 +294,7 @@ class Transformer(nn.Module):
         idx: torch.Tensor,
         targets: Optional[torch.Tensor] = None,
         kv_caches: Optional[List[Optional[Tuple[torch.Tensor, torch.Tensor]]]] = None,
+        return_all_logits: bool = False,
     ) -> Union[
         Tuple[torch.Tensor, Optional[torch.Tensor]],
         Tuple[
@@ -600,7 +601,7 @@ class Transformer(nn.Module):
                 logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
             )
         else:
-            if kv_caches is not None:
+            if kv_caches is not None and not return_all_logits:
                 x_last = x if T == 1 else x[:, -1:, :]
                 logits = self.lm_head(self.transformer.ln_f(x_last))
             else:
