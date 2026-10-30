@@ -236,10 +236,38 @@ class CausalSelfAttention(nn.Module):
         else:
             new_kv_cache = None
 
-        is_causal = (T > 1) and (start_pos == 0)
+        attn_mask = None
+        if T > 1 and start_pos > 0:
+            # Multi-token speculative verification with KV cache: query j must not attend to keys > (start_pos + j)
+            total_k_len = k.size(2)
+            q_pos = (start_pos + torch.arange(T, device=q.device)).unsqueeze(1)
+            k_pos = torch.arange(total_k_len, device=q.device).unsqueeze(0)
+            attn_mask = k_pos <= q_pos
+            if self.sliding_window is not None:
+                attn_mask = attn_mask & (k_pos >= q_pos - self.sliding_window + 1)
+            is_causal = False
+        elif self.sliding_window is not None and (T > 1 and start_pos == 0):
+            causal_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril()
+            window_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril(
+                diagonal=-self.sliding_window
+            )
+            attn_mask = causal_mask & ~window_mask
+            is_causal = False
+        else:
+            is_causal = (T > 1) and (start_pos == 0)
 
-        # Sliding Window Attention (SWA)
-        if self.sliding_window is not None and is_causal:
+        if attn_mask is not None:
+            if self.n_rep > 1:
+                y = F.scaled_dot_product_attention(
+                    q, k, v, attn_mask=attn_mask, enable_gqa=True
+                )
+            elif k.size(1) != q.size(1):
+                k_rep = repeat_kv(k, self.n_rep)
+                v_rep = repeat_kv(v, self.n_rep)
+                y = F.scaled_dot_product_attention(q, k_rep, v_rep, attn_mask=attn_mask)
+            else:
+                y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        elif self.sliding_window is not None and is_causal:
             k_rep = repeat_kv(k, self.n_rep)
             v_rep = repeat_kv(v, self.n_rep)
             if self.use_fused_kernels:
@@ -247,7 +275,6 @@ class CausalSelfAttention(nn.Module):
                     q, k_rep, v_rep, is_causal=True, sliding_window=self.sliding_window
                 )
             else:
-                # Build custom sliding window mask for F.scaled_dot_product_attention
                 causal_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril()
                 window_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril(
                     diagonal=-self.sliding_window
