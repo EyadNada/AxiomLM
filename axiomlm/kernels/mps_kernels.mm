@@ -56,7 +56,9 @@ static id<MTLComputePipelineState> ce_fwd_pso = nil;
 static id<MTLComputePipelineState> ce_bwd_pso = nil;
 static id<MTLComputePipelineState> fa_fwd_pso = nil;
 static id<MTLComputePipelineState> qmv_q4_g64_half_pso = nil;
+static id<MTLComputePipelineState> qmm_q4_g64_half_pso = nil;
 static id<MTLComputePipelineState> qmv_q8_g64_half_pso = nil;
+static id<MTLComputePipelineState> qmm_q8_g64_half_pso = nil;
 static id<MTLComputePipelineState> gqa_split_kv_pso = nil;
 static id<MTLComputePipelineState> gqa_reduce_pso = nil;
 static bool is_initialized = false;
@@ -89,7 +91,9 @@ void init_mps(std::string metal_path) {
             ce_bwd_pso = get_pipeline(mtl_device, mtl_library, @"cross_entropy_backward_kernel");
             fa_fwd_pso = get_pipeline(mtl_device, mtl_library, @"flash_attention_forward_kernel");
             qmv_q4_g64_half_pso = get_pipeline(mtl_device, mtl_library, @"qmv_q4_g64_half_kernel");
+            qmm_q4_g64_half_pso = get_pipeline(mtl_device, mtl_library, @"qmm_q4_g64_half_kernel");
             qmv_q8_g64_half_pso = get_pipeline(mtl_device, mtl_library, @"qmv_q8_g64_half_kernel");
+            qmm_q8_g64_half_pso = get_pipeline(mtl_device, mtl_library, @"qmm_q8_g64_half_kernel");
             gqa_split_kv_pso = get_pipeline(mtl_device, mtl_library, @"gqa_flash_decode_split_kv_half_kernel");
             gqa_reduce_pso = get_pipeline(mtl_device, mtl_library, @"gqa_flash_decode_reduce_half_kernel");
         }
@@ -603,6 +607,34 @@ static inline void dispatch_qmv_q4_g64_into(
     [encoder dispatchThreadgroups:MTLSizeMake(num_tg, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
 }
 
+static inline void dispatch_qmm_q4_g64_into(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& x,
+    const torch::Tensor& w_packed,
+    const torch::Tensor& scales_biases,
+    torch::Tensor& y) {
+    uint32_t K = x.size(-1);
+    uint32_t M = x.numel() / K;
+    uint32_t N = w_packed.size(0);
+
+    if (M == 1) {
+        dispatch_qmv_q4_g64_into(encoder, x, w_packed, scales_biases, y);
+        return;
+    }
+
+    [encoder setComputePipelineState:qmm_q4_g64_half_pso];
+    [encoder setBuffer:getMTLBufferStorage(x) offset:x.storage_offset() * x.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(w_packed) offset:w_packed.storage_offset() * w_packed.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(scales_biases) offset:scales_biases.storage_offset() * scales_biases.element_size() atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(y) offset:y.storage_offset() * y.element_size() atIndex:3];
+    [encoder setBytes:&M length:sizeof(uint32_t) atIndex:4];
+    [encoder setBytes:&K length:sizeof(uint32_t) atIndex:5];
+    [encoder setBytes:&N length:sizeof(uint32_t) atIndex:6];
+
+    uint32_t num_tg = (N + 3) / 4;
+    [encoder dispatchThreadgroups:MTLSizeMake(num_tg, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+}
+
 static inline void dispatch_gqa_flash_decode_into(
     id<MTLComputeCommandEncoder> encoder,
     const torch::Tensor& q,
@@ -696,6 +728,34 @@ static inline void dispatch_qmv_q8_g64_into(
     [encoder setBytes:&N length:sizeof(uint32_t) atIndex:5];
 
     uint32_t num_tg = (N + 7) / 8;
+    [encoder dispatchThreadgroups:MTLSizeMake(num_tg, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+}
+
+static inline void dispatch_qmm_q8_g64_into(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& x,
+    const torch::Tensor& w_packed,
+    const torch::Tensor& scales_biases,
+    torch::Tensor& y) {
+    uint32_t K = x.size(-1);
+    uint32_t M = x.numel() / K;
+    uint32_t N = w_packed.size(0);
+
+    if (M == 1) {
+        dispatch_qmv_q8_g64_into(encoder, x, w_packed, scales_biases, y);
+        return;
+    }
+
+    [encoder setComputePipelineState:qmm_q8_g64_half_pso];
+    [encoder setBuffer:getMTLBufferStorage(x) offset:x.storage_offset() * x.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(w_packed) offset:w_packed.storage_offset() * w_packed.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(scales_biases) offset:scales_biases.storage_offset() * scales_biases.element_size() atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(y) offset:y.storage_offset() * y.element_size() atIndex:3];
+    [encoder setBytes:&M length:sizeof(uint32_t) atIndex:4];
+    [encoder setBytes:&K length:sizeof(uint32_t) atIndex:5];
+    [encoder setBytes:&N length:sizeof(uint32_t) atIndex:6];
+
+    uint32_t num_tg = (N + 3) / 4;
     [encoder dispatchThreadgroups:MTLSizeMake(num_tg, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
 }
 
@@ -1196,6 +1256,26 @@ torch::Tensor qmv_q8_g64_mps(torch::Tensor x, torch::Tensor w_packed, torch::Ten
     return y;
 }
 
+torch::Tensor qmm_q4_g64_mps(torch::Tensor x, torch::Tensor w_packed, torch::Tensor scales_biases) {
+    int64_t N = w_packed.size(0);
+    auto sizes = x.sizes().vec();
+    sizes.back() = N;
+    auto y = torch::empty(sizes, x.options());
+    auto stream = at::mps::getCurrentMPSStream();
+    dispatch_qmm_q4_g64_into(stream->commandEncoder(), x, w_packed, scales_biases, y);
+    return y;
+}
+
+torch::Tensor qmm_q8_g64_mps(torch::Tensor x, torch::Tensor w_packed, torch::Tensor scales_biases) {
+    int64_t N = w_packed.size(0);
+    auto sizes = x.sizes().vec();
+    sizes.back() = N;
+    auto y = torch::empty(sizes, x.options());
+    auto stream = at::mps::getCurrentMPSStream();
+    dispatch_qmm_q8_g64_into(stream->commandEncoder(), x, w_packed, scales_biases, y);
+    return y;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("init_metal", &init_mps, "Initialize Metal with path");
   m.def("rmsnorm_forward_mps", &rmsnorm_forward_mps, "MPS RMSNorm Forward");
@@ -1257,6 +1337,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("cross_entropy_backward_mps", &cross_entropy_backward_mps, "MPS CE Bwd");
   m.def("flash_attention_forward_mps", &flash_attention_forward_mps, "MPS FlashAttention Fwd");
   m.def("qmv_q4_g64_mps", &qmv_q4_g64_mps, "MPS Fast Q4_G64 Quantized GEMV");
+  m.def("qmm_q4_g64_mps", &qmm_q4_g64_mps, "MPS Batched Q4_G64 Quantized GEMM");
   m.def("qmv_q8_g64_mps", &qmv_q8_g64_mps, "MPS Fast Q8_G64 Quantized GEMV");
+  m.def("qmm_q8_g64_mps", &qmm_q8_g64_mps, "MPS Batched Q8_G64 Quantized GEMM");
   m.def("gqa_flash_decode_mps", &gqa_flash_decode_mps, "MPS Fast Split-KV Flash-Decode for GQA");
 }

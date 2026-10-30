@@ -352,6 +352,70 @@ class TestCustomKernels(unittest.TestCase):
             cos_q8, 0.99999, f"Metal Q8 GEMV cosine sim too low: {cos_q8}"
         )
 
+    def test_metal_qmm_batched_parity(self):
+        """Verify Q4_G64 and Q8_G64 batched Metal QMM across M in [1, 2, 4, 8]."""
+        if "mps" not in self.devices or _METAL_MOD is None:
+            self.skipTest("MPS Metal module not available")
+
+        from axiomlm.kernels import (
+            pack_linear_q4_g64,
+            dequantize_q4_g64,
+            pack_linear_q8_g64,
+            dequantize_q8_g64,
+            qmv_q4_g64,
+            qmv_q8_g64,
+            qmm_q4_g64,
+            qmm_q8_g64,
+        )
+
+        torch.manual_seed(999)
+        device = torch.device("mps")
+        N, K = 768, 768
+        w = torch.randn(N, K, dtype=torch.float16)
+
+        p_q4, sb_q4 = pack_linear_q4_g64(w)
+        p_q8, sb_q8 = pack_linear_q8_g64(w)
+        w_dq_q4 = dequantize_q4_g64(p_q4, sb_q4, K).to(device)
+        w_dq_q8 = dequantize_q8_g64(p_q8, sb_q8, K).to(device)
+
+        p_q4_dev = p_q4.to(device)
+        sb_q4_dev = sb_q4.to(device)
+        p_q8_dev = p_q8.to(device)
+        sb_q8_dev = sb_q8.to(device)
+
+        for M in [1, 2, 4, 8]:
+            x = torch.randn(1, M, K, dtype=torch.float16, device=device)
+
+            # 1. Q4 Batched GEMM
+            y_q4 = qmm_q4_g64(x, p_q4_dev, sb_q4_dev)
+            y_ref_q4 = F.linear(x, w_dq_q4)
+            cos_q4 = torch.cosine_similarity(
+                y_q4.float().view(-1), y_ref_q4.float().view(-1), dim=0
+            ).item()
+            self.assertGreater(
+                cos_q4, 0.9999, f"Q4 QMM cosine sim too low at M={M}: {cos_q4}"
+            )
+
+            # 2. Q8 Batched GEMM
+            y_q8 = qmm_q8_g64(x, p_q8_dev, sb_q8_dev)
+            y_ref_q8 = F.linear(x, w_dq_q8)
+            cos_q8 = torch.cosine_similarity(
+                y_q8.float().view(-1), y_ref_q8.float().view(-1), dim=0
+            ).item()
+            self.assertGreater(
+                cos_q8, 0.99999, f"Q8 QMM cosine sim too low at M={M}: {cos_q8}"
+            )
+
+            # 3. Check exact parity with qmv when M=1
+            if M == 1:
+                y_qmv_q4 = qmv_q4_g64(x, p_q4_dev, sb_q4_dev)
+                diff_q4 = (y_q4 - y_qmv_q4).abs().max().item()
+                self.assertEqual(diff_q4, 0.0, "Q4 QMM M=1 must match QMV exactly")
+
+                y_qmv_q8 = qmv_q8_g64(x, p_q8_dev, sb_q8_dev)
+                diff_q8 = (y_q8 - y_qmv_q8).abs().max().item()
+                self.assertEqual(diff_q8, 0.0, "Q8 QMM M=1 must match QMV exactly")
+
     def test_quantized_model_decode_runner(self):
         """Verify Transformer.quantize('q4' / 'q8') executes through MPSQuantizedDecodeRunner."""
         if "mps" not in self.devices or _METAL_MOD is None:

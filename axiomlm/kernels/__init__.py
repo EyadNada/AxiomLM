@@ -28,7 +28,9 @@ from .quant import (
     pack_linear_q8_g64,
     dequantize_q8_g64,
     qmv_q4_g64,
+    qmm_q4_g64,
     qmv_q8_g64,
+    qmm_q8_g64,
 )
 
 __all__ = [
@@ -54,5 +56,7 @@ __all__ = [
     "pack_linear_q8_g64",
     "dequantize_q8_g64",
     "qmv_q4_g64",
+    "qmm_q4_g64",
     "qmv_q8_g64",
+    "qmm_q8_g64",
 ]

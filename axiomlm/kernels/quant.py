@@ -129,11 +129,31 @@ def qmv_q4_g64(
 ) -> torch.Tensor:
     """
     Fast matrix-vector multiply y = x @ W^T with 4-bit weights on Apple Silicon Metal GPU.
+    Automatically uses batched QMM kernel if M > 1 tokens are provided.
     """
     if x.device.type == "mps" and _METAL_MOD is not None:
+        K = x.size(-1)
+        M = x.numel() // K
+        if M > 1:
+            return _METAL_MOD.qmm_q4_g64_mps(x, w_packed, scales_biases)
         return _METAL_MOD.qmv_q4_g64_mps(x, w_packed, scales_biases)
 
     # Fallback dequantized matmul
+    K = x.size(-1)
+    w_dq = dequantize_q4_g64(w_packed, scales_biases, K).to(x.device)
+    return F.linear(x, w_dq)
+
+
+def qmm_q4_g64(
+    x: torch.Tensor, w_packed: torch.Tensor, scales_biases: torch.Tensor
+) -> torch.Tensor:
+    """
+    Batched matrix multiplication y = x @ W^T with 4-bit weights on Apple Silicon Metal GPU.
+    Loads 4-bit weights from DRAM once and computes across M candidate tokens in registers.
+    """
+    if x.device.type == "mps" and _METAL_MOD is not None:
+        return _METAL_MOD.qmm_q4_g64_mps(x, w_packed, scales_biases)
+
     K = x.size(-1)
     w_dq = dequantize_q4_g64(w_packed, scales_biases, K).to(x.device)
     return F.linear(x, w_dq)
@@ -144,11 +164,31 @@ def qmv_q8_g64(
 ) -> torch.Tensor:
     """
     Fast matrix-vector multiply y = x @ W^T with 8-bit weights on Apple Silicon Metal GPU.
+    Automatically uses batched QMM kernel if M > 1 tokens are provided.
     """
     if x.device.type == "mps" and _METAL_MOD is not None:
+        K = x.size(-1)
+        M = x.numel() // K
+        if M > 1:
+            return _METAL_MOD.qmm_q8_g64_mps(x, w_packed, scales_biases)
         return _METAL_MOD.qmv_q8_g64_mps(x, w_packed, scales_biases)
 
     # Fallback dequantized matmul
+    K = x.size(-1)
+    w_dq = dequantize_q8_g64(w_packed, scales_biases, K).to(x.device)
+    return F.linear(x, w_dq)
+
+
+def qmm_q8_g64(
+    x: torch.Tensor, w_packed: torch.Tensor, scales_biases: torch.Tensor
+) -> torch.Tensor:
+    """
+    Batched matrix multiplication y = x @ W^T with 8-bit weights on Apple Silicon Metal GPU.
+    Loads 8-bit weights from DRAM once and computes across M candidate tokens in registers.
+    """
+    if x.device.type == "mps" and _METAL_MOD is not None:
+        return _METAL_MOD.qmm_q8_g64_mps(x, w_packed, scales_biases)
+
     K = x.size(-1)
     w_dq = dequantize_q8_g64(w_packed, scales_biases, K).to(x.device)
     return F.linear(x, w_dq)
