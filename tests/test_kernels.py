@@ -276,6 +276,143 @@ class TestCustomKernels(unittest.TestCase):
                 f"Missing {fn_name} in triton_kernels.py",
             )
 
+    def test_quant_packing_roundtrip(self):
+        """Verify Q4_G64 and Q8_G64 packing and dequantization precision."""
+        from axiomlm.kernels import (
+            pack_linear_q4_g64,
+            dequantize_q4_g64,
+            pack_linear_q8_g64,
+            dequantize_q8_g64,
+        )
+
+        torch.manual_seed(42)
+        N, K = 256, 768
+        w = torch.randn(N, K, dtype=torch.float16)
+
+        # Q4_G64
+        packed_q4, sb_q4 = pack_linear_q4_g64(w)
+        w_dq_q4 = dequantize_q4_g64(packed_q4, sb_q4, K)
+        cos_sim_q4 = torch.cosine_similarity(
+            w.float().view(-1), w_dq_q4.float().view(-1), dim=0
+        ).item()
+        self.assertGreater(
+            cos_sim_q4, 0.995, f"Q4 Cosine similarity too low: {cos_sim_q4}"
+        )
+
+        # Q8_G64
+        packed_q8, sb_q8 = pack_linear_q8_g64(w)
+        w_dq_q8 = dequantize_q8_g64(packed_q8, sb_q8, K)
+        cos_sim_q8 = torch.cosine_similarity(
+            w.float().view(-1), w_dq_q8.float().view(-1), dim=0
+        ).item()
+        self.assertGreater(
+            cos_sim_q8, 0.9999, f"Q8 Cosine similarity too low: {cos_sim_q8}"
+        )
+
+    def test_metal_qmv_parity(self):
+        """Verify Q4_G64 and Q8_G64 Metal GEMV matches reference dequantized GEMV on MPS."""
+        if "mps" not in self.devices or _METAL_MOD is None:
+            self.skipTest("MPS Metal module not available")
+
+        from axiomlm.kernels import (
+            pack_linear_q4_g64,
+            dequantize_q4_g64,
+            pack_linear_q8_g64,
+            dequantize_q8_g64,
+            qmv_q4_g64,
+            qmv_q8_g64,
+        )
+
+        torch.manual_seed(999)
+        device = torch.device("mps")
+        N, K = 768, 768
+        w = torch.randn(N, K, dtype=torch.float16)
+        x = torch.randn(1, K, dtype=torch.float16, device=device)
+
+        # Test Q4
+        p_q4, sb_q4 = pack_linear_q4_g64(w)
+        y_q4 = qmv_q4_g64(x, p_q4.to(device), sb_q4.to(device))
+        y_ref_q4 = F.linear(x, dequantize_q4_g64(p_q4, sb_q4, K).to(device))
+        cos_q4 = torch.cosine_similarity(
+            y_q4.float().view(-1), y_ref_q4.float().view(-1), dim=0
+        ).item()
+        self.assertGreater(
+            cos_q4, 0.9999, f"Metal Q4 GEMV cosine sim too low: {cos_q4}"
+        )
+
+        # Test Q8
+        p_q8, sb_q8 = pack_linear_q8_g64(w)
+        y_q8 = qmv_q8_g64(x, p_q8.to(device), sb_q8.to(device))
+        y_ref_q8 = F.linear(x, dequantize_q8_g64(p_q8, sb_q8, K).to(device))
+        cos_q8 = torch.cosine_similarity(
+            y_q8.float().view(-1), y_ref_q8.float().view(-1), dim=0
+        ).item()
+        self.assertGreater(
+            cos_q8, 0.99999, f"Metal Q8 GEMV cosine sim too low: {cos_q8}"
+        )
+
+    def test_quantized_model_decode_runner(self):
+        """Verify Transformer.quantize('q4' / 'q8') executes through MPSQuantizedDecodeRunner."""
+        if "mps" not in self.devices or _METAL_MOD is None:
+            self.skipTest("MPS Metal module not available")
+
+        from axiomlm.models.transformer import Transformer, ModelConfig
+        from axiomlm.engine.paged_cache import StaticKVCache
+
+        device = torch.device("mps")
+        cfg = ModelConfig(
+            arch="modern",
+            n_layer=2,
+            n_head=4,
+            n_kv_head=2,
+            n_embd=256,
+            vocab_size=512,
+            block_size=512,
+            use_fused_kernels=True,
+        )
+        model = Transformer(cfg).to(device=device, dtype=torch.float16).eval()
+        cache = StaticKVCache(
+            max_batch_size=1,
+            max_seq_len=256,
+            n_layer=cfg.n_layer,
+            n_kv_head=cfg.n_kv_head,
+            head_dim=cfg.n_embd // cfg.n_head,
+            device=device,
+            dtype=torch.float16,
+        )
+
+        curr_token = torch.tensor([[10]], device=device, dtype=torch.long)
+        with torch.no_grad():
+            # 1. FP16 Decode step
+            logits_fp16, _, _ = model(curr_token, kv_caches=[cache] * cfg.n_layer)
+            self.assertIsNotNone(model._mps_decode_runner)
+
+            # 2. Q8 Decode step
+            model.quantize("q8")
+            cache.reset()
+            logits_q8, _, _ = model(curr_token, kv_caches=[cache] * cfg.n_layer)
+            self.assertIsNotNone(model._mps_quant_decode_runner)
+
+            cos_q8 = torch.cosine_similarity(
+                logits_fp16.float().view(-1), logits_q8.float().view(-1), dim=0
+            ).item()
+            self.assertGreater(
+                cos_q8, 0.999, f"Q8 model decode cos sim too low: {cos_q8}"
+            )
+
+            # 3. Q4 Decode step
+            model.quantize("q4")
+            cache.reset()
+            logits_q4, _, _ = model(curr_token, kv_caches=[cache] * cfg.n_layer)
+            self.assertIsNotNone(model._mps_quant_decode_runner)
+
+            cos_q4 = torch.cosine_similarity(
+                logits_fp16.float().view(-1), logits_q4.float().view(-1), dim=0
+            ).item()
+            self.assertGreater(
+                cos_q4, 0.98, f"Q4 model decode cos sim too low: {cos_q4}"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

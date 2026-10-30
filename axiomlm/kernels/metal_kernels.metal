@@ -1127,3 +1127,143 @@ kernel void flash_attention_forward_kernel(
         }
     }
 }
+
+// ----------------------------------------------------------------------------
+// 6A. Quantized Matrix-Vector Multiply Q4_G64 (FP16 Activations, 4-bit Weights)
+// Input x: (1, K) half
+// Weight w_packed: (N, K / 8) uint32 (8 x 4-bit nibbles per word)
+// ScalesBiases: (N, K / 64) half2 (scale, bias) per 64 weights
+// Output y: (1, N) half
+// ----------------------------------------------------------------------------
+kernel void qmv_q4_g64_half_kernel(
+    device const half *x [[buffer(0)]],
+    device const uint *w_packed [[buffer(1)]],
+    device const half2 *scales_biases [[buffer(2)]],
+    device half *y [[buffer(3)]],
+    constant uint &K [[buffer(4)]],
+    constant uint &N [[buffer(5)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]])
+{
+    // 2 SIMD-groups per threadgroup -> 8 output rows per threadgroup
+    uint row_base = (tgpig.x * 2 + simd_group_id) * 4;
+    if (row_base >= N) return;
+
+    uint K_packed = K >> 3;       // K / 8 uint32 words per row
+    uint K_groups = K >> 6;       // K / 64 groups per row
+
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+
+    // Stride across K_packed in steps of 32 lanes
+    for (uint idx = simd_lane_id; idx < K_packed; idx += 32) {
+        uint k_elem = idx << 3;   // Starting element index (multiple of 8)
+        uint g_idx = idx >> 3;    // Group index (every 8 uint32 words = 64 elements)
+
+        // Load 8 FP16 activations as two half4 vectors into registers
+        half4 x_lo = *(device const half4 *)(x + k_elem);
+        half4 x_hi = *(device const half4 *)(x + k_elem + 4);
+        float x_sum = float(x_lo.x + x_lo.y + x_lo.z + x_lo.w + x_hi.x + x_hi.y + x_hi.z + x_hi.w);
+
+        // Unroll across 4 output rows sharing x_lo and x_hi in registers
+        #pragma unroll
+        for (uint r = 0; r < 4; ++r) {
+            uint row = row_base + r;
+            if (row < N) {
+                uint packed = w_packed[row * K_packed + idx];
+                half2 sb = scales_biases[row * K_groups + g_idx];
+                float scale = float(sb.x);
+                float bias  = float(sb.y);
+
+                float4 q_lo = float4(packed & 0xFu, (packed >> 4) & 0xFu, (packed >> 8) & 0xFu, (packed >> 12) & 0xFu);
+                float4 q_hi = float4((packed >> 16) & 0xFu, (packed >> 20) & 0xFu, (packed >> 24) & 0xFu, (packed >> 28) & 0xFu);
+
+                float d_prod = dot(float4(x_lo), q_lo) + dot(float4(x_hi), q_hi);
+                float val = fma(d_prod, scale, bias * x_sum);
+                if (r == 0) acc0 += val;
+                else if (r == 1) acc1 += val;
+                else if (r == 2) acc2 += val;
+                else acc3 += val;
+            }
+        }
+    }
+
+    // Hardware single-cycle 32-lane SIMD reduction
+    acc0 = simd_sum(acc0);
+    acc1 = simd_sum(acc1);
+    acc2 = simd_sum(acc2);
+    acc3 = simd_sum(acc3);
+
+    if (simd_lane_id == 0) {
+        if (row_base + 0 < N) y[row_base + 0] = half(acc0);
+        if (row_base + 1 < N) y[row_base + 1] = half(acc1);
+        if (row_base + 2 < N) y[row_base + 2] = half(acc2);
+        if (row_base + 3 < N) y[row_base + 3] = half(acc3);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 6B. Quantized Matrix-Vector Multiply Q8_G64 (FP16 Activations, 8-bit Weights)
+// Input x: (1, K) half
+// Weight w_packed: (N, K / 4) uint32 (4 x 8-bit bytes per word)
+// ScalesBiases: (N, K / 64) half2 (scale, bias) per 64 weights
+// Output y: (1, N) half
+// ----------------------------------------------------------------------------
+kernel void qmv_q8_g64_half_kernel(
+    device const half *x [[buffer(0)]],
+    device const uint *w_packed [[buffer(1)]],
+    device const half2 *scales_biases [[buffer(2)]],
+    device half *y [[buffer(3)]],
+    constant uint &K [[buffer(4)]],
+    constant uint &N [[buffer(5)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]])
+{
+    uint row_base = (tgpig.x * 2 + simd_group_id) * 4;
+    if (row_base >= N) return;
+
+    uint K_packed = K >> 2;       // K / 4 uint32 words per row
+    uint K_groups = K >> 6;       // K / 64 groups per row
+
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+
+    for (uint idx = simd_lane_id; idx < K_packed; idx += 32) {
+        uint k_elem = idx << 2;   // Starting element index (multiple of 4)
+        uint g_idx = idx >> 4;    // Group index (every 16 uint32 words = 64 elements)
+
+        half4 x_vec = *(device const half4 *)(x + k_elem);
+        float x_sum = float(x_vec.x + x_vec.y + x_vec.z + x_vec.w);
+
+        #pragma unroll
+        for (uint r = 0; r < 4; ++r) {
+            uint row = row_base + r;
+            if (row < N) {
+                uint packed = w_packed[row * K_packed + idx];
+                half2 sb = scales_biases[row * K_groups + g_idx];
+                float scale = float(sb.x);
+                float bias  = float(sb.y);
+
+                float4 q = float4(packed & 0xFFu, (packed >> 8) & 0xFFu, (packed >> 16) & 0xFFu, (packed >> 24) & 0xFFu);
+                float d_prod = dot(float4(x_vec), q);
+                float val = fma(d_prod, scale, bias * x_sum);
+                if (r == 0) acc0 += val;
+                else if (r == 1) acc1 += val;
+                else if (r == 2) acc2 += val;
+                else acc3 += val;
+            }
+        }
+    }
+
+    acc0 = simd_sum(acc0);
+    acc1 = simd_sum(acc1);
+    acc2 = simd_sum(acc2);
+    acc3 = simd_sum(acc3);
+
+    if (simd_lane_id == 0) {
+        if (row_base + 0 < N) y[row_base + 0] = half(acc0);
+        if (row_base + 1 < N) y[row_base + 1] = half(acc1);
+        if (row_base + 2 < N) y[row_base + 2] = half(acc2);
+        if (row_base + 3 < N) y[row_base + 3] = half(acc3);
+    }
+}

@@ -57,6 +57,9 @@ class ModelConfig:
     use_fused_kernels: bool = False  # Use fused Triton / Metal / NEON operators
     grad_checkpoint: bool = False  # Enable gradient checkpointing
     arch: Optional[str] = None  # Optional convenience preset ("modern" or "classic")
+    quant_mode: Optional[str] = (
+        None  # Quantized decode mode: None (FP16), "q4" (Q4_G64), or "q8" (Q8_G64)
+    )
 
     def __post_init__(self):
         if self.arch == "classic":
@@ -227,15 +230,40 @@ class Transformer(nn.Module):
         self._mps_decode_cache_id: Optional[int] = None
         self._mps_decode_dtype: Optional[torch.dtype] = None
         self._mps_decode_runner: Optional[Any] = None
+        self._quant_mode: Optional[str] = config.quant_mode
+        self._mps_quant_decode_runner: Optional[Any] = None
+        self._mps_quant_cache_id: Optional[int] = None
+        self._quant_weights_cache: Optional[dict] = None
+
+    def quantize(self, mode: Optional[str] = "q4"):
+        """
+        Enables register-level quantized decode (mode='q4' for 4-bit, 'q8' for 8-bit, None for FP16).
+        """
+        assert mode in [
+            None,
+            "q4",
+            "q8",
+        ], f"Invalid quant mode: {mode}. Choose 'q4', 'q8', or None."
+        self._quant_mode = mode
+        self._mps_quant_decode_runner = None
+        self._mps_quant_cache_id = None
+        self._quant_weights_cache = None
+        return self
 
     def train(self, mode: bool = True):
         self._mps_decode_cache_id = None
         self._mps_decode_runner = None
+        self._mps_quant_decode_runner = None
+        self._mps_quant_cache_id = None
+        self._quant_weights_cache = None
         return super().train(mode)
 
     def _apply(self, fn):
         self._mps_decode_cache_id = None
         self._mps_decode_runner = None
+        self._mps_quant_decode_runner = None
+        self._mps_quant_cache_id = None
+        self._quant_weights_cache = None
         # Preserve complex64 dtype of freqs_cis and float32 dtype of freqs_real when model.to(dtype=torch.float16) is called
         freqs_backup = self.freqs_cis
         freqs_real_backup = self.freqs_real
@@ -298,6 +326,141 @@ class Transformer(nn.Module):
             and kv_caches[0].max_batch_size == 1
         ):
             cache0 = kv_caches[0]
+            seen = cache0.total_seen_tokens[0]
+            max_seq = cache0.max_seq_len
+            write_pos = (
+                (seen % max_seq) if (cache0.ring_buffer or seen >= max_seq) else seen
+            )
+            new_seen = seen + 1
+            active_len = new_seen if new_seen <= max_seq else max_seq
+            rope_pos = seen % self.freqs_real.size(0)
+
+            # Ultra-fast Quantized Metal GEMV Decode Runner (Q4_G64 / Q8_G64)
+            if self._quant_mode in ["q4", "q8"] and hasattr(
+                _METAL_MOD, "MPSQuantizedDecodeRunner"
+            ):
+                if (
+                    self._mps_quant_cache_id != id(cache0)
+                    or self._mps_quant_decode_runner is None
+                ):
+                    from ..kernels.quant import (
+                        pack_linear_q4_g64,
+                        pack_linear_q8_g64,
+                    )
+
+                    pack_fn = (
+                        pack_linear_q4_g64
+                        if self._quant_mode == "q4"
+                        else pack_linear_q8_g64
+                    )
+                    use_q4 = self._quant_mode == "q4"
+                    w_dtype = torch.float16
+
+                    if (
+                        self._quant_weights_cache is None
+                        or self._quant_weights_cache.get("mode") != self._quant_mode
+                    ):
+                        wte_emb = self.transformer.wte.weight.to(
+                            device=device, dtype=w_dtype
+                        ).contiguous()
+                        lmh_p, lmh_sb = pack_fn(self.transformer.wte.weight.cpu())
+                        lmh_p, lmh_sb = lmh_p.to(device), lmh_sb.to(device)
+
+                        c_attn_p, c_attn_s = [], []
+                        c_proj_p, c_proj_s = [], []
+                        gu_p, gu_s = [], []
+                        wd_p, wd_s = [], []
+
+                        for b in self.transformer.h:
+                            p, s = pack_fn(b.attn.c_attn.weight.cpu())
+                            c_attn_p.append(p.to(device))
+                            c_attn_s.append(s.to(device))
+
+                            p, s = pack_fn(b.attn.c_proj.weight.cpu())
+                            c_proj_p.append(p.to(device))
+                            c_proj_s.append(s.to(device))
+
+                            gate_up_w = torch.cat(
+                                [b.mlp.w_gate.weight, b.mlp.w_up.weight], dim=0
+                            )
+                            p, s = pack_fn(gate_up_w.cpu())
+                            gu_p.append(p.to(device))
+                            gu_s.append(s.to(device))
+
+                            p, s = pack_fn(b.mlp.w_down.weight.cpu())
+                            wd_p.append(p.to(device))
+                            wd_s.append(s.to(device))
+
+                        self._quant_weights_cache = {
+                            "mode": self._quant_mode,
+                            "wte_emb": wte_emb,
+                            "lmh_p": lmh_p,
+                            "lmh_sb": lmh_sb,
+                            "c_attn_p": c_attn_p,
+                            "c_attn_s": c_attn_s,
+                            "c_proj_p": c_proj_p,
+                            "c_proj_s": c_proj_s,
+                            "gu_p": gu_p,
+                            "gu_s": gu_s,
+                            "wd_p": wd_p,
+                            "wd_s": wd_s,
+                        }
+
+                    qw = self._quant_weights_cache
+                    ln1_ws = [
+                        b.ln_1.weight.to(device=device, dtype=w_dtype).contiguous()
+                        for b in self.transformer.h
+                    ]
+                    ln2_ws = [
+                        b.ln_2.weight.to(device=device, dtype=w_dtype).contiguous()
+                        for b in self.transformer.h
+                    ]
+                    lnf_w = self.transformer.ln_f.weight.to(
+                        device=device, dtype=w_dtype
+                    ).contiguous()
+                    n_kv_head = (
+                        self.config.n_kv_head
+                        if self.config.n_kv_head is not None
+                        else self.config.n_head
+                    )
+                    head_dim = self.config.n_embd // self.config.n_head
+
+                    eps_val = getattr(self.transformer.ln_f, "eps", 1e-5)
+                    self._mps_quant_decode_runner = _METAL_MOD.MPSQuantizedDecodeRunner(
+                        qw["wte_emb"],
+                        qw["lmh_p"],
+                        qw["lmh_sb"],
+                        self.freqs_real.to(device=device, dtype=w_dtype).contiguous(),
+                        ln1_ws,
+                        qw["c_attn_p"],
+                        qw["c_attn_s"],
+                        qw["c_proj_p"],
+                        qw["c_proj_s"],
+                        ln2_ws,
+                        qw["gu_p"],
+                        qw["gu_s"],
+                        qw["wd_p"],
+                        qw["wd_s"],
+                        lnf_w,
+                        cache0.k_caches,
+                        cache0.v_caches,
+                        self.config.n_head,
+                        n_kv_head,
+                        head_dim,
+                        use_q4,
+                        eps_val,
+                    )
+                    self._mps_quant_cache_id = id(cache0)
+
+                logits = self._mps_quant_decode_runner.step(
+                    idx, rope_pos, write_pos, active_len
+                )
+                n_L = self.config.n_layer
+                cache0.total_seen_tokens[:] = [new_seen] * n_L
+                cache0.layer_seq_lens[:] = [active_len] * n_L
+                return logits, None, kv_caches
+
+            # Standard FP16 MPSDecodeRunner
             w_dtype = self.transformer.wte.weight.dtype
             if (
                 self._mps_decode_cache_id != id(cache0)
@@ -376,15 +539,6 @@ class Transformer(nn.Module):
                 )
                 self._mps_decode_cache_id = id(cache0)
                 self._mps_decode_dtype = w_dtype
-
-            seen = cache0.total_seen_tokens[0]
-            max_seq = cache0.max_seq_len
-            write_pos = (
-                (seen % max_seq) if (cache0.ring_buffer or seen >= max_seq) else seen
-            )
-            new_seen = seen + 1
-            active_len = new_seen if new_seen <= max_seq else max_seq
-            rope_pos = seen % self.freqs_real.size(0)
 
             logits = self._mps_decode_runner.step(idx, rope_pos, write_pos, active_len)
             n_L = self.config.n_layer

@@ -21,6 +21,14 @@ from .ops import (
     _METAL_MOD,
     HAS_TRITON,
 )
+from .quant import (
+    pack_linear_q4_g64,
+    dequantize_q4_g64,
+    pack_linear_q8_g64,
+    dequantize_q8_g64,
+    qmv_q4_g64,
+    qmv_q8_g64,
+)
 
 __all__ = [
     "FusedRMSNormFunction",
@@ -39,4 +47,10 @@ __all__ = [
     "_NEON_MOD",
     "_METAL_MOD",
     "HAS_TRITON",
+    "pack_linear_q4_g64",
+    "dequantize_q4_g64",
+    "pack_linear_q8_g64",
+    "dequantize_q8_g64",
+    "qmv_q4_g64",
+    "qmv_q8_g64",
 ]
