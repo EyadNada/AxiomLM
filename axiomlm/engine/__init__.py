@@ -11,6 +11,7 @@ from .inference import (
     InferenceEngine,
 )
 from .export import export_checkpoint_to_hf
+from .speculative import find_candidate_ngram, SpeculativePromptLookupDecoder
 
 __all__ = [
     "sample_logits",
@@ -20,4 +21,6 @@ __all__ = [
     "load_model",
     "InferenceEngine",
     "export_checkpoint_to_hf",
+    "find_candidate_ngram",
+    "SpeculativePromptLookupDecoder",
 ]
