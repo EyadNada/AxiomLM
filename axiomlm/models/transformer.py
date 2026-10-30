@@ -306,9 +306,9 @@ class Transformer(nn.Module):
         device = idx.device
         B, T = idx.size()
 
-        # Ultra-fast C++ Whole-Model Decode Graph Runner for T=1, B=1 on MPS
+        # Ultra-fast C++ Whole-Model Decode / Speculative Verification Graph Runner for T in [1, 8], B=1 on MPS
         if (
-            T == 1
+            1 <= T <= 8
             and B == 1
             and targets is None
             and not self.training
@@ -325,6 +325,7 @@ class Transformer(nn.Module):
             and len(kv_caches) == self.config.n_layer
             and hasattr(kv_caches[0], "k_caches")
             and kv_caches[0].max_batch_size == 1
+            and (T == 1 or kv_caches[0].total_seen_tokens[0] > 0)
         ):
             cache0 = kv_caches[0]
             seen = cache0.total_seen_tokens[0]
@@ -332,7 +333,7 @@ class Transformer(nn.Module):
             write_pos = (
                 (seen % max_seq) if (cache0.ring_buffer or seen >= max_seq) else seen
             )
-            new_seen = seen + 1
+            new_seen = seen + T
             active_len = new_seen if new_seen <= max_seq else max_seq
             rope_pos = seen % self.freqs_real.size(0)
 
@@ -453,9 +454,16 @@ class Transformer(nn.Module):
                     )
                     self._mps_quant_cache_id = id(cache0)
 
-                logits = self._mps_quant_decode_runner.step(
-                    idx, rope_pos, write_pos, active_len
-                )
+                if T == 1:
+                    logits = self._mps_quant_decode_runner.step(
+                        idx, rope_pos, write_pos, active_len
+                    )
+                else:
+                    logits = self._mps_quant_decode_runner.verify_step(
+                        idx, rope_pos, write_pos, active_len
+                    )
+                if not return_all_logits and T > 1:
+                    logits = logits[:, -1:, :]
                 n_L = self.config.n_layer
                 cache0.total_seen_tokens[:] = [new_seen] * n_L
                 cache0.layer_seq_lens[:] = [active_len] * n_L
@@ -541,7 +549,16 @@ class Transformer(nn.Module):
                 self._mps_decode_cache_id = id(cache0)
                 self._mps_decode_dtype = w_dtype
 
-            logits = self._mps_decode_runner.step(idx, rope_pos, write_pos, active_len)
+            if T == 1:
+                logits = self._mps_decode_runner.step(
+                    idx, rope_pos, write_pos, active_len
+                )
+            else:
+                logits = self._mps_decode_runner.verify_step(
+                    idx, rope_pos, write_pos, active_len
+                )
+            if not return_all_logits and T > 1:
+                logits = logits[:, -1:, :]
             n_L = self.config.n_layer
             cache0.total_seen_tokens[:] = [new_seen] * n_L
             cache0.layer_seq_lens[:] = [active_len] * n_L
