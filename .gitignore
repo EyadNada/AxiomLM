@@ -26,6 +26,7 @@ scratch/
 *.bin
 *.safetensors
 *.onnx
+*.gguf
 checkpoints/
 exports/
 

@@ -130,6 +130,12 @@ Controlled single-stream ($B=1$) autoregressive decode comparison on identical h
 | **AxiomLM Speculative Batched QMM** | **Q4_G64 ($K=3$)** | **`838.9 tok/s`** | **`1.19 ms/tok`** | **`142.2x`** | **`3.40x`** |
 | **AxiomLM Candidate Verification Rate** | **Q4_G64 ($T=7$)** | **`2,538.1 tok/s` eff.** | **`0.394 ms/tok`** | **`430.2x`** | **`10.29x`** |
 
+> **Academic Reproducibility Harness**: All baseline comparisons and hardware numbers can be verified locally with a single command:
+> ```bash
+> ./benchmarks/run_all_benchmarks.sh
+> ```
+> See [`benchmarks/README.md`](benchmarks/README.md) for experimental controls, llama-bench invocations, MLX model parity scripts, and timestamped JSON telemetry reports.
+
 --------------------------------------------------------------------------------
 
 ## Installation

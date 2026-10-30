@@ -248,6 +248,13 @@ Furthermore, to ensure a strictly controlled external baseline comparison across
 ![Figure 8: Cross-Framework Benchmark on Apple M3 Pro](../../assets/10_framework_comparison.png)
 *Figure 8: Controlled cross-framework autoregressive decode comparison on the identical 12-layer, $D=768$, 12Q/4KV (3:1 GQA), SwiGLU ($2048$) model in FP16 at $B=1$ on Apple M3 Pro (18 GB).*
 
+#### 9.2.1 Experimental Methodology & 1:1 Baseline Parity Protocol
+To satisfy stringent academic reproducibility standards, all external baselines were evaluated with complete architectural, prompt, and generation parity:
+1. **Model Parameter Parity**: All runtimes evaluated the exact identical 12-layer, $D=768$, 12Q/4KV (3:1 GQA), SwiGLU ($2048$), $V=50,304$ architecture. For `llama.cpp`, the architecture was exported directly to GGUF format (`axiomlm_124m_f16.gguf` and `axiomlm_124m_q4.gguf`) using `gguf.GGUFWriter` and `llama-quantize`. For Apple `MLX`, an identical module was implemented in native `mlx.nn` with `mx.fast.scaled_dot_product_attention` and RMSNorm.
+2. **Context Length Standardization**: Every measurement enforced standardized prompt prefill ($P=512$) and autoregressive decode ($N=128$) at single-stream batch size ($B=1$).
+3. **Execution Warmup & GPU Synchronization**: To eliminate runtime Metal Shader PSO compilation artifacts and lazy evaluation skew, all engines executed 5 unmeasured warmup iterations. Explicit synchronization barriers (`torch.mps.synchronize()`, `mx.eval()`, and native `llama-bench` timers) were enforced around all measurement windows across $R \ge 3$ repetitions.
+4. **Automated Reproduction Artifacts**: The complete benchmarking suite is version-controlled and fully reproducible via `./benchmarks/run_all_benchmarks.sh`, emitting timestamped system telemetry (Apple M3 Pro SoC, 18 GPU cores, 18 GB Unified Memory @ 150 GB/s) and JSON execution manifests into `benchmarks/results/`.
+
 ### 9.3 Custom Metal Operator Microbenchmarks & Muon Training Convergence
 
 **1. Operator Microbenchmarks ($B=4, T=1024, D=768, V=50304$, Forward + Backward on M3 Pro MPS)**:
