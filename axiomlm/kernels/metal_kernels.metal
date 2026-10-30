@@ -1320,7 +1320,72 @@ kernel void gqa_flash_decode_split_kv_half_kernel(
     device const half *k_base = k_cache + kv_h * max_seq_len * 64;
     device const half *v_base = v_cache + kv_h * max_seq_len * 64;
 
-    for (uint t = t_start; t < t_end; ++t) {
+    uint t = t_start;
+    for (; t + 16 <= t_end; t += 16) {
+        float score0[16];
+        float score1[16];
+        float score2[16];
+
+        #pragma unroll
+        for (uint j = 0; j < 16; ++j) {
+            half2 k_val = *(device const half2 *)(k_base + (t + j) * 64 + lane_id * 2);
+
+            float p0 = fma(float(q0.x), float(k_val.x), float(q0.y) * float(k_val.y));
+            float p1 = fma(float(q1.x), float(k_val.x), float(q1.y) * float(k_val.y));
+            float p2 = fma(float(q2.x), float(k_val.x), float(q2.y) * float(k_val.y));
+
+            score0[j] = simd_sum(p0) * scale;
+            score1[j] = simd_sum(p1) * scale;
+            score2[j] = simd_sum(p2) * scale;
+        }
+
+        float tile_m0 = score0[0], tile_m1 = score1[0], tile_m2 = score2[0];
+        #pragma unroll
+        for (uint j = 1; j < 16; ++j) {
+            tile_m0 = max(tile_m0, score0[j]);
+            tile_m1 = max(tile_m1, score1[j]);
+            tile_m2 = max(tile_m2, score2[j]);
+        }
+
+        float m0_new = max(m0, tile_m0);
+        float m1_new = max(m1, tile_m1);
+        float m2_new = max(m2, tile_m2);
+
+        float a0 = fast::exp(m0 - m0_new);
+        float a1 = fast::exp(m1 - m1_new);
+        float a2 = fast::exp(m2 - m2_new);
+
+        o0 *= a0;
+        l0 *= a0;
+        o1 *= a1;
+        l1 *= a1;
+        o2 *= a2;
+        l2 *= a2;
+
+        #pragma unroll
+        for (uint j = 0; j < 16; ++j) {
+            float w0 = fast::exp(score0[j] - m0_new);
+            float w1 = fast::exp(score1[j] - m1_new);
+            float w2 = fast::exp(score2[j] - m2_new);
+
+            l0 += w0;
+            l1 += w1;
+            l2 += w2;
+
+            half2 v_val = *(device const half2 *)(v_base + (t + j) * 64 + lane_id * 2);
+            float2 v_f = float2(v_val);
+            o0 += v_f * w0;
+            o1 += v_f * w1;
+            o2 += v_f * w2;
+        }
+
+        m0 = m0_new;
+        m1 = m1_new;
+        m2 = m2_new;
+    }
+
+    // Remainder loop for leftover tokens
+    for (; t < t_end; ++t) {
         half2 k_val = *(device const half2 *)(k_base + t * 64 + lane_id * 2);
 
         float p0 = fma(float(q0.x), float(k_val.x), float(q0.y) * float(k_val.y));
