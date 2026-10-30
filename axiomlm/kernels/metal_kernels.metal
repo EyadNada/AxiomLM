@@ -1267,3 +1267,170 @@ kernel void qmv_q8_g64_half_kernel(
         if (row_base + 3 < N) y[row_base + 3] = half(acc3);
     }
 }
+
+// ----------------------------------------------------------------------------
+// 7A. GQA Vector Flash-Decode Split-KV Kernel (T_q = 1, FP16)
+// Optimized for Apple Silicon M3 Pro GPU (18 cores, SIMD-width = 32)
+// Evaluates 3 Query heads per 1 KV head in registers (3:1 GQA)
+// Inputs:
+//   q: (1, 12, 1, 64) half (or contiguous [768] half)
+//   k_cache: (1, 4, max_seq_len, 64) half
+//   v_cache: (1, 4, max_seq_len, 64) half
+// Outputs:
+//   out: (1, 12, 1, 64) half (or [768] half)
+//   partial_O: (12, num_splits, 32) half2
+//   partial_m: (12, num_splits) float
+//   partial_l: (12, num_splits) float
+// ----------------------------------------------------------------------------
+kernel void gqa_flash_decode_split_kv_half_kernel(
+    device const half *q [[buffer(0)]],
+    device const half *k_cache [[buffer(1)]],
+    device const half *v_cache [[buffer(2)]],
+    device half *out [[buffer(3)]],
+    device half2 *partial_O [[buffer(4)]],
+    device float *partial_m [[buffer(5)]],
+    device float *partial_l [[buffer(6)]],
+    constant uint &max_seq_len [[buffer(7)]],
+    constant uint &active_len [[buffer(8)]],
+    constant uint &num_splits [[buffer(9)]],
+    constant float &scale [[buffer(10)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]])
+{
+    uint kv_h = tgpig.x;       // [0 .. 3]
+    uint split_id = tgpig.y;   // [0 .. num_splits - 1]
+    uint lane_id = simd_lane_id; // [0 .. 31]
+
+    uint qh0 = kv_h * 3 + 0;
+    uint qh1 = kv_h * 3 + 1;
+    uint qh2 = kv_h * 3 + 2;
+
+    half2 q0 = *(device const half2 *)(q + qh0 * 64 + lane_id * 2);
+    half2 q1 = *(device const half2 *)(q + qh1 * 64 + lane_id * 2);
+    half2 q2 = *(device const half2 *)(q + qh2 * 64 + lane_id * 2);
+
+    uint tokens_per_split = (active_len + num_splits - 1) / num_splits;
+    uint t_start = min(split_id * tokens_per_split, active_len);
+    uint t_end = min(t_start + tokens_per_split, active_len);
+
+    float m0 = -1e38f, m1 = -1e38f, m2 = -1e38f;
+    float l0 = 0.0f, l1 = 0.0f, l2 = 0.0f;
+    float2 o0 = float2(0.0f), o1 = float2(0.0f), o2 = float2(0.0f);
+
+    device const half *k_base = k_cache + kv_h * max_seq_len * 64;
+    device const half *v_base = v_cache + kv_h * max_seq_len * 64;
+
+    for (uint t = t_start; t < t_end; ++t) {
+        half2 k_val = *(device const half2 *)(k_base + t * 64 + lane_id * 2);
+
+        float p0 = fma(float(q0.x), float(k_val.x), float(q0.y) * float(k_val.y));
+        float p1 = fma(float(q1.x), float(k_val.x), float(q1.y) * float(k_val.y));
+        float p2 = fma(float(q2.x), float(k_val.x), float(q2.y) * float(k_val.y));
+
+        float score0 = simd_sum(p0) * scale;
+        float score1 = simd_sum(p1) * scale;
+        float score2 = simd_sum(p2) * scale;
+
+        float m0_new = max(m0, score0);
+        float a0 = fast::exp(m0 - m0_new);
+        float b0 = fast::exp(score0 - m0_new);
+        l0 = fma(l0, a0, b0);
+        m0 = m0_new;
+
+        float m1_new = max(m1, score1);
+        float a1 = fast::exp(m1 - m1_new);
+        float b1 = fast::exp(score1 - m1_new);
+        l1 = fma(l1, a1, b1);
+        m1 = m1_new;
+
+        float m2_new = max(m2, score2);
+        float a2 = fast::exp(m2 - m2_new);
+        float b2 = fast::exp(score2 - m2_new);
+        l2 = fma(l2, a2, b2);
+        m2 = m2_new;
+
+        half2 v_val = *(device const half2 *)(v_base + t * 64 + lane_id * 2);
+        float2 v_f = float2(v_val);
+        o0 = o0 * a0 + v_f * b0;
+        o1 = o1 * a1 + v_f * b1;
+        o2 = o2 * a2 + v_f * b2;
+    }
+
+    if (num_splits == 1) {
+        device half2 *out0 = (device half2 *)(out + qh0 * 64);
+        device half2 *out1 = (device half2 *)(out + qh1 * 64);
+        device half2 *out2 = (device half2 *)(out + qh2 * 64);
+
+        float inv_l0 = (l0 > 0.0f) ? (1.0f / l0) : 0.0f;
+        float inv_l1 = (l1 > 0.0f) ? (1.0f / l1) : 0.0f;
+        float inv_l2 = (l2 > 0.0f) ? (1.0f / l2) : 0.0f;
+
+        out0[lane_id] = half2(o0 * inv_l0);
+        out1[lane_id] = half2(o1 * inv_l1);
+        out2[lane_id] = half2(o2 * inv_l2);
+    } else {
+        uint p_offset = qh0 * (num_splits * 32) + split_id * 32 + lane_id;
+        partial_O[p_offset] = half2(o0);
+        partial_O[p_offset + (num_splits * 32)] = half2(o1);
+        partial_O[p_offset + 2 * (num_splits * 32)] = half2(o2);
+
+        if (lane_id == 0) {
+            uint ml_offset = qh0 * num_splits + split_id;
+            partial_m[ml_offset] = m0;
+            partial_l[ml_offset] = l0;
+            partial_m[ml_offset + num_splits] = m1;
+            partial_l[ml_offset + num_splits] = l1;
+            partial_m[ml_offset + 2 * num_splits] = m2;
+            partial_l[ml_offset + 2 * num_splits] = l2;
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 7B. GQA Split-KV Reduction Kernel (FP16)
+// ----------------------------------------------------------------------------
+kernel void gqa_flash_decode_reduce_half_kernel(
+    device const half2 *partial_O [[buffer(0)]],
+    device const float *partial_m [[buffer(1)]],
+    device const float *partial_l [[buffer(2)]],
+    device half *out [[buffer(3)]],
+    constant uint &num_splits [[buffer(4)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]])
+{
+    uint qh = tgpig.x;           // [0 .. 11]
+    uint lane_id = simd_lane_id; // [0 .. 31]
+
+    threadgroup float shared_buf[2];
+
+    if (lane_id == 0) {
+        float local_max = -1e38f;
+        for (uint s = 0; s < num_splits; ++s) {
+            float m_val = partial_m[qh * num_splits + s];
+            if (m_val > local_max) local_max = m_val;
+        }
+        float global_l = 0.0f;
+        for (uint s = 0; s < num_splits; ++s) {
+            float m_val = partial_m[qh * num_splits + s];
+            float l_val = partial_l[qh * num_splits + s];
+            global_l += l_val * fast::exp(m_val - local_max);
+        }
+        shared_buf[0] = local_max;
+        shared_buf[1] = (global_l > 0.0f) ? (1.0f / global_l) : 0.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float global_m = shared_buf[0];
+    float inv_l = shared_buf[1];
+
+    float2 o_acc = float2(0.0f);
+    for (uint s = 0; s < num_splits; ++s) {
+        float m_val = partial_m[qh * num_splits + s];
+        float weight = fast::exp(m_val - global_m);
+        half2 o_part = partial_O[qh * (num_splits * 32) + s * 32 + lane_id];
+        o_acc += float2(o_part) * weight;
+    }
+
+    device half2 *out_head = (device half2 *)(out + qh * 64);
+    out_head[lane_id] = half2(o_acc * inv_l);
+}

@@ -489,6 +489,45 @@ def flash_attention_mps(
     )
 
 
+def gqa_flash_decode_mps(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    active_len: int,
+    num_splits: int = 0,
+) -> torch.Tensor:
+    """Fast Split-KV Flash-Decode for 3:1 GQA on Apple Silicon MPS (FP16)."""
+    if (
+        _METAL_MOD is not None
+        and hasattr(_METAL_MOD, "gqa_flash_decode_mps")
+        and q.device.type == "mps"
+        and q.dtype == torch.float16
+    ):
+        return _METAL_MOD.gqa_flash_decode_mps(
+            q.contiguous(),
+            k_cache.contiguous(),
+            v_cache.contiguous(),
+            active_len,
+            num_splits,
+        )
+    # PyTorch fallback for CPU or non-FP16 testing
+    orig_shape = q.shape
+    if q.dim() == 3:
+        q_4d = q.view(1, 12, 1, 64)
+    elif q.dim() == 2:
+        q_4d = q.view(1, 12, 1, 64)
+    elif q.dim() == 1:
+        q_4d = q.view(1, 12, 1, 64)
+    else:
+        q_4d = q
+    k_in = k_cache if k_cache.dim() == 4 else k_cache.unsqueeze(0)
+    v_in = v_cache if v_cache.dim() == 4 else v_cache.unsqueeze(0)
+    k_active = k_in[:, :, :active_len, :]
+    v_active = v_in[:, :, :active_len, :]
+    out = F.scaled_dot_product_attention(q_4d, k_active, v_active, enable_gqa=True)
+    return out.view(orig_shape)
+
+
 class FusedRoPEFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, freqs_cis):

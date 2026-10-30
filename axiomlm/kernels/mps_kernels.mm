@@ -57,6 +57,8 @@ static id<MTLComputePipelineState> ce_bwd_pso = nil;
 static id<MTLComputePipelineState> fa_fwd_pso = nil;
 static id<MTLComputePipelineState> qmv_q4_g64_half_pso = nil;
 static id<MTLComputePipelineState> qmv_q8_g64_half_pso = nil;
+static id<MTLComputePipelineState> gqa_split_kv_pso = nil;
+static id<MTLComputePipelineState> gqa_reduce_pso = nil;
 static bool is_initialized = false;
 
 void init_mps(std::string metal_path) {
@@ -88,6 +90,8 @@ void init_mps(std::string metal_path) {
             fa_fwd_pso = get_pipeline(mtl_device, mtl_library, @"flash_attention_forward_kernel");
             qmv_q4_g64_half_pso = get_pipeline(mtl_device, mtl_library, @"qmv_q4_g64_half_kernel");
             qmv_q8_g64_half_pso = get_pipeline(mtl_device, mtl_library, @"qmv_q8_g64_half_kernel");
+            gqa_split_kv_pso = get_pipeline(mtl_device, mtl_library, @"gqa_flash_decode_split_kv_half_kernel");
+            gqa_reduce_pso = get_pipeline(mtl_device, mtl_library, @"gqa_flash_decode_reduce_half_kernel");
         }
         is_initialized = true;
     }
@@ -599,6 +603,81 @@ static inline void dispatch_qmv_q4_g64_into(
     [encoder dispatchThreadgroups:MTLSizeMake(num_tg, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
 }
 
+static inline void dispatch_gqa_flash_decode_into(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& q,
+    const torch::Tensor& k_cache,
+    const torch::Tensor& v_cache,
+    torch::Tensor& out,
+    torch::Tensor& partial_O,
+    torch::Tensor& partial_m,
+    torch::Tensor& partial_l,
+    uint32_t max_seq_len,
+    uint32_t active_len,
+    uint32_t num_splits) {
+    float scale = 0.125f; // 1.0f / sqrt(64)
+    uint32_t n_kv_head = 4;
+
+    [encoder setComputePipelineState:gqa_split_kv_pso];
+    [encoder setBuffer:getMTLBufferStorage(q) offset:q.storage_offset() * q.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(k_cache) offset:k_cache.storage_offset() * k_cache.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(v_cache) offset:v_cache.storage_offset() * v_cache.element_size() atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(out) offset:out.storage_offset() * out.element_size() atIndex:3];
+    [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:4];
+    [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:5];
+    [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:6];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:7];
+    [encoder setBytes:&active_len length:sizeof(uint32_t) atIndex:8];
+    [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:9];
+    [encoder setBytes:&scale length:sizeof(float) atIndex:10];
+
+    MTLSize gridSize = MTLSizeMake(n_kv_head, num_splits, 1);
+    MTLSize tgSize = MTLSizeMake(32, 1, 1);
+    [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:tgSize];
+
+    if (num_splits > 1) {
+        [encoder setComputePipelineState:gqa_reduce_pso];
+        [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:0];
+        [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:1];
+        [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:2];
+        [encoder setBuffer:getMTLBufferStorage(out) offset:out.storage_offset() * out.element_size() atIndex:3];
+        [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:4];
+
+        MTLSize reduceGrid = MTLSizeMake(12, 1, 1);
+        [encoder dispatchThreadgroups:reduceGrid threadsPerThreadgroup:tgSize];
+    }
+}
+
+torch::Tensor gqa_flash_decode_mps(
+    torch::Tensor q,
+    torch::Tensor k_cache,
+    torch::Tensor v_cache,
+    int64_t active_len,
+    int64_t num_splits) {
+    auto out = torch::empty_like(q);
+    uint32_t max_seq_len = (k_cache.dim() == 4) ? (uint32_t)k_cache.size(2) : (uint32_t)k_cache.size(1);
+    uint32_t n_splits = (num_splits > 0) ? (uint32_t)num_splits : ((active_len <= 64) ? 1 : ((active_len <= 256) ? 4 : 8));
+    auto opts = q.options();
+    auto partial_O = torch::empty({12, n_splits, 32, 2}, opts);
+    auto partial_m = torch::empty({12, n_splits}, opts.dtype(torch::kFloat32));
+    auto partial_l = torch::empty({12, n_splits}, opts.dtype(torch::kFloat32));
+
+    auto stream = at::mps::getCurrentMPSStream();
+    dispatch_gqa_flash_decode_into(
+        stream->commandEncoder(),
+        q,
+        k_cache,
+        v_cache,
+        out,
+        partial_O,
+        partial_m,
+        partial_l,
+        max_seq_len,
+        (uint32_t)active_len,
+        n_splits);
+    return out;
+}
+
 static inline void dispatch_qmv_q8_g64_into(
     id<MTLComputeCommandEncoder> encoder,
     const torch::Tensor& x,
@@ -638,6 +717,10 @@ struct DecodeGraphState {
     torch::Tensor qkv_buf;
     torch::Tensor q_view;
     torch::Tensor attn_out_buf;
+    torch::Tensor attn_y_buf;
+    torch::Tensor partial_O_buf;
+    torch::Tensor partial_m_buf;
+    torch::Tensor partial_l_buf;
     torch::Tensor gate_up_buf;
     torch::Tensor swiglu_buf;
     torch::Tensor mlp_out_buf;
@@ -709,6 +792,10 @@ struct DecodeGraphState {
         qkv_buf = torch::empty({1, 1, qkv_dim}, opts);
         q_view = qkv_buf.slice(2, 0, d_model).view({1, n_head, 1, head_dim});
         attn_out_buf = torch::empty({1, 1, d_model}, opts);
+        attn_y_buf = torch::empty({1, 1, d_model}, opts);
+        partial_O_buf = torch::empty({12, 16, 32, 2}, opts);
+        partial_m_buf = torch::empty({12, 16}, opts.dtype(torch::kFloat32));
+        partial_l_buf = torch::empty({12, 16}, opts.dtype(torch::kFloat32));
         gate_up_buf = torch::empty({1, 1, gu_dim}, opts);
         swiglu_buf = torch::empty({1, 1, hidden_dim}, opts);
         mlp_out_buf = torch::empty({1, 1, d_model}, opts);
@@ -744,16 +831,20 @@ struct DecodeGraphState {
                 start_pos,
                 (uint32_t)write_pos);
 
-            auto k_active = (active_len == max_seq_len)
-                ? k_caches[i]
-                : k_caches[i].slice(2, 0, active_len);
-            auto v_active = (active_len == max_seq_len)
-                ? v_caches[i]
-                : v_caches[i].slice(2, 0, active_len);
-
-            auto attn_y = at::scaled_dot_product_attention(
-                q_view, k_active, v_active, {}, 0.0, false, c10::nullopt, enable_gqa);
-            at::linear_out(attn_out_buf, attn_y.view({1, 1, q_dim}), c_proj_weights[i]);
+            uint32_t n_splits = (active_len <= 64) ? 1 : ((active_len <= 256) ? 4 : 8);
+            dispatch_gqa_flash_decode_into(
+                stream->commandEncoder(),
+                qkv_buf,
+                k_caches[i],
+                v_caches[i],
+                attn_y_buf,
+                partial_O_buf,
+                partial_m_buf,
+                partial_l_buf,
+                max_seq_len,
+                (uint32_t)active_len,
+                n_splits);
+            at::linear_out(attn_out_buf, attn_y_buf, c_proj_weights[i]);
 
             dispatch_add_rmsnorm_infer_into(
                 stream->commandEncoder(), x_buf, attn_out_buf, ln2_weights[i], norm_buf, eps);
@@ -796,6 +887,10 @@ struct QuantizedDecodeGraphState {
     torch::Tensor qkv_buf;
     torch::Tensor q_view;
     torch::Tensor attn_out_buf;
+    torch::Tensor attn_y_buf;
+    torch::Tensor partial_O_buf;
+    torch::Tensor partial_m_buf;
+    torch::Tensor partial_l_buf;
     torch::Tensor gate_up_buf;
     torch::Tensor swiglu_buf;
     torch::Tensor mlp_out_buf;
@@ -882,6 +977,10 @@ struct QuantizedDecodeGraphState {
         qkv_buf = torch::empty({1, 1, qkv_dim}, opts);
         q_view = qkv_buf.slice(2, 0, d_model).view({1, n_head, 1, head_dim});
         attn_out_buf = torch::empty({1, 1, d_model}, opts);
+        attn_y_buf = torch::empty({1, 1, d_model}, opts);
+        partial_O_buf = torch::empty({12, 16, 32, 2}, opts);
+        partial_m_buf = torch::empty({12, 16}, opts.dtype(torch::kFloat32));
+        partial_l_buf = torch::empty({12, 16}, opts.dtype(torch::kFloat32));
         gate_up_buf = torch::empty({1, 1, gu_dim}, opts);
         swiglu_buf = torch::empty({1, 1, hidden_dim}, opts);
         mlp_out_buf = torch::empty({1, 1, d_model}, opts);
@@ -922,21 +1021,24 @@ struct QuantizedDecodeGraphState {
                 start_pos,
                 (uint32_t)write_pos);
 
-            auto k_active = (active_len == max_seq_len)
-                ? k_caches[i]
-                : k_caches[i].slice(2, 0, active_len);
-            auto v_active = (active_len == max_seq_len)
-                ? v_caches[i]
-                : v_caches[i].slice(2, 0, active_len);
-
-            auto attn_y = at::scaled_dot_product_attention(
-                q_view, k_active, v_active, {}, 0.0, false, c10::nullopt, enable_gqa);
-            auto attn_flat = attn_y.view({1, 1, q_dim});
+            uint32_t n_splits = (active_len <= 64) ? 1 : ((active_len <= 256) ? 4 : 8);
+            dispatch_gqa_flash_decode_into(
+                stream->commandEncoder(),
+                qkv_buf,
+                k_caches[i],
+                v_caches[i],
+                attn_y_buf,
+                partial_O_buf,
+                partial_m_buf,
+                partial_l_buf,
+                max_seq_len,
+                (uint32_t)active_len,
+                n_splits);
 
             if (is_q4) {
-                dispatch_qmv_q4_g64_into(stream->commandEncoder(), attn_flat, c_proj_packed[i], c_proj_sb[i], attn_out_buf);
+                dispatch_qmv_q4_g64_into(stream->commandEncoder(), attn_y_buf, c_proj_packed[i], c_proj_sb[i], attn_out_buf);
             } else {
-                dispatch_qmv_q8_g64_into(stream->commandEncoder(), attn_flat, c_proj_packed[i], c_proj_sb[i], attn_out_buf);
+                dispatch_qmv_q8_g64_into(stream->commandEncoder(), attn_y_buf, c_proj_packed[i], c_proj_sb[i], attn_out_buf);
             }
 
             dispatch_add_rmsnorm_infer_into(
@@ -1156,4 +1258,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("flash_attention_forward_mps", &flash_attention_forward_mps, "MPS FlashAttention Fwd");
   m.def("qmv_q4_g64_mps", &qmv_q4_g64_mps, "MPS Fast Q4_G64 Quantized GEMV");
   m.def("qmv_q8_g64_mps", &qmv_q8_g64_mps, "MPS Fast Q8_G64 Quantized GEMV");
+  m.def("gqa_flash_decode_mps", &gqa_flash_decode_mps, "MPS Fast Split-KV Flash-Decode for GQA");
 }

@@ -15,6 +15,7 @@ from axiomlm.kernels import (  # noqa: E402
     FusedSwiGLUMLP,
     fused_sdpa,
     flash_attention_mps,
+    gqa_flash_decode_mps,
     _NEON_MOD,
     _METAL_MOD,
 )
@@ -412,6 +413,52 @@ class TestCustomKernels(unittest.TestCase):
             self.assertGreater(
                 cos_q4, 0.98, f"Q4 model decode cos sim too low: {cos_q4}"
             )
+
+    @unittest.skipUnless(torch.backends.mps.is_available(), "MPS not available")
+    def test_metal_gqa_flash_decode_parity(self):
+        """Test Metal Split-KV Flash-Decode against PyTorch SDPA with 3:1 GQA."""
+        device = torch.device("mps")
+        n_head = 12
+        n_kv_head = 4
+        head_dim = 64
+        max_seq_len = 1024
+
+        for seq_len in [32, 64, 256, 1024]:
+            q = torch.randn(1, n_head, 1, head_dim, dtype=torch.float16, device=device)
+            k_cache = torch.randn(
+                1, n_kv_head, max_seq_len, head_dim, dtype=torch.float16, device=device
+            )
+            v_cache = torch.randn(
+                1, n_kv_head, max_seq_len, head_dim, dtype=torch.float16, device=device
+            )
+
+            k_act = k_cache[:, :, :seq_len, :]
+            v_act = v_cache[:, :, :seq_len, :]
+            ref = torch.nn.functional.scaled_dot_product_attention(
+                q, k_act, v_act, enable_gqa=True
+            )
+
+            for n_splits in [1, 2, 4, 8]:
+                out = gqa_flash_decode_mps(
+                    q, k_cache, v_cache, active_len=seq_len, num_splits=n_splits
+                )
+                torch.mps.synchronize()
+
+                cos_sim = torch.nn.functional.cosine_similarity(
+                    ref.flatten().float(), out.flatten().float(), dim=0
+                ).item()
+                max_diff = (ref - out).abs().max().item()
+
+                self.assertGreater(
+                    cos_sim,
+                    0.9999,
+                    f"Low cosine similarity: {cos_sim} at T={seq_len}, S={n_splits}",
+                )
+                self.assertLess(
+                    max_diff,
+                    0.05,
+                    f"Excessive max diff: {max_diff} at T={seq_len}, S={n_splits}",
+                )
 
 
 if __name__ == "__main__":
