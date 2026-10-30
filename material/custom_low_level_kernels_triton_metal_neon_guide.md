@@ -272,7 +272,9 @@ Benchmarked on **Apple M3 Pro (12-Core CPU: 6P+6E, 18-Core GPU, 18 GB Unified Me
 | **Cross-Entropy (Single-Pass Online Softmax Fwd+Bwd)** | $74.71 \text{ ms}$ | **$24.34 \text{ ms}$** | **$3.07\times$** | ~800 MB RAM saved (no intermediate softmax tensor) |
 | **RMSNorm (Hardware `simd_sum` + `float4` Fwd+Bwd)** | $4.18 \text{ ms}$ | **$2.06 \text{ ms}$** | **$2.03\times$** ($3.85\times$ Fwd) | $74.0\%$ VRAM traffic reduction |
 | **SwiGLU (`float4`/`half4` Fwd+Bwd)** | $3.29 \text{ ms}$ | **$2.66 \text{ ms}$** | **$1.24\times$** ($3.42\times$ Fwd) | $66.7\%$ VRAM traffic reduction |
-| **Static Ring-Buffer KV Decode ($T=768$ / $T=4096$)** | $170.12 \text{ ms/tok}$ ($5.9 \text{ tok/s}$) | **$4.06 \text{ ms/tok}$ ($246.5 \text{ tok/s}$)** | **$41.94\times$** | $83.3\%\text{–}95.8\%$ KV memory reduction |
+| **Static Ring-Buffer KV Decode ($T=768$ / $T=4096$)** | $170.12 \text{ ms/tok}$ ($5.9 \text{ tok/s}$) | **$2.37 \text{ ms/tok}$ ($421.7 \text{ tok/s}$)** | **$71.47\times$** | $83.3\%\text{–}95.8\%$ KV memory reduction |
+| **Quantized Metal GEMV (`qmv_q4_g64` Decode)** | $170.12 \text{ ms/tok}$ ($5.9 \text{ tok/s}$) | **$0.97\text{–}1.30 \text{ ms/tok}$ ($767.5\text{–}1,035.3 \text{ tok/s}$)** | **$130.1\times\text{–}175.5\times$** | $71.9\%$ weight DRAM traffic reduction ($64.2\text{ MB}$) |
+| **Speculative Batched QMM (`verify_step`, $K=3$)** | $23.40 \text{ ms}$ (eager 4-tok verification) | **$1.19 \text{ ms/tok}$ ($838.9 \text{ tok/s}$, $2,538 \text{ eff.}$)** | **$142.2\times$** | Single-pass weight streaming for multi-token candidates |
 
 ---
 

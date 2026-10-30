@@ -78,7 +78,7 @@ For a systematic progression through the systems and mathematical stack:
 * **[Generation & Sampling Strategies](./generation_and_sampling_strategies.md)**: Greedy decoding, temperature scaling, Top-$k$ truncation, and Top-$p$ (Nucleus) sampling dynamics.
 * **[TikToken & Byte-Pair Encoding (BPE)](./tiktokenizer_guide.md)**: Byte-level vocabulary construction, regex splitting rules, and tokenization efficiency.
 * **[WebText vs. Modern Systems Datasets](./datasets_webtext_gpt2_vs_gpt3_guide.md)**: Evolution from WebText to FineWeb, RedPajama, Python-Edu, and multi-shard GPU kernel corpora.
-* **[AxiomLM Technical Report & Whitepaper](../AxiomLM_Technical_Report.md)**: Formal mathematical formulations, polar Newton-Schulz spectral proofs, and Roofline analysis.
+* **[AxiomLM Technical Report & Whitepaper](../docs/report.md)**: Formal mathematical formulations, polar Newton-Schulz spectral proofs, and Roofline analysis.
 
 ---
 

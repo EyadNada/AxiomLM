@@ -57,7 +57,6 @@ AxiomLM_Paper_Draft.docx
 generate_docx.py
 ~$*.docx
 research_paper.docx
-AXIOM_PUBLISHING_STRATEGY.md
-AxiomLM_Technical_Report.md
-docs/assets/AxiomLM_Research_Paper_Draft_v2.md
-reply.pdf
+docs/assets/*.html
+docs/assets/*Backup.pdf
+docs/assets/*_v2.pdf
