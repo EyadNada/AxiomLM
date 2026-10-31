@@ -2,30 +2,32 @@
 AxiomLM Accelerated Inference Engine & Text Generation CLI.
 """
 
-from typing import Optional, List, Tuple, Generator, Union, Any
+import argparse
+import json
 import os
 import sys
 import time
-import argparse
-import json
+from collections.abc import Generator
+from typing import Any
+
+import tiktoken
 import torch
 import torch.nn.functional as F
-import tiktoken
-from .paged_cache import PagedKVCache, SequenceContext
 
-
-from ..models.transformer import Transformer, ModelConfig
+from ..kernels import is_mps_available
 from ..kernels.ops import _METAL_MOD
+from ..models.transformer import ModelConfig, Transformer
+from .paged_cache import PagedKVCache, SequenceContext
 
 
 def sample_logits(
     logits: torch.Tensor,
     temperature: float = 1.0,
-    top_k: Optional[int] = 50,
-    top_p: Optional[float] = None,
-    min_p: Optional[float] = None,
+    top_k: int | None = 50,
+    top_p: float | None = None,
+    min_p: float | None = None,
     repetition_penalty: float = 1.0,
-    prev_tokens: Optional[torch.Tensor] = None,
+    prev_tokens: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Applies temperature scaling, repetition penalty, Top-K, Min-P, and Top-P (Nucleus) truncation.
@@ -98,11 +100,11 @@ def generate_samples(
     num_samples: int = 2,
     max_length: int = 40,
     temperature: float = 1.0,
-    top_k: Optional[int] = 50,
-    top_p: Optional[float] = None,
-    min_p: Optional[float] = None,
+    top_k: int | None = 50,
+    top_p: float | None = None,
+    min_p: float | None = None,
     repetition_penalty: float = 1.0,
-) -> List[str]:
+) -> list[str]:
     """Generates autoregressive text samples using standard eager re-computation (O(T^2))."""
     model.eval()
     tokens = enc.encode(prompt)
@@ -141,11 +143,11 @@ def generate_with_cache(
     num_samples: int = 1,
     max_length: int = 40,
     temperature: float = 1.0,
-    top_k: Optional[int] = 50,
-    top_p: Optional[float] = None,
-    min_p: Optional[float] = None,
+    top_k: int | None = 50,
+    top_p: float | None = None,
+    min_p: float | None = None,
     repetition_penalty: float = 1.0,
-) -> List[str]:
+) -> list[str]:
     """
     Accelerated autoregressive text generation using per-layer Key-Value caching.
     Reduces compute complexity from O(T^2) to O(1) per decoding step.
@@ -265,11 +267,11 @@ def benchmark_generation_speed(
 
 
 def load_model(
-    checkpoint_path: Optional[str] = None,
-    pretrained: Optional[str] = None,
+    checkpoint_path: str | None = None,
+    pretrained: str | None = None,
     arch: str = "modern",
     device: str = "cpu",
-) -> Tuple[Transformer, ModelConfig]:
+) -> tuple[Transformer, ModelConfig]:
     """Loads a model from a checkpoint, directory, or Hugging Face pretrained weights."""
     if pretrained:
         print(f"[AxiomLM] Loading pretrained weights from Hugging Face: {pretrained}")
@@ -452,14 +454,14 @@ class InferenceEngine:
 
     def __init__(
         self,
-        model: Union[Transformer, str],
-        device: Optional[str] = None,
-        tokenizer: Optional[Any] = None,
+        model: Transformer | str,
+        device: str | None = None,
+        tokenizer: Any | None = None,
     ):
         if device is None:
             if torch.cuda.is_available():
                 device = "cuda"
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            elif is_mps_available():
                 device = "mps"
             else:
                 device = "cpu"
@@ -481,9 +483,9 @@ class InferenceEngine:
         prompt: str,
         max_tokens: int = 50,
         temperature: float = 0.8,
-        top_k: Optional[int] = 50,
-        top_p: Optional[float] = 0.9,
-        min_p: Optional[float] = 0.05,
+        top_k: int | None = 50,
+        top_p: float | None = 0.9,
+        min_p: float | None = 0.05,
         repetition_penalty: float = 1.1,
     ) -> str:
         """Generates text from a prompt using O(1) KV-caching."""
@@ -507,9 +509,9 @@ class InferenceEngine:
         prompt: str,
         max_tokens: int = 50,
         temperature: float = 0.8,
-        top_k: Optional[int] = 50,
-        top_p: Optional[float] = 0.9,
-        min_p: Optional[float] = 0.05,
+        top_k: int | None = 50,
+        top_p: float | None = 0.9,
+        min_p: float | None = 0.05,
         repetition_penalty: float = 1.1,
     ) -> Generator[str, None, None]:
         """Yields generated tokens one by one as they are decoded."""

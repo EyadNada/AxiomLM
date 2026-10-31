@@ -2,9 +2,9 @@
 AxiomLM Multi-Shard Streaming Binary DataLoader.
 """
 
-import os
 import glob
-from typing import Tuple, Optional
+import os
+
 import numpy as np
 import torch
 
@@ -23,7 +23,7 @@ class DataLoaderLite:
         num_processes: int = 1,
         split: str = "train",
         data_dir: str = "data",
-        data_root: Optional[str] = None,
+        data_root: str | None = None,
     ):
         if data_root is not None:
             data_dir = data_root
@@ -79,7 +79,7 @@ class DataLoaderLite:
 
         if process_rank == 0:
             print(
-                f"[DataLoaderLite] Loaded {split} ({len(self.shards)} shard{'s' if len(self.shards)>1 else ''}) from {data_dir} ({self.total_tokens:,} tokens total)"
+                f"[DataLoaderLite] Loaded {split} ({len(self.shards)} shard{'s' if len(self.shards) > 1 else ''}) from {data_dir} ({self.total_tokens:,} tokens total)"
             )
             print(
                 f"[DataLoaderLite] 1 epoch = {self.total_tokens // (B * T * num_processes)} batches"
@@ -115,7 +115,7 @@ class DataLoaderLite:
                 return
             cum_tokens += shard_size
 
-    def next_batch(self) -> Tuple[torch.Tensor, torch.Tensor]:
+    def next_batch(self) -> tuple[torch.Tensor, torch.Tensor]:
         B, T = self.B, self.T
         buf = self.tokens[self.current_position : self.current_position + B * T + 1]
 

@@ -4,13 +4,14 @@ Compiles and loads native C++/ARM NEON kernels optimized for Apple Silicon (M1/M
 and configures fallback pathways.
 """
 
+import importlib.util
 import os
-import sys
 import platform
 import subprocess
+import sys
 import sysconfig
-import importlib.util
-from typing import Optional, Any
+from typing import Any
+
 import torch
 
 KERNEL_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -81,7 +82,7 @@ def compile_neon_extension(force: bool = False, verbose: bool = False) -> str:
     return SO_OUTPUT
 
 
-def load_neon_module() -> Optional[Any]:
+def load_neon_module() -> Any | None:
     """
     Compiles (if needed) and dynamically imports the native NEON extension.
     Returns the module or None if compilation/import fails or not on ARM.
@@ -120,7 +121,7 @@ def compile_metal_extension(force: bool = False, verbose: bool = False) -> str:
 
     # Create dummy CarbonCore to fix SDK bugs
     os.makedirs("scratch/CarbonCore", exist_ok=True)
-    with open("scratch/CarbonCore/Folders.h", "w") as f:
+    with open("scratch/CarbonCore/Folders.h", "w"):
         pass
 
     cmd = [
@@ -163,7 +164,7 @@ def compile_metal_extension(force: bool = False, verbose: bool = False) -> str:
     return so_output
 
 
-def load_metal_module() -> Optional[Any]:
+def load_metal_module() -> Any | None:
     if sys.platform != "darwin":
         return None
     try:

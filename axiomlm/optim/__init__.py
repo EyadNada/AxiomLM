@@ -7,6 +7,6 @@ from .schedule import get_lr
 
 __all__ = [
     "Muon",
-    "zeropower_via_newtonschulz5",
     "get_lr",
+    "zeropower_via_newtonschulz5",
 ]

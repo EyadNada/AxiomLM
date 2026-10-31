@@ -1,5 +1,4 @@
 import torch
-from typing import List, Tuple
 
 
 class PagedKVCache:
@@ -38,7 +37,7 @@ class PagedKVCache:
 class SequenceContext:
     def __init__(self, cache: PagedKVCache):
         self.cache = cache
-        self.block_table: List[int] = []
+        self.block_table: list[int] = []
         self.layer_seq_lens = {}
 
     @property
@@ -47,7 +46,7 @@ class SequenceContext:
 
     def get_reconstructed_cache(
         self, layer_idx: int
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Reconstructs the contiguous (K, V) tensors for F.scaled_dot_product_attention.
         Returns K, V of shape [1, seq_len, n_kv_head, head_dim]
@@ -129,9 +128,16 @@ class StaticKVCache:
         n_kv_head: int,
         head_dim: int,
         dtype: torch.dtype = torch.float16,
-        device: torch.device = torch.device("mps"),
+        device: torch.device | str | None = None,
         ring_buffer: bool = False,
     ):
+        if device is None:
+            from axiomlm.kernels import is_mps_available
+
+            device = torch.device("mps" if is_mps_available() else "cpu")
+        elif isinstance(device, str):
+            device = torch.device(device)
+
         self.max_batch_size = max_batch_size
         self.max_seq_len = max_seq_len
         self.n_layer = n_layer
@@ -161,7 +167,7 @@ class StaticKVCache:
 
     def update(
         self, layer_idx: int, k: torch.Tensor, v: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         In-place update of K, V of shape [B, n_kv_head, T, head_dim].
         Returns zero-copy views of active K, V of shape [B, n_kv_head, active_len, head_dim].

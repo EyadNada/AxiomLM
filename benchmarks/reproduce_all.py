@@ -24,6 +24,9 @@ from benchmarks.hardware_telemetry import collect_system_telemetry
 
 def generate_markdown_comparison_table(results: dict[str, Any]) -> str:
     """Generates a clean Markdown comparison table from the combined benchmark run."""
+    if not results.get("axiomlm"):
+        return "_AxiomLM Metal benchmarks skipped (MPS backend unavailable in execution environment)._"
+
     lines = []
     lines.append(
         "| Framework / Engine | Precision | Decode Speed (tok/s) | Latency (ms/tok) | Speedup vs. MLX | Speedup vs. llama.cpp |"
@@ -31,48 +34,58 @@ def generate_markdown_comparison_table(results: dict[str, Any]) -> str:
     lines.append("| :--- | :---: | :---: | :---: | :---: | :---: |")
 
     # Baselines
-    mlx_f16 = results["mlx"]["f16"]["decode_tok_s"]
-    llama_f16 = results["llama_cpp"]["f16"]["decode_tok_s"]
-    llama_q4 = results["llama_cpp"]["q4_0"]["decode_tok_s"]
+    mlx_f16 = results.get("mlx", {}).get("f16", {}).get("decode_tok_s", 1.0)
+    llama_f16 = results.get("llama_cpp", {}).get("f16", {}).get("decode_tok_s", 1.0)
+    llama_q4 = results.get("llama_cpp", {}).get("q4_0", {}).get("decode_tok_s", 1.0)
 
     # 1. PyTorch MPS Cached
-    pt = results["axiomlm"]["pytorch_mps_cached"]
-    lines.append(
-        f"| **PyTorch MPS Eager (Cached)** | FP16 | `{pt['decode_tok_s']:.1f} ± {pt['decode_stddev']:.1f}` | `{pt['decode_latency_ms']:.2f} ms` | `{(pt['decode_tok_s'] / mlx_f16):.2f}x` | `{(pt['decode_tok_s'] / llama_f16):.2f}x` |"
-    )
+    if "pytorch_mps_cached" in results["axiomlm"]:
+        pt = results["axiomlm"]["pytorch_mps_cached"]
+        lines.append(
+            f"| **PyTorch MPS Eager (Cached)** | FP16 | `{pt['decode_tok_s']:.1f} ± {pt['decode_stddev']:.1f}` | `{pt['decode_latency_ms']:.2f} ms` | `{(pt['decode_tok_s'] / mlx_f16):.2f}x` | `{(pt['decode_tok_s'] / llama_f16):.2f}x` |"
+        )
 
     # 2. Apple MLX
-    mlx = results["mlx"]["f16"]
-    lines.append(
-        f"| **Apple MLX Baseline** | FP16 | `{mlx['decode_tok_s']:.1f} ± {mlx['decode_stddev']:.1f}` | `{mlx['decode_latency_ms']:.2f} ms` | `1.00x` | `{(mlx['decode_tok_s'] / llama_f16):.2f}x` |"
-    )
+    if "f16" in results.get("mlx", {}):
+        mlx = results["mlx"]["f16"]
+        lines.append(
+            f"| **Apple MLX Baseline** | FP16 | `{mlx['decode_tok_s']:.1f} ± {mlx['decode_stddev']:.1f}` | `{mlx['decode_latency_ms']:.2f} ms` | `1.00x` | `{(mlx['decode_tok_s'] / llama_f16):.2f}x` |"
+        )
 
     # 3. llama.cpp Metal FP16
-    ll_f16 = results["llama_cpp"]["f16"]
-    lines.append(
-        f"| **llama.cpp Metal Baseline** | FP16 | `{ll_f16['decode_tok_s']:.1f} ± {ll_f16['decode_stddev']:.1f}` | `{ll_f16['decode_latency_ms']:.2f} ms` | `{(ll_f16['decode_tok_s'] / mlx_f16):.2f}x` | `1.00x` |"
-    )
+    if "f16" in results.get("llama_cpp", {}):
+        ll_f16 = results["llama_cpp"]["f16"]
+        lines.append(
+            f"| **llama.cpp Metal Baseline** | FP16 | `{ll_f16['decode_tok_s']:.1f} ± {ll_f16['decode_stddev']:.1f}` | `{ll_f16['decode_latency_ms']:.2f} ms` | `{(ll_f16['decode_tok_s'] / mlx_f16):.2f}x` | `1.00x` |"
+        )
 
     # 4. AxiomLM FP16
-    ax_f16 = results["axiomlm"]["axiomlm_fp16"]
-    lines.append(
-        f"| **AxiomLM Modern Decode Runner** | **FP16** | **`{ax_f16['decode_tok_s']:.1f} ± {ax_f16['decode_stddev']:.1f}`** | **`{ax_f16['decode_latency_ms']:.2f} ms`** | **`{(ax_f16['decode_tok_s'] / mlx_f16):.2f}x`** | **`{(ax_f16['decode_tok_s'] / llama_f16):.2f}x`** |"
-    )
+    if "axiomlm_fp16" in results["axiomlm"]:
+        ax_f16 = results["axiomlm"]["axiomlm_fp16"]
+        lines.append(
+            f"| **AxiomLM Modern Decode Runner** | **FP16** | **`{ax_f16['decode_tok_s']:.1f} ± {ax_f16['decode_stddev']:.1f}`** | **`{ax_f16['decode_latency_ms']:.2f} ms`** | **`{(ax_f16['decode_tok_s'] / mlx_f16):.2f}x`** | **`{(ax_f16['decode_tok_s'] / llama_f16):.2f}x`** |"
+        )
 
     # 5. llama.cpp Metal Q4_0
-    ll_q4 = results["llama_cpp"]["q4_0"]
-    lines.append(
-        f"| **llama.cpp Metal Baseline** | Q4_0 | `{ll_q4['decode_tok_s']:.1f} ± {ll_q4['decode_stddev']:.1f}` | `{ll_q4['decode_latency_ms']:.2f} ms` | — | `1.00x` |"
-    )
+    if "q4_0" in results.get("llama_cpp", {}):
+        ll_q4 = results["llama_cpp"]["q4_0"]
+        lines.append(
+            f"| **llama.cpp Metal Baseline** | Q4_0 | `{ll_q4['decode_tok_s']:.1f} ± {ll_q4['decode_stddev']:.1f}` | `{ll_q4['decode_latency_ms']:.2f} ms` | — | `1.00x` |"
+        )
 
     # 6. AxiomLM Q8_G64
-    ax_q8 = results["axiomlm"]["axiomlm_q8_g64"]
-    lines.append(
-        f"| **AxiomLM Quantized Metal GEMV** | **Q8_G64** | **`{ax_q8['decode_tok_s']:.1f} ± {ax_q8['decode_stddev']:.1f}`** | **`{ax_q8['decode_latency_ms']:.2f} ms`** | — | **`{(ax_q8['decode_tok_s'] / llama_q4):.2f}x`** |"
-    )
+    if "axiomlm_q8_g64" in results["axiomlm"]:
+        ax_q8 = results["axiomlm"]["axiomlm_q8_g64"]
+        lines.append(
+            f"| **AxiomLM Quantized Metal GEMV** | **Q8_G64** | **`{ax_q8['decode_tok_s']:.1f} ± {ax_q8['decode_stddev']:.1f}`** | **`{ax_q8['decode_latency_ms']:.2f} ms`** | — | **`{(ax_q8['decode_tok_s'] / llama_q4):.2f}x`** |"
+        )
 
     # 7. AxiomLM Q4_G64
-    ax_q4 = results["axiomlm"]["axiomlm_q4_g64"]
+    if "axiomlm_q4_g64" in results["axiomlm"]:
+        ax_q4 = results["axiomlm"]["axiomlm_q4_g64"]
+        lines.append(
+            f"| **AxiomLM Quantized Metal GEMV** | **Q4_G64** | **`{ax_q4['decode_tok_s']:.1f} ± {ax_q4['decode_stddev']:.1f}`** | **`{ax_q4['decode_latency_ms']:.2f} ms`** | — | **`{(ax_q4['decode_tok_s'] / llama_q4):.2f}x`** |"
+        )
     lines.append(
         f"| **AxiomLM Quantized Metal GEMV** | **Q4_G64** | **`{ax_q4['decode_tok_s']:.1f} ± {ax_q4['decode_stddev']:.1f}`** | **`{ax_q4['decode_latency_ms']:.2f} ms`** | — | **`{(ax_q4['decode_tok_s'] / llama_q4):.2f}x`** |"
     )

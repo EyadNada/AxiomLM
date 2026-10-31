@@ -6,15 +6,15 @@ Supports:
 - Q8_G64: 8.5 bits/weight (4 x 8-bit bytes in uint32 + half2 scale/bias)
 """
 
-from typing import Tuple
 import torch
 import torch.nn.functional as F
+
 from .build_kernels import load_metal_module
 
 _METAL_MOD = load_metal_module()
 
 
-def pack_linear_q4_g64(weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def pack_linear_q4_g64(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Packs a 2D weight matrix (N, K) where K is a multiple of 64 into:
       w_packed: (N, K // 8) of dtype torch.int32
@@ -69,7 +69,7 @@ def dequantize_q4_g64(
     return (q * scale + bias).view(N, K).to(torch.float16)
 
 
-def pack_linear_q8_g64(weight: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def pack_linear_q8_g64(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Packs a 2D weight matrix (N, K) where K is a multiple of 64 into:
       w_packed: (N, K // 4) of dtype torch.int32

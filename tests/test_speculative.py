@@ -3,13 +3,16 @@ Tests for AxiomLM Speculative Prompt-Lookup Decoding Engine.
 """
 
 import unittest
+
 import torch
-from axiomlm.models.transformer import Transformer, ModelConfig
+
 from axiomlm.engine.paged_cache import StaticKVCache
 from axiomlm.engine.speculative import (
-    find_candidate_ngram,
     SpeculativePromptLookupDecoder,
+    find_candidate_ngram,
 )
+from axiomlm.kernels import is_mps_available
+from axiomlm.models.transformer import ModelConfig, Transformer
 
 
 class TestSpeculativePromptLookup(unittest.TestCase):
@@ -40,7 +43,7 @@ class TestSpeculativePromptLookup(unittest.TestCase):
         self.assertEqual(draft, [])
 
     def test_speculative_parity_greedy(self):
-        device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        device = torch.device("mps" if is_mps_available() else "cpu")
         torch.manual_seed(42)
         config = ModelConfig(
             arch="modern",
@@ -99,8 +102,8 @@ class TestSpeculativePromptLookup(unittest.TestCase):
         self.assertLess(stats["forward_calls"], max_new_tokens)
 
     def test_quantized_q4_speculative_parity(self):
-        if not torch.backends.mps.is_available():
-            return
+        if not is_mps_available():
+            self.skipTest("MPS backend unavailable")
         device = torch.device("mps")
         torch.manual_seed(42)
         config = ModelConfig(
@@ -160,8 +163,8 @@ class TestSpeculativePromptLookup(unittest.TestCase):
         self.assertLess(stats["forward_calls"], max_new_tokens)
 
     def test_verify_step_numerical_parity(self):
-        if not torch.backends.mps.is_available():
-            return
+        if not is_mps_available():
+            self.skipTest("MPS backend unavailable")
         device = torch.device("mps")
         config = ModelConfig(
             vocab_size=512,
@@ -230,8 +233,8 @@ class TestSpeculativePromptLookup(unittest.TestCase):
         mathematical parity with the Python speculative reference decoder across
         FP16, Q4_G64, and Q8_G64 configurations.
         """
-        if not torch.backends.mps.is_available():
-            return
+        if not is_mps_available():
+            self.skipTest("MPS backend unavailable")
         device = torch.device("mps")
         torch.manual_seed(42)
         config = ModelConfig(

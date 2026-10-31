@@ -1,12 +1,13 @@
-import unittest
-import torch
-import numpy as np
-import tempfile
 import os
+import tempfile
+import unittest
 
-from axiomlm.models.transformer import Transformer, ModelConfig
+import numpy as np
+import torch
+
 from axiomlm.dengine.dataloader import DataLoaderLite
 from axiomlm.engine.inference import InferenceEngine
+from axiomlm.models.transformer import ModelConfig, Transformer
 
 
 class DummyTokenizer:

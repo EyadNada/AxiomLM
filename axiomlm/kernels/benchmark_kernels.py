@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+
 import torch
 import torch.nn.functional as F
 
@@ -10,7 +11,7 @@ PROJECT_ROOT = os.path.dirname(
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from axiomlm.kernels import fused_rmsnorm, fused_swiglu
+from axiomlm.kernels import fused_rmsnorm, fused_swiglu, is_mps_available  # noqa: E402
 
 
 def benchmark_rmsnorm(
@@ -142,12 +143,11 @@ def benchmark_rope(device="mps", B=8, n_head=32, T=1024, head_dim=128, num_iters
     )
     print("=" * 55)
 
-    from axiomlm.models.modules import precompute_rope_frequencies
     from axiomlm.kernels.ops import fused_apply_rope
+    from axiomlm.models.modules import precompute_rope_frequencies
 
     x = torch.randn(B, n_head, T, head_dim, device=device, requires_grad=True)
     freqs_cis = precompute_rope_frequencies(head_dim, max_seq_len=2048).to(device)
-    grad_out = torch.randn_like(x)
 
     # Eager implementation (the fallback inside fused_apply_rope if we force HAS_CUSTOM_KERNELS=False)
     # Actually, we can just use the standard eager math directly here to avoid hacking globals
@@ -193,13 +193,13 @@ def benchmark_rope(device="mps", B=8, n_head=32, T=1024, head_dim=128, num_iters
 
     print(f"  PyTorch Standard RoPE: {t_eager:.3f} ms / pass")
     print(f"  Axiom Fused RoPE:      {t_fused:.3f} ms / pass")
-    print(f"  Speedup:               {t_eager/t_fused:.2f}x\n")
+    print(f"  Speedup:               {t_eager / t_fused:.2f}x\n")
 
 
 def benchmark_ce(device="mps", B=8, T=1024, V=50257, num_iters=50):
     print("=" * 55)
     print("  Benchmark 4: Cross Entropy (Forward + Backward)")
-    print(f"  Tensor Shape: ({B*T}, {V}) | Device: {device.upper()}")
+    print(f"  Tensor Shape: ({B * T}, {V}) | Device: {device.upper()}")
     print("=" * 55)
 
     from axiomlm.kernels.ops import fused_cross_entropy
@@ -241,7 +241,7 @@ def benchmark_ce(device="mps", B=8, T=1024, V=50257, num_iters=50):
 
     print(f"  PyTorch Standard CE: {t_eager:.3f} ms / pass")
     print(f"  Axiom Fused CE:      {t_fused:.3f} ms / pass")
-    print(f"  Speedup:             {t_eager/t_fused:.2f}x\n")
+    print(f"  Speedup:             {t_eager / t_fused:.2f}x\n")
 
 
 def benchmark_fa(device="mps", B=4, n_head=12, T=1024, head_dim=64, num_iters=50):
@@ -257,13 +257,13 @@ def benchmark_fa(device="mps", B=4, n_head=12, T=1024, head_dim=64, num_iters=50
     v = torch.randn(B, n_head, T, head_dim, device=device)
 
     # We call the metal mod directly for fused, and F.scaled_dot_product_attention for eager
-    import axiomlm.kernels.ops as ops
+    from axiomlm.kernels import ops
 
     def run_eager():
-        out = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True)
+        torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True)
 
     def run_fused():
-        out = ops.fused_sdpa(q, k, v, is_causal=True)
+        ops.fused_sdpa(q, k, v, is_causal=True)
 
     for _ in range(3):
         run_eager()
@@ -291,13 +291,13 @@ def benchmark_fa(device="mps", B=4, n_head=12, T=1024, head_dim=64, num_iters=50
 
     print(f"  Apple MPSGraph Attention: {t_eager:.3f} ms / pass")
     print(f"  Axiom Metal FlashAttn:    {t_fused:.3f} ms / pass")
-    print(f"  Speedup:                  {t_eager/t_fused:.2f}x\n")
+    print(f"  Speedup:                  {t_eager / t_fused:.2f}x\n")
 
 
 if __name__ == "__main__":
     benchmark_rmsnorm(device="cpu", B=8, T=1024, D=768, num_iters=100)
     benchmark_swiglu(device="cpu", B=8, T=1024, D=2048, num_iters=100)
-    if torch.backends.mps.is_available():
+    if is_mps_available():
         benchmark_rmsnorm(device="mps", B=4, T=512, D=768, num_iters=50)
         benchmark_swiglu(device="mps", B=4, T=512, D=2048, num_iters=50)
         benchmark_rope(device="mps", B=4, n_head=32, T=512, head_dim=64, num_iters=50)

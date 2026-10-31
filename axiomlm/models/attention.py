@@ -2,9 +2,10 @@
 AxiomLM Causal Self-Attention with Grouped-Query Attention (GQA) & KV-Cache.
 """
 
-from typing import Tuple, Optional, Any, Union
+from typing import Any
+
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.nn import functional as F
 
 from .modules import apply_rope, repeat_kv
@@ -67,12 +68,10 @@ class CausalSelfAttention(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        freqs_cis: Optional[torch.Tensor] = None,
-        kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        freqs_cis: torch.Tensor | None = None,
+        kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None,
         use_cache: bool = False,
-    ) -> Union[
-        torch.Tensor, Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]
-    ]:
+    ) -> torch.Tensor | tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
         B, T, C = x.size()
 
         start_pos = 0
@@ -114,7 +113,7 @@ class CausalSelfAttention(nn.Module):
                     else seen
                 )
                 new_seen = seen + 1
-                active_len = new_seen if new_seen <= max_seq else max_seq
+                active_len = min(new_seen, max_seq)
                 k_buf = kv_cache.k_caches[layer_idx]
                 v_buf = kv_cache.v_caches[layer_idx]
                 _METAL_MOD.rope_kv_cache_write_mps(

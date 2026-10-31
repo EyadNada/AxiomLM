@@ -6,26 +6,24 @@ for Q8_G64 and Q4_G64 quantization against unquantized FP16 baselines.
 
 import math
 import unittest
+
 import torch
 import torch.nn.functional as F
 
-from axiomlm.models.transformer import Transformer, ModelConfig
 from axiomlm.kernels import (
-    pack_linear_q4_g64,
     dequantize_q4_g64,
-    pack_linear_q8_g64,
     dequantize_q8_g64,
+    is_mps_available,
+    pack_linear_q4_g64,
+    pack_linear_q8_g64,
 )
+from axiomlm.models.transformer import ModelConfig, Transformer
 
 
 class TestQuantizationDriftAndFidelity(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(1337)
-        self.device = (
-            torch.device("mps")
-            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-            else torch.device("cpu")
-        )
+        self.device = torch.device("mps") if is_mps_available() else torch.device("cpu")
 
     def _create_model(self) -> Transformer:
         config = ModelConfig(

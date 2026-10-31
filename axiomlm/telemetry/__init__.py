@@ -3,13 +3,13 @@ AxiomLM Telemetry Subpackage.
 """
 
 from .profiler import (
-    estimate_hardware_peak_tflops,
     calculate_mfu,
     create_profiler,
+    estimate_hardware_peak_tflops,
 )
 
 __all__ = [
-    "estimate_hardware_peak_tflops",
     "calculate_mfu",
     "create_profiler",
+    "estimate_hardware_peak_tflops",
 ]

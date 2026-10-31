@@ -100,7 +100,7 @@ def export_axiomlm_gguf(
     writer.write_tensors_to_file()
     writer.close()
     print(
-        f"[GGUF Export] Successfully exported FP16 model ({os.path.getsize(output_f16_path) / (1024*1024):.2f} MB)"
+        f"[GGUF Export] Successfully exported FP16 model ({os.path.getsize(output_f16_path) / (1024 * 1024):.2f} MB)"
     )
 
 
@@ -120,7 +120,7 @@ def quantize_gguf_model(
     cmd = [quantize_bin, input_f16_path, output_q4_path, quant_type]
     subprocess.run(cmd, check=True)
     print(
-        f"[GGUF Quantize] Successfully generated {quant_type} model ({os.path.getsize(output_q4_path) / (1024*1024):.2f} MB)"
+        f"[GGUF Quantize] Successfully generated {quant_type} model ({os.path.getsize(output_q4_path) / (1024 * 1024):.2f} MB)"
     )
 
 

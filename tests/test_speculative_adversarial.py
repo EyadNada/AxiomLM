@@ -5,24 +5,22 @@ high-entropy zero-match fallbacks, and context window limits.
 """
 
 import unittest
+
 import torch
 
-from axiomlm.models.transformer import Transformer, ModelConfig
 from axiomlm.engine.paged_cache import StaticKVCache
 from axiomlm.engine.speculative import (
-    find_candidate_ngram,
     SpeculativePromptLookupDecoder,
+    find_candidate_ngram,
 )
+from axiomlm.kernels import is_mps_available
+from axiomlm.models.transformer import ModelConfig, Transformer
 
 
 class TestSpeculativeAdversarial(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(42)
-        self.device = (
-            torch.device("mps")
-            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-            else torch.device("cpu")
-        )
+        self.device = torch.device("mps") if is_mps_available() else torch.device("cpu")
 
     def _create_toy_model(self, block_size: int = 128) -> Transformer:
         config = ModelConfig(

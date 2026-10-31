@@ -7,23 +7,29 @@ and guarantees complete isolation across concurrent multi-instance runners.
 import gc
 import os
 import unittest
+
 import psutil
 import torch
 
-from axiomlm.models.transformer import Transformer, ModelConfig
 from axiomlm.engine.paged_cache import StaticKVCache
+from axiomlm.models.transformer import ModelConfig, Transformer
 
 try:
-    from axiomlm.kernels import _METAL_MOD
+    from axiomlm.kernels import _METAL_MOD, is_mps_available
 except ImportError:
     _METAL_MOD = None
+
+    def is_mps_available() -> bool:
+        return False
 
 
 class TestMemoryLeakAndStress(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(42)
-        if not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
-            self.skipTest("Metal GPU / MPS required for memory stress tests")
+        if not is_mps_available():
+            self.skipTest(
+                "Functional Metal GPU / MPS backend required (unavailable in headless CI VM)"
+            )
         if _METAL_MOD is None:
             self.skipTest("Metal compiled extension module not available")
         self.device = torch.device("mps")

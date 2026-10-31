@@ -2,9 +2,10 @@
 AxiomLM Architectural Primitives & Modern Transformer Components.
 """
 
-from typing import Optional, Any
+from typing import Any
+
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.nn import functional as F
 
 try:
@@ -105,9 +106,7 @@ class SwiGLUMLP(nn.Module):
     During inference/eval, fuses W_gate and W_up into a single GEMM dispatch.
     """
 
-    def __init__(
-        self, config: Any, hidden_dim: Optional[int] = None, bias: bool = False
-    ):
+    def __init__(self, config: Any, hidden_dim: int | None = None, bias: bool = False):
         super().__init__()
         if hasattr(config, "n_embd"):
             n_embd = config.n_embd
@@ -121,8 +120,8 @@ class SwiGLUMLP(nn.Module):
         self.w_gate = nn.Linear(n_embd, hidden_dim, bias=bias)
         self.w_up = nn.Linear(n_embd, hidden_dim, bias=bias)
         self.w_down = nn.Linear(hidden_dim, n_embd, bias=bias)
-        self._cached_gate_up_w: Optional[torch.Tensor] = None
-        self._cached_gate_up_b: Optional[torch.Tensor] = None
+        self._cached_gate_up_w: torch.Tensor | None = None
+        self._cached_gate_up_b: torch.Tensor | None = None
 
     def train(self, mode: bool = True):
         self._cached_gate_up_w = None

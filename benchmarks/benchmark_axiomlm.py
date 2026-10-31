@@ -21,6 +21,7 @@ import torch
 from axiomlm import ModelConfig, Transformer
 from axiomlm.engine.paged_cache import StaticKVCache
 from axiomlm.engine.speculative import SpeculativePromptLookupDecoder
+from axiomlm.kernels import is_mps_available
 
 
 def benchmark_engine_mode(
@@ -94,6 +95,13 @@ def run_axiomlm_benchmarks(
     repetitions: int = 3,
 ) -> dict[str, Any]:
     """Executes the full suite of AxiomLM architectural optimizations."""
+    if not is_mps_available():
+        print(
+            "\n[Notice] MPS backend is unavailable: no supported Metal GPU was found (running in VM/sandbox/CI)."
+        )
+        print("Skipping Apple Silicon Metal benchmarks.")
+        return {}
+
     device = torch.device("mps")
     print("=" * 70)
     print(
@@ -275,4 +283,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     suite_results = run_axiomlm_benchmarks(args.prompt, args.gen, args.repetitions)
-    print("\nAxiomLM Benchmark Suite Completed Successfully.")
+    if suite_results:
+        print("\nAxiomLM Benchmark Suite Completed Successfully.")
+    else:
+        print("\nAxiomLM Benchmark Suite Skipped (No Metal GPU available).")

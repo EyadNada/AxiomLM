@@ -105,9 +105,12 @@ def get_software_stack_versions() -> dict[str, str]:
     try:
         import torch
 
+        from axiomlm.kernels import is_mps_available
+
         versions["torch"] = torch.__version__
         versions["mps_available"] = str(torch.backends.mps.is_available())
         versions["mps_built"] = str(torch.backends.mps.is_built())
+        versions["mps_functional"] = str(is_mps_available())
     except ImportError:
         versions["torch"] = "not_installed"
 

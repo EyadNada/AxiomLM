@@ -3,7 +3,6 @@ AxiomLM Learning Rate Scheduling & Optimization Utilities.
 """
 
 import math
-from typing import Optional
 
 
 def get_lr(
@@ -11,7 +10,7 @@ def get_lr(
     warmup_steps: int = 300,
     max_steps: int = 4800,
     max_lr: float = 6e-4,
-    min_lr: Optional[float] = None,
+    min_lr: float | None = None,
 ) -> float:
     """
     Computes scheduled learning rate with linear warmup and cosine decay.

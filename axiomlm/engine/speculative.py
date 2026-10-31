@@ -7,17 +7,19 @@ to standard autoregressive greedy decoding.
 """
 
 import time
-from typing import List, Optional, Tuple, Dict, Any
+from typing import Any
+
 import torch
+
 from ..models.transformer import Transformer
 from .paged_cache import StaticKVCache
 
 
 def find_candidate_ngram(
-    input_ids: List[int],
+    input_ids: list[int],
     ngram_size: int = 3,
     max_spec_tokens: int = 4,
-) -> List[int]:
+) -> list[int]:
     """
     Finds candidate draft tokens from past sequence context via N-Gram matching.
 
@@ -60,12 +62,12 @@ class SpeculativePromptLookupDecoder:
     def generate(
         self,
         model: Transformer,
-        prompt_tokens: List[int],
+        prompt_tokens: list[int],
         max_new_tokens: int = 64,
-        cache: Optional[StaticKVCache] = None,
-        device: Optional[torch.device] = None,
+        cache: StaticKVCache | None = None,
+        device: torch.device | None = None,
         use_cpp_loop: bool = True,
-    ) -> Tuple[List[int], Dict[str, Any]]:
+    ) -> tuple[list[int], dict[str, Any]]:
         """
         Executes speculative prompt lookup decoding.
 

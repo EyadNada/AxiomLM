@@ -1,9 +1,10 @@
 import unittest
+
 import torch
 
 from axiomlm.engine.paged_cache import PagedKVCache, SequenceContext
+from axiomlm.kernels import fused_sdpa, is_mps_available
 from axiomlm.optim.muon import zeropower_via_newtonschulz5
-from axiomlm.kernels import fused_sdpa
 
 
 class TestKernelEdgeCases(unittest.TestCase):
@@ -11,7 +12,7 @@ class TestKernelEdgeCases(unittest.TestCase):
         self.devices = ["cpu"]
         if torch.cuda.is_available():
             self.devices.append("cuda")
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        if is_mps_available():
             self.devices.append("mps")
 
     def test_muon_newton_schulz_zeros(self):

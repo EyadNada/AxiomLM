@@ -2,7 +2,8 @@
 AxiomLM Muon (MomentUm Orthogonalized by Newton-Schulz) Matrix Optimizer.
 """
 
-from typing import Optional, Any
+from typing import Any
+
 import torch
 
 
@@ -54,7 +55,7 @@ class Muon(torch.optim.Optimizer):
         super().__init__(params, defaults)
 
     @torch.no_grad()
-    def step(self, closure: Optional[Any] = None) -> Optional[float]:
+    def step(self, closure: Any | None = None) -> float | None:
         loss = None
         if closure is not None:
             with torch.enable_grad():

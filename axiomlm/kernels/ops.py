@@ -11,12 +11,13 @@ Automatically dispatches to:
 - Vectorized PyTorch reference fallback
 """
 
-from typing import Tuple, Optional, Any
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from typing import Any
 
-from .build_kernels import load_neon_module, load_metal_module
+import torch
+import torch.nn.functional as F
+from torch import nn
+
+from .build_kernels import load_metal_module, load_neon_module
 
 # Load native compiled modules
 _NEON_MOD = load_neon_module()
@@ -154,9 +155,9 @@ def fused_rmsnorm(
 class FusedRMSNorm(nn.Module):
     def __init__(
         self,
-        hidden_size: Optional[int] = None,
+        hidden_size: int | None = None,
         eps: float = 1e-6,
-        dim: Optional[int] = None,
+        dim: int | None = None,
     ):
         super().__init__()
         resolved_dim = hidden_size if hidden_size is not None else dim
@@ -164,7 +165,7 @@ class FusedRMSNorm(nn.Module):
             raise ValueError("Specify hidden_size (or dim) for FusedRMSNorm.")
         self.weight = nn.Parameter(torch.ones(resolved_dim))
         self.eps = eps
-        self._cached_weight: Optional[torch.Tensor] = None
+        self._cached_weight: torch.Tensor | None = None
 
     def train(self, mode: bool = True):
         self._cached_weight = None
@@ -300,9 +301,9 @@ class FusedSwiGLUMLP(nn.Module):
         self.w_gate = nn.Linear(config.n_embd, hidden_dim, bias=bias)
         self.w_up = nn.Linear(config.n_embd, hidden_dim, bias=bias)
         self.w_down = nn.Linear(hidden_dim, config.n_embd, bias=bias)
-        setattr(self.w_down, "NANOGPT_SCALE_INIT", 1)
-        self._cached_gate_up_w: Optional[torch.Tensor] = None
-        self._cached_gate_up_b: Optional[torch.Tensor] = None
+        self.w_down.NANOGPT_SCALE_INIT = 1
+        self._cached_gate_up_w: torch.Tensor | None = None
+        self._cached_gate_up_b: torch.Tensor | None = None
 
     def train(self, mode: bool = True):
         self._cached_gate_up_w = None
@@ -357,7 +358,7 @@ class FusedSDPAFunction(torch.autograd.Function):
         k: torch.Tensor,
         v: torch.Tensor,
         is_causal: bool = False,
-        sliding_window: Optional[int] = None,
+        sliding_window: int | None = None,
     ) -> torch.Tensor:
         device = q.device
         if device.type == "cuda" and HAS_TRITON:
@@ -396,7 +397,7 @@ class FusedSDPAFunction(torch.autograd.Function):
     @staticmethod
     def backward(
         ctx: Any, grad_output: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
         q, k, v = ctx.saved_tensors
         # Using PyTorch's highly optimized SDPA backward for exact parity
         with torch.enable_grad():
@@ -426,7 +427,7 @@ def fused_sdpa(
     k: torch.Tensor,
     v: torch.Tensor,
     is_causal: bool = False,
-    sliding_window: Optional[int] = None,
+    sliding_window: int | None = None,
 ) -> torch.Tensor:
     """Functional interface for Fused SDPA (FlashAttention) with Sliding Window & Zero-Copy GQA Support."""
     enable_gqa = q.size(1) != k.size(1)
@@ -512,11 +513,7 @@ def gqa_flash_decode_mps(
         )
     # PyTorch fallback for CPU or non-FP16 testing
     orig_shape = q.shape
-    if q.dim() == 3:
-        q_4d = q.view(1, 12, 1, 64)
-    elif q.dim() == 2:
-        q_4d = q.view(1, 12, 1, 64)
-    elif q.dim() == 1:
+    if q.dim() == 3 or q.dim() == 2 or q.dim() == 1:
         q_4d = q.view(1, 12, 1, 64)
     else:
         q_4d = q

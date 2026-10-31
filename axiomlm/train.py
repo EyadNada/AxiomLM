@@ -2,29 +2,30 @@
 AxiomLM Pretraining Engine with Muon Optimizer & Distributed Data Parallel.
 """
 
-from typing import Optional, List, Tuple, Any
+import argparse
 import os
 import time
-import argparse
 from contextlib import nullcontext
+from typing import Any
 
-import torch
-from torch.distributed import init_process_group, destroy_process_group
-from torch.nn.parallel import DistributedDataParallel as DDP
-import torch.distributed as dist
 import tiktoken
+import torch
+import torch.distributed as dist
+from torch.distributed import destroy_process_group, init_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
 
-from .models.transformer import Transformer, ModelConfig
-from .optim.schedule import get_lr
 from .dengine.dataloader import DataLoaderLite
+from .engine.inference import (
+    benchmark_generation_speed,
+    generate_with_cache,
+)
+from .kernels import is_mps_available
+from .models.transformer import ModelConfig, Transformer
+from .optim.schedule import get_lr
 from .telemetry.profiler import (
     calculate_mfu,
-    estimate_hardware_peak_tflops,
     create_profiler,
-)
-from .engine.inference import (
-    generate_with_cache,
-    benchmark_generation_speed,
+    estimate_hardware_peak_tflops,
 )
 
 
@@ -38,13 +39,13 @@ def get_raw_model(model: Any) -> Transformer:
 def save_checkpoint(
     step: int,
     model: Any,
-    optimizers: List[torch.optim.Optimizer],
+    optimizers: list[torch.optim.Optimizer],
     optimizer_type: str,
     checkpoint_dir: str = "checkpoints",
     is_pause: bool = False,
     keep_step_ckpt: bool = True,
     max_step_ckpts: int = 5,
-) -> Tuple[str, Optional[str]]:
+) -> tuple[str, str | None]:
     """Saves atomic checkpoints containing weights, optimizer states, and configuration."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     raw_model = get_raw_model(model)
@@ -96,7 +97,7 @@ def train(
     architecture: str = "classic",
     optimizer_type: str = "adamw",
     muon_lr: float = 0.02,
-    resume: Optional[str] = None,
+    resume: str | None = None,
     profile: bool = False,
     use_custom_kernels: bool = False,
     grad_checkpoint: bool = False,
@@ -111,7 +112,7 @@ def train(
             ddp_local_rank = int(os.environ["LOCAL_RANK"])
             device = f"cuda:{ddp_local_rank}"
             torch.cuda.set_device(device)
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        elif is_mps_available():
             backend = "gloo"
             ddp_local_rank = int(os.environ.get("LOCAL_RANK", 0))
             device = "mps"
@@ -138,7 +139,7 @@ def train(
         device = "cpu"
         if torch.cuda.is_available():
             device = "cuda"
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        elif is_mps_available():
             device = "mps"
 
     if master_process:
@@ -154,7 +155,7 @@ def train(
     T = 1024
     assert (
         total_batch_size % (B * T * ddp_world_size) == 0
-    ), f"total_batch_size ({total_batch_size}) must be divisible by {B*T*ddp_world_size}"
+    ), f"total_batch_size ({total_batch_size}) must be divisible by {B * T * ddp_world_size}"
     grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
 
     train_loader = DataLoaderLite(
@@ -225,7 +226,7 @@ def train(
             import __main__
 
             if not hasattr(__main__, "GPTConfig"):
-                setattr(__main__, "GPTConfig", ModelConfig)
+                __main__.GPTConfig = ModelConfig
 
             ckpt = torch.load(resume, map_location=device, weights_only=False)
             start_step = ckpt.get("step", 0)
@@ -379,7 +380,7 @@ def train(
                     else f"lr: {current_adamw_lr:.4e}"
                 )
                 print(
-                    f"step {step:4d}/{max_steps} | loss: {loss_val:.6f} | {lr_str} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f} | MFU: {mfu_pct:.1f}% ({achieved_tflops:.2f} TF)",
+                    f"step {step:4d}/{max_steps} | loss: {loss_val:.6f} | {lr_str} | norm: {norm:.4f} | dt: {dt * 1000:.2f}ms | tok/sec: {tokens_per_sec:.2f} | MFU: {mfu_pct:.1f}% ({achieved_tflops:.2f} TF)",
                     flush=True,
                 )
 
@@ -462,7 +463,7 @@ def main():
     if args.benchmark:
         device = (
             "mps"
-            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+            if is_mps_available()
             else ("cuda" if torch.cuda.is_available() else "cpu")
         )
         enc = tiktoken.get_encoding("gpt2")

@@ -3,19 +3,20 @@ AxiomLM Transformer Architecture & Model Configuration.
 """
 
 from dataclasses import dataclass
-from typing import Optional, Tuple, List, Union, Any
+from typing import Any
+
 import torch
-import torch.nn as nn
-from ..kernels.ops import fused_cross_entropy
+from torch import nn
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
+from ..kernels.ops import fused_cross_entropy
+from .attention import CausalSelfAttention
 from .modules import (
+    MLP,
     RMSNorm,
     SwiGLUMLP,
-    MLP,
     precompute_rope_frequencies,
 )
-from .attention import CausalSelfAttention
 
 try:
     from ..kernels import FusedRMSNorm, FusedSwiGLUMLP
@@ -47,17 +48,17 @@ class ModelConfig:
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
-    n_kv_head: Optional[int] = None  # GQA: None for full MHA, or int (e.g. 4)
+    n_kv_head: int | None = None  # GQA: None for full MHA, or int (e.g. 4)
     norm_type: str = "rmsnorm"  # "rmsnorm" (modern) or "layernorm" (classic)
     pos_emb: str = "rope"  # "rope" (modern) or "learned" (classic)
     mlp_type: str = "swiglu"  # "swiglu" (modern) or "gelu" (classic)
     bias: bool = False  # Modern architectures omit linear biases
     rope_theta: float = 10000.0  # Base frequency for RoPE
-    sliding_window: Optional[int] = None  # Sliding Window Attention (SWA) size
+    sliding_window: int | None = None  # Sliding Window Attention (SWA) size
     use_fused_kernels: bool = False  # Use fused Triton / Metal / NEON operators
     grad_checkpoint: bool = False  # Enable gradient checkpointing
-    arch: Optional[str] = None  # Optional convenience preset ("modern" or "classic")
-    quant_mode: Optional[str] = (
+    arch: str | None = None  # Optional convenience preset ("modern" or "classic")
+    quant_mode: str | None = (
         None  # Quantized decode mode: None (FP16), "q4" (Q4_G64), or "q8" (Q8_G64)
     )
 
@@ -137,10 +138,10 @@ class Block(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        freqs_cis: Optional[torch.Tensor] = None,
-        kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        freqs_cis: torch.Tensor | None = None,
+        kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None,
         use_cache: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
         attn_out, new_kv_cache = self.attn(
             self.ln_1(x), freqs_cis=freqs_cis, kv_cache=kv_cache, use_cache=use_cache
         )
@@ -227,15 +228,15 @@ class Transformer(nn.Module):
 
         # Initialize weights
         self.apply(self._init_weights)
-        self._mps_decode_cache_id: Optional[int] = None
-        self._mps_decode_dtype: Optional[torch.dtype] = None
-        self._mps_decode_runner: Optional[Any] = None
-        self._quant_mode: Optional[str] = config.quant_mode
-        self._mps_quant_decode_runner: Optional[Any] = None
-        self._mps_quant_cache_id: Optional[int] = None
-        self._quant_weights_cache: Optional[dict] = None
+        self._mps_decode_cache_id: int | None = None
+        self._mps_decode_dtype: torch.dtype | None = None
+        self._mps_decode_runner: Any | None = None
+        self._quant_mode: str | None = config.quant_mode
+        self._mps_quant_decode_runner: Any | None = None
+        self._mps_quant_cache_id: int | None = None
+        self._quant_weights_cache: dict | None = None
 
-    def quantize(self, mode: Optional[str] = "q4"):
+    def quantize(self, mode: str | None = "q4"):
         """
         Enables register-level quantized decode (mode='q4' for 4-bit, 'q8' for 8-bit, None for FP16).
         """
@@ -289,7 +290,7 @@ class Transformer(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def get_decode_runner(self, cache: Any) -> Optional[Any]:
+    def get_decode_runner(self, cache: Any) -> Any | None:
         """
         Retrieves or initializes the native C++ Metal decode runner (quantized or FP16)
         bound to the given KV cache instance.
@@ -533,17 +534,15 @@ class Transformer(nn.Module):
     def forward(
         self,
         idx: torch.Tensor,
-        targets: Optional[torch.Tensor] = None,
-        kv_caches: Optional[List[Optional[Tuple[torch.Tensor, torch.Tensor]]]] = None,
+        targets: torch.Tensor | None = None,
+        kv_caches: list[tuple[torch.Tensor, torch.Tensor] | None] | None = None,
         return_all_logits: bool = False,
-    ) -> Union[
-        Tuple[torch.Tensor, Optional[torch.Tensor]],
-        Tuple[
-            torch.Tensor,
-            Optional[torch.Tensor],
-            List[Tuple[torch.Tensor, torch.Tensor]],
-        ],
-    ]:
+    ) -> (
+        tuple[torch.Tensor, torch.Tensor | None]
+        | tuple[
+            torch.Tensor, torch.Tensor | None, list[tuple[torch.Tensor, torch.Tensor]]
+        ]
+    ):
         device = idx.device
         B, T = idx.size()
 
@@ -571,7 +570,7 @@ class Transformer(nn.Module):
                     else seen
                 )
                 new_seen = seen + T
-                active_len = new_seen if new_seen <= max_seq else max_seq
+                active_len = min(new_seen, max_seq)
                 rope_pos = seen % self.freqs_real.size(0)
 
                 if T == 1:
@@ -596,7 +595,7 @@ class Transformer(nn.Module):
         else:
             x = self.transformer.wte(idx)
 
-        new_kv_caches: List[Tuple[torch.Tensor, torch.Tensor]] = []
+        new_kv_caches: list[tuple[torch.Tensor, torch.Tensor]] = []
 
         for i, block in enumerate(self.transformer.h):
             block_kv = (
@@ -658,7 +657,7 @@ class Transformer(nn.Module):
         optimizer_type: str = "adamw",
         muon_lr: float = 0.02,
         muon_momentum: float = 0.95,
-    ) -> List[torch.optim.Optimizer]:
+    ) -> list[torch.optim.Optimizer]:
         """
         Configures optimizers with support for Muon (2D Matrix Newton-Schulz) + AdamW dual routing.
         """

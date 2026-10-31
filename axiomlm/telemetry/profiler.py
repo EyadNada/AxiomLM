@@ -3,7 +3,8 @@ AxiomLM Systems Profiling, Roofline Analysis, and MFU Telemetry.
 """
 
 import os
-from typing import Tuple, Any, Optional
+from typing import Any
+
 import torch
 
 
@@ -35,13 +36,13 @@ def estimate_hardware_peak_tflops(device: str) -> float:
 
 def calculate_mfu(
     model: Any,
-    tokens_per_sec: Optional[float] = None,
+    tokens_per_sec: float | None = None,
     seq_len: int = 1024,
     peak_tflops: float = 10.0,
-    context_len: Optional[int] = None,
-    fwdbwd_per_iter: Optional[int] = None,
-    dt: Optional[float] = None,
-) -> Tuple[float, float]:
+    context_len: int | None = None,
+    fwdbwd_per_iter: int | None = None,
+    dt: float | None = None,
+) -> tuple[float, float]:
     """
     Calculates Model FLOPs Utilization (MFU) based on standard scaling laws:
     FLOPs per token = 6 * N_params + 12 * L * H * Q * T (Attention FLOPs).

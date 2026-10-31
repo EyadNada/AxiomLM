@@ -5,23 +5,29 @@ circular ring-buffer modulo wrapping, and non-power-of-2 vocab argmax reductions
 """
 
 import unittest
+
 import torch
 import torch.nn.functional as F
 
-from axiomlm.models.transformer import Transformer, ModelConfig
 from axiomlm.engine.paged_cache import StaticKVCache
+from axiomlm.models.transformer import ModelConfig, Transformer
 
 try:
-    from axiomlm.kernels import _METAL_MOD
+    from axiomlm.kernels import _METAL_MOD, is_mps_available
 except ImportError:
     _METAL_MOD = None
+
+    def is_mps_available() -> bool:
+        return False
 
 
 class TestMetalBoundaryAndTiling(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(42)
-        if not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
-            self.skipTest("Metal GPU / MPS required for hardware boundary tests")
+        if not is_mps_available():
+            self.skipTest(
+                "Functional Metal GPU / MPS backend required (unavailable in headless CI VM)"
+            )
         if _METAL_MOD is None:
             self.skipTest("Metal compiled extension module not available")
         self.device = torch.device("mps")

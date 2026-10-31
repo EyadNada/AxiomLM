@@ -1,7 +1,8 @@
 import os
-import sys
 import platform
+import sys
 import unittest
+
 import torch
 import torch.nn.functional as F
 
@@ -10,17 +11,18 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from axiomlm.kernels import (  # noqa: E402
-    fused_rmsnorm,
-    fused_swiglu,
-    FusedSwiGLUMLP,
-    fused_sdpa,
-    flash_attention_mps,
-    gqa_flash_decode_mps,
-    _NEON_MOD,
     _METAL_MOD,
+    _NEON_MOD,
+    FusedSwiGLUMLP,
+    flash_attention_mps,
+    fused_rmsnorm,
+    fused_sdpa,
+    fused_swiglu,
+    gqa_flash_decode_mps,
+    is_mps_available,
 )
 from axiomlm.kernels import triton_kernels as _triton_kernels  # noqa: E402
-from axiomlm.models import RMSNorm, SwiGLUMLP, GPTConfig  # noqa: E402
+from axiomlm.models import GPTConfig, RMSNorm, SwiGLUMLP  # noqa: E402
 
 IS_ARM64 = platform.machine().lower() in ["arm64", "aarch64"]
 
@@ -31,7 +33,7 @@ class TestCustomKernels(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(42)
         self.devices = ["cpu"]
-        if torch.backends.mps.is_available():
+        if is_mps_available():
             self.devices.append("mps")
 
     @unittest.skipUnless(
@@ -280,10 +282,10 @@ class TestCustomKernels(unittest.TestCase):
     def test_quant_packing_roundtrip(self):
         """Verify Q4_G64 and Q8_G64 packing and dequantization precision."""
         from axiomlm.kernels import (
-            pack_linear_q4_g64,
             dequantize_q4_g64,
-            pack_linear_q8_g64,
             dequantize_q8_g64,
+            pack_linear_q4_g64,
+            pack_linear_q8_g64,
         )
 
         torch.manual_seed(42)
@@ -316,10 +318,10 @@ class TestCustomKernels(unittest.TestCase):
             self.skipTest("MPS Metal module not available")
 
         from axiomlm.kernels import (
-            pack_linear_q4_g64,
             dequantize_q4_g64,
-            pack_linear_q8_g64,
             dequantize_q8_g64,
+            pack_linear_q4_g64,
+            pack_linear_q8_g64,
             qmv_q4_g64,
             qmv_q8_g64,
         )
@@ -358,14 +360,14 @@ class TestCustomKernels(unittest.TestCase):
             self.skipTest("MPS Metal module not available")
 
         from axiomlm.kernels import (
-            pack_linear_q4_g64,
             dequantize_q4_g64,
-            pack_linear_q8_g64,
             dequantize_q8_g64,
-            qmv_q4_g64,
-            qmv_q8_g64,
+            pack_linear_q4_g64,
+            pack_linear_q8_g64,
             qmm_q4_g64,
             qmm_q8_g64,
+            qmv_q4_g64,
+            qmv_q8_g64,
         )
 
         torch.manual_seed(999)
@@ -421,8 +423,8 @@ class TestCustomKernels(unittest.TestCase):
         if "mps" not in self.devices or _METAL_MOD is None:
             self.skipTest("MPS Metal module not available")
 
-        from axiomlm.models.transformer import Transformer, ModelConfig
         from axiomlm.engine.paged_cache import StaticKVCache
+        from axiomlm.models.transformer import ModelConfig, Transformer
 
         device = torch.device("mps")
         cfg = ModelConfig(
@@ -478,9 +480,10 @@ class TestCustomKernels(unittest.TestCase):
                 cos_q4, 0.98, f"Q4 model decode cos sim too low: {cos_q4}"
             )
 
-    @unittest.skipUnless(torch.backends.mps.is_available(), "MPS not available")
     def test_metal_gqa_flash_decode_parity(self):
         """Test Metal Split-KV Flash-Decode against PyTorch SDPA with 3:1 GQA."""
+        if not is_mps_available() or _METAL_MOD is None:
+            self.skipTest("MPS backend or Metal module not available")
         device = torch.device("mps")
         n_head = 12
         n_kv_head = 4

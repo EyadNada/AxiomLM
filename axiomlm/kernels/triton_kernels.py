@@ -9,7 +9,8 @@ These kernels fuse reductions, nonlinear activations, and arithmetic operations
 into single SRAM passes, avoiding DRAM roundtrips on NVIDIA Tensor Core GPUs.
 """
 
-from typing import Tuple, Any
+from typing import Any
+
 import torch
 
 # Type-checker stubs for platforms without NVIDIA Triton (e.g. Apple Silicon / macOS)
@@ -196,7 +197,7 @@ def _swiglu_backward_kernel(
 
 def triton_rmsnorm_forward(
     x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Triton implementation of RMSNorm forward pass."""
     if not HAS_TRITON or triton is None:
         raise RuntimeError(
@@ -244,7 +245,7 @@ def triton_rmsnorm_backward(
     weight: torch.Tensor,
     rsqrt_cache: torch.Tensor,
     eps: float = 1e-6,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Triton implementation of RMSNorm backward pass."""
     if not HAS_TRITON or triton is None:
         raise RuntimeError(
@@ -278,7 +279,7 @@ def triton_rmsnorm_backward(
 
 def triton_swiglu_backward(
     grad_y: torch.Tensor, gate: torch.Tensor, up: torch.Tensor
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Triton implementation of SwiGLU backward pass."""
     if not HAS_TRITON or triton is None:
         raise RuntimeError(
