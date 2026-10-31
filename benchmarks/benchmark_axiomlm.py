@@ -126,7 +126,7 @@ def run_axiomlm_benchmarks(
     }
 
     # 1. PyTorch MPS Eager Cached Baseline
-    print("\n>>> [1/5] PyTorch MPS Cached Forward Baseline (FP16)...")
+    print("\n>>> [1/6] PyTorch MPS Cached Forward Baseline (FP16)...")
     orig_fused = model.config.use_fused_kernels
     model.config.use_fused_kernels = False
     pt_res = benchmark_engine_mode(
@@ -139,7 +139,7 @@ def run_axiomlm_benchmarks(
     )
 
     # 2. AxiomLM FP16 Whole-Model Decode Runner
-    print("\n>>> [2/5] AxiomLM Modern FP16 Decode Runner (Fused Metal + Split-KV)...")
+    print("\n>>> [2/6] AxiomLM Modern FP16 Decode Runner (Fused Metal + Split-KV)...")
     fp16_res = benchmark_engine_mode(
         model, prompt_tensor, gen_tokens, repetitions, device
     )
@@ -149,7 +149,7 @@ def run_axiomlm_benchmarks(
     )
 
     # 3. AxiomLM Q8_G64 Quantized Metal GEMV
-    print("\n>>> [3/5] AxiomLM Q8_G64 Quantized Metal GEMV (8-bit Weights)...")
+    print("\n>>> [3/6] AxiomLM Q8_G64 Quantized Metal GEMV (8-bit Weights)...")
     model.quantize("q8")
     q8_res = benchmark_engine_mode(
         model, prompt_tensor, gen_tokens, repetitions, device
@@ -160,7 +160,7 @@ def run_axiomlm_benchmarks(
     )
 
     # 4. AxiomLM Q4_G64 Quantized Metal GEMV
-    print("\n>>> [4/5] AxiomLM Q4_G64 Quantized Metal GEMV (4-bit Weights)...")
+    print("\n>>> [4/6] AxiomLM Q4_G64 Quantized Metal GEMV (4-bit Weights)...")
     model.quantize("q4")
     q4_res = benchmark_engine_mode(
         model, prompt_tensor, gen_tokens, repetitions, device
@@ -170,46 +170,91 @@ def run_axiomlm_benchmarks(
         f"  • Decode Speed: {q4_res['decode_tok_s']:.2f} tok/s (± {q4_res['decode_stddev']:.2f}) [Latency: {q4_res['decode_latency_ms']} ms/tok]"
     )
 
-    # 5. AxiomLM Speculative Prompt-Lookup Decoding with Batched QMM (K=3)
-    print("\n>>> [5/5] AxiomLM Speculative Batched QMM Decoding (Q4_G64, K=3)...")
+    # 5. AxiomLM Speculative Prompt-Lookup Decoding (Python Loop, Q4_G64, K=3)
+    print(
+        "\n>>> [5/6] AxiomLM Speculative Decoding (Python Loop Baseline, Q4_G64, K=3)..."
+    )
     code_pattern = [101, 202, 303, 404, 505, 606, 707, 808, 909, 1010, 1111, 1212]
     spec_prompt = (code_pattern * 45)[:prompt_tokens]
     decoder = SpeculativePromptLookupDecoder(ngram_size=3, max_spec_tokens=3)
 
     # Warmup
-    _, _ = decoder.generate(model, spec_prompt, max_new_tokens=16, device=device)
+    _, _ = decoder.generate(
+        model, spec_prompt, max_new_tokens=16, device=device, use_cpp_loop=False
+    )
 
-    spec_speeds = []
+    spec_py_speeds = []
     acceptance_rates = []
     tokens_per_fwd = []
 
     for _ in range(repetitions):
         _, stats = decoder.generate(
-            model, spec_prompt, max_new_tokens=gen_tokens, device=device
+            model,
+            spec_prompt,
+            max_new_tokens=gen_tokens,
+            device=device,
+            use_cpp_loop=False,
         )
-        spec_speeds.append(stats["tokens_per_second"])
+        spec_py_speeds.append(stats["tokens_per_second"])
         acceptance_rates.append(stats["acceptance_rate_pct"])
         tokens_per_fwd.append(stats["tokens_per_forward_call"])
 
-    avg_spec = float(np.mean(spec_speeds))
-    std_spec = float(np.std(spec_speeds))
+    avg_spec_py = float(np.mean(spec_py_speeds))
+    std_spec_py = float(np.std(spec_py_speeds))
     avg_acc = float(np.mean(acceptance_rates))
     avg_tpf = float(np.mean(tokens_per_fwd))
-    spec_lat = round(1000.0 / avg_spec, 3)
+    spec_py_lat = round(1000.0 / avg_spec_py, 3)
 
-    results["axiomlm_speculative_q4"] = {
+    results["axiomlm_speculative_q4_python_loop"] = {
         "k": 3,
-        "decode_tok_s": round(avg_spec, 2),
-        "decode_stddev": round(std_spec, 2),
-        "decode_latency_ms": spec_lat,
+        "decode_tok_s": round(avg_spec_py, 2),
+        "decode_stddev": round(std_spec_py, 2),
+        "decode_latency_ms": spec_py_lat,
         "acceptance_rate_pct": round(avg_acc, 2),
         "tokens_per_forward": round(avg_tpf, 2),
     }
     print(
-        f"  • Decode Speed: {avg_spec:.2f} tok/s (± {std_spec:.2f}) [Latency: {spec_lat} ms/tok]"
+        f"  • Decode Speed: {avg_spec_py:.2f} tok/s (± {std_spec_py:.2f}) [Latency: {spec_py_lat} ms/tok]"
     )
     print(
         f"  • Acceptance Rate: {avg_acc:.1f}% | Tokens / Forward Step: {avg_tpf:.2f}x"
+    )
+
+    # 6. AxiomLM Pure C++ Speculative Engine (Zero Python Overhead, Q4_G64, K=3)
+    print("\n>>> [6/6] AxiomLM Pure C++ Speculative Engine (Phase 6, Q4_G64, K=3)...")
+    _, _ = decoder.generate(
+        model, spec_prompt, max_new_tokens=16, device=device, use_cpp_loop=True
+    )
+
+    spec_cpp_speeds = []
+    for _ in range(repetitions):
+        _, stats = decoder.generate(
+            model,
+            spec_prompt,
+            max_new_tokens=gen_tokens,
+            device=device,
+            use_cpp_loop=True,
+        )
+        spec_cpp_speeds.append(stats["tokens_per_second"])
+
+    avg_spec_cpp = float(np.mean(spec_cpp_speeds))
+    std_spec_cpp = float(np.std(spec_cpp_speeds))
+    spec_cpp_lat = round(1000.0 / avg_spec_cpp, 3)
+
+    results["axiomlm_speculative_q4_cpp_loop"] = {
+        "k": 3,
+        "decode_tok_s": round(avg_spec_cpp, 2),
+        "decode_stddev": round(std_spec_cpp, 2),
+        "decode_latency_ms": spec_cpp_lat,
+        "acceptance_rate_pct": round(avg_acc, 2),
+        "tokens_per_forward": round(avg_tpf, 2),
+        "speedup_vs_python_loop": round(avg_spec_cpp / avg_spec_py, 2),
+    }
+    print(
+        f"  • Decode Speed: {avg_spec_cpp:.2f} tok/s (± {std_spec_cpp:.2f}) [Latency: {spec_cpp_lat} ms/tok]"
+    )
+    print(
+        f"  • Speedup vs Python Loop: {avg_spec_cpp / avg_spec_py:.2f}x (+{avg_spec_cpp - avg_spec_py:.1f} tok/s)"
     )
 
     return results

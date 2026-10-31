@@ -289,191 +289,153 @@ class Transformer(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(
-        self,
-        idx: torch.Tensor,
-        targets: Optional[torch.Tensor] = None,
-        kv_caches: Optional[List[Optional[Tuple[torch.Tensor, torch.Tensor]]]] = None,
-        return_all_logits: bool = False,
-    ) -> Union[
-        Tuple[torch.Tensor, Optional[torch.Tensor]],
-        Tuple[
-            torch.Tensor,
-            Optional[torch.Tensor],
-            List[Tuple[torch.Tensor, torch.Tensor]],
-        ],
-    ]:
-        device = idx.device
-        B, T = idx.size()
-
-        # Ultra-fast C++ Whole-Model Decode / Speculative Verification Graph Runner for T in [1, 8], B=1 on MPS
+    def get_decode_runner(self, cache: Any) -> Optional[Any]:
+        """
+        Retrieves or initializes the native C++ Metal decode runner (quantized or FP16)
+        bound to the given KV cache instance.
+        """
+        device = next(self.parameters()).device
         if (
-            1 <= T <= 8
-            and B == 1
-            and targets is None
-            and not self.training
-            and not torch.is_grad_enabled()
-            and self.config.use_fused_kernels
-            and _METAL_MOD is not None
-            and device.type == "mps"
-            and self.config.pos_emb == "rope"
-            and self.config.norm_type == "rmsnorm"
-            and self.config.mlp_type == "swiglu"
-            and not self.config.bias
-            and self.config.sliding_window is None
-            and kv_caches is not None
-            and len(kv_caches) == self.config.n_layer
-            and hasattr(kv_caches[0], "k_caches")
-            and kv_caches[0].max_batch_size == 1
-            and (T == 1 or kv_caches[0].total_seen_tokens[0] > 0)
+            device.type != "mps"
+            or _METAL_MOD is None
+            or not self.config.use_fused_kernels
+            or self.config.pos_emb != "rope"
+            or self.config.norm_type != "rmsnorm"
+            or self.config.mlp_type != "swiglu"
+            or self.config.bias
+            or self.config.sliding_window is not None
         ):
-            cache0 = kv_caches[0]
-            seen = cache0.total_seen_tokens[0]
-            max_seq = cache0.max_seq_len
-            write_pos = (
-                (seen % max_seq) if (cache0.ring_buffer or seen >= max_seq) else seen
-            )
-            new_seen = seen + T
-            active_len = new_seen if new_seen <= max_seq else max_seq
-            rope_pos = seen % self.freqs_real.size(0)
+            return None
 
-            # Ultra-fast Quantized Metal GEMV Decode Runner (Q4_G64 / Q8_G64)
-            if self._quant_mode in ["q4", "q8"] and hasattr(
-                _METAL_MOD, "MPSQuantizedDecodeRunner"
+        cache0 = cache[0] if isinstance(cache, list) else cache
+        if not hasattr(cache0, "k_caches") or cache0.max_batch_size != 1:
+            return None
+
+        # 1. Quantized runner (Q4 / Q8)
+        if self._quant_mode in ["q4", "q8"] and hasattr(
+            _METAL_MOD, "MPSQuantizedDecodeRunner"
+        ):
+            if (
+                self._mps_quant_cache_id != id(cache0)
+                or self._mps_quant_decode_runner is None
             ):
+                from ..kernels.quant import (
+                    pack_linear_q4_g64,
+                    pack_linear_q8_g64,
+                )
+
+                pack_fn = (
+                    pack_linear_q4_g64
+                    if self._quant_mode == "q4"
+                    else pack_linear_q8_g64
+                )
+                use_q4 = self._quant_mode == "q4"
+                w_dtype = torch.float16
+
                 if (
-                    self._mps_quant_cache_id != id(cache0)
-                    or self._mps_quant_decode_runner is None
+                    self._quant_weights_cache is None
+                    or self._quant_weights_cache.get("mode") != self._quant_mode
                 ):
-                    from ..kernels.quant import (
-                        pack_linear_q4_g64,
-                        pack_linear_q8_g64,
-                    )
-
-                    pack_fn = (
-                        pack_linear_q4_g64
-                        if self._quant_mode == "q4"
-                        else pack_linear_q8_g64
-                    )
-                    use_q4 = self._quant_mode == "q4"
-                    w_dtype = torch.float16
-
-                    if (
-                        self._quant_weights_cache is None
-                        or self._quant_weights_cache.get("mode") != self._quant_mode
-                    ):
-                        wte_emb = self.transformer.wte.weight.to(
-                            device=device, dtype=w_dtype
-                        ).contiguous()
-                        lmh_p, lmh_sb = pack_fn(self.transformer.wte.weight.cpu())
-                        lmh_p, lmh_sb = lmh_p.to(device), lmh_sb.to(device)
-
-                        c_attn_p, c_attn_s = [], []
-                        c_proj_p, c_proj_s = [], []
-                        gu_p, gu_s = [], []
-                        wd_p, wd_s = [], []
-
-                        for b in self.transformer.h:
-                            p, s = pack_fn(b.attn.c_attn.weight.cpu())
-                            c_attn_p.append(p.to(device))
-                            c_attn_s.append(s.to(device))
-
-                            p, s = pack_fn(b.attn.c_proj.weight.cpu())
-                            c_proj_p.append(p.to(device))
-                            c_proj_s.append(s.to(device))
-
-                            gate_up_w = torch.cat(
-                                [b.mlp.w_gate.weight, b.mlp.w_up.weight], dim=0
-                            )
-                            p, s = pack_fn(gate_up_w.cpu())
-                            gu_p.append(p.to(device))
-                            gu_s.append(s.to(device))
-
-                            p, s = pack_fn(b.mlp.w_down.weight.cpu())
-                            wd_p.append(p.to(device))
-                            wd_s.append(s.to(device))
-
-                        self._quant_weights_cache = {
-                            "mode": self._quant_mode,
-                            "wte_emb": wte_emb,
-                            "lmh_p": lmh_p,
-                            "lmh_sb": lmh_sb,
-                            "c_attn_p": c_attn_p,
-                            "c_attn_s": c_attn_s,
-                            "c_proj_p": c_proj_p,
-                            "c_proj_s": c_proj_s,
-                            "gu_p": gu_p,
-                            "gu_s": gu_s,
-                            "wd_p": wd_p,
-                            "wd_s": wd_s,
-                        }
-
-                    qw = self._quant_weights_cache
-                    ln1_ws = [
-                        b.ln_1.weight.to(device=device, dtype=w_dtype).contiguous()
-                        for b in self.transformer.h
-                    ]
-                    ln2_ws = [
-                        b.ln_2.weight.to(device=device, dtype=w_dtype).contiguous()
-                        for b in self.transformer.h
-                    ]
-                    lnf_w = self.transformer.ln_f.weight.to(
+                    wte_emb = self.transformer.wte.weight.to(
                         device=device, dtype=w_dtype
                     ).contiguous()
-                    n_kv_head = (
-                        self.config.n_kv_head
-                        if self.config.n_kv_head is not None
-                        else self.config.n_head
-                    )
-                    head_dim = self.config.n_embd // self.config.n_head
+                    lmh_p, lmh_sb = pack_fn(self.transformer.wte.weight.cpu())
+                    lmh_p, lmh_sb = lmh_p.to(device), lmh_sb.to(device)
 
-                    eps_val = getattr(self.transformer.ln_f, "eps", 1e-5)
-                    self._mps_quant_decode_runner = _METAL_MOD.MPSQuantizedDecodeRunner(
-                        qw["wte_emb"],
-                        qw["lmh_p"],
-                        qw["lmh_sb"],
-                        self.freqs_real.to(device=device, dtype=w_dtype).contiguous(),
-                        ln1_ws,
-                        qw["c_attn_p"],
-                        qw["c_attn_s"],
-                        qw["c_proj_p"],
-                        qw["c_proj_s"],
-                        ln2_ws,
-                        qw["gu_p"],
-                        qw["gu_s"],
-                        qw["wd_p"],
-                        qw["wd_s"],
-                        lnf_w,
-                        cache0.k_caches,
-                        cache0.v_caches,
-                        self.config.n_head,
-                        n_kv_head,
-                        head_dim,
-                        use_q4,
-                        eps_val,
-                    )
-                    self._mps_quant_cache_id = id(cache0)
+                    c_attn_p, c_attn_s = [], []
+                    c_proj_p, c_proj_s = [], []
+                    gu_p, gu_s = [], []
+                    wd_p, wd_s = [], []
 
-                if T == 1:
-                    logits = self._mps_quant_decode_runner.step(
-                        idx, rope_pos, write_pos, active_len
-                    )
-                else:
-                    logits = self._mps_quant_decode_runner.verify_step(
-                        idx, rope_pos, write_pos, active_len
-                    )
-                if not return_all_logits and T > 1:
-                    logits = logits[:, -1:, :]
-                n_L = self.config.n_layer
-                cache0.total_seen_tokens[:] = [new_seen] * n_L
-                cache0.layer_seq_lens[:] = [active_len] * n_L
-                return logits, None, kv_caches
+                    for b in self.transformer.h:
+                        p, s = pack_fn(b.attn.c_attn.weight.cpu())
+                        c_attn_p.append(p.to(device))
+                        c_attn_s.append(s.to(device))
 
-            # Standard FP16 MPSDecodeRunner
+                        p, s = pack_fn(b.attn.c_proj.weight.cpu())
+                        c_proj_p.append(p.to(device))
+                        c_proj_s.append(s.to(device))
+
+                        gate_up_w = torch.cat(
+                            [b.mlp.w_gate.weight, b.mlp.w_up.weight], dim=0
+                        )
+                        p, s = pack_fn(gate_up_w.cpu())
+                        gu_p.append(p.to(device))
+                        gu_s.append(s.to(device))
+
+                        p, s = pack_fn(b.mlp.w_down.weight.cpu())
+                        wd_p.append(p.to(device))
+                        wd_s.append(s.to(device))
+
+                    self._quant_weights_cache = {
+                        "mode": self._quant_mode,
+                        "wte_emb": wte_emb,
+                        "lmh_p": lmh_p,
+                        "lmh_sb": lmh_sb,
+                        "c_attn_p": c_attn_p,
+                        "c_attn_s": c_attn_s,
+                        "c_proj_p": c_proj_p,
+                        "c_proj_s": c_proj_s,
+                        "gu_p": gu_p,
+                        "gu_s": gu_s,
+                        "wd_p": wd_p,
+                        "wd_s": wd_s,
+                    }
+
+                qw = self._quant_weights_cache
+                ln1_ws = [
+                    b.ln_1.weight.to(device=device, dtype=w_dtype).contiguous()
+                    for b in self.transformer.h
+                ]
+                ln2_ws = [
+                    b.ln_2.weight.to(device=device, dtype=w_dtype).contiguous()
+                    for b in self.transformer.h
+                ]
+                lnf_w = self.transformer.ln_f.weight.to(
+                    device=device, dtype=w_dtype
+                ).contiguous()
+                n_kv_head = (
+                    self.config.n_kv_head
+                    if self.config.n_kv_head is not None
+                    else self.config.n_head
+                )
+                head_dim = self.config.n_embd // self.config.n_head
+
+                eps_val = getattr(self.transformer.ln_f, "eps", 1e-5)
+                self._mps_quant_decode_runner = _METAL_MOD.MPSQuantizedDecodeRunner(
+                    qw["wte_emb"],
+                    qw["lmh_p"],
+                    qw["lmh_sb"],
+                    self.freqs_real.to(device=device, dtype=w_dtype).contiguous(),
+                    ln1_ws,
+                    qw["c_attn_p"],
+                    qw["c_attn_s"],
+                    qw["c_proj_p"],
+                    qw["c_proj_s"],
+                    ln2_ws,
+                    qw["gu_p"],
+                    qw["gu_s"],
+                    qw["wd_p"],
+                    qw["wd_s"],
+                    lnf_w,
+                    cache0.k_caches,
+                    cache0.v_caches,
+                    self.config.n_head,
+                    n_kv_head,
+                    head_dim,
+                    use_q4,
+                    eps_val,
+                )
+                self._mps_quant_cache_id = id(cache0)
+            return self._mps_quant_decode_runner
+
+        # 2. Standard FP16 MPSDecodeRunner
+        if hasattr(_METAL_MOD, "MPSDecodeRunner"):
             w_dtype = self.transformer.wte.weight.dtype
             if (
                 self._mps_decode_cache_id != id(cache0)
                 or self._mps_decode_dtype != w_dtype
+                or self._mps_decode_runner is None
             ):
                 ln1_ws = []
                 c_attn_ws = []
@@ -548,21 +510,64 @@ class Transformer(nn.Module):
                 )
                 self._mps_decode_cache_id = id(cache0)
                 self._mps_decode_dtype = w_dtype
+            return self._mps_decode_runner
 
-            if T == 1:
-                logits = self._mps_decode_runner.step(
-                    idx, rope_pos, write_pos, active_len
+        return None
+
+    def forward(
+        self,
+        idx: torch.Tensor,
+        targets: Optional[torch.Tensor] = None,
+        kv_caches: Optional[List[Optional[Tuple[torch.Tensor, torch.Tensor]]]] = None,
+        return_all_logits: bool = False,
+    ) -> Union[
+        Tuple[torch.Tensor, Optional[torch.Tensor]],
+        Tuple[
+            torch.Tensor,
+            Optional[torch.Tensor],
+            List[Tuple[torch.Tensor, torch.Tensor]],
+        ],
+    ]:
+        device = idx.device
+        B, T = idx.size()
+
+        # Ultra-fast C++ Whole-Model Decode / Speculative Verification Graph Runner for T in [1, 8], B=1 on MPS
+        if (
+            1 <= T <= 8
+            and B == 1
+            and targets is None
+            and not self.training
+            and not torch.is_grad_enabled()
+            and device.type == "mps"
+            and kv_caches is not None
+            and len(kv_caches) == self.config.n_layer
+            and hasattr(kv_caches[0], "total_seen_tokens")
+            and (T == 1 or kv_caches[0].total_seen_tokens[0] > 0)
+        ):
+            cache0 = kv_caches[0]
+            runner = self.get_decode_runner(cache0)
+            if runner is not None:
+                seen = cache0.total_seen_tokens[0]
+                max_seq = cache0.max_seq_len
+                write_pos = (
+                    (seen % max_seq)
+                    if (cache0.ring_buffer or seen >= max_seq)
+                    else seen
                 )
-            else:
-                logits = self._mps_decode_runner.verify_step(
-                    idx, rope_pos, write_pos, active_len
-                )
-            if not return_all_logits and T > 1:
-                logits = logits[:, -1:, :]
-            n_L = self.config.n_layer
-            cache0.total_seen_tokens[:] = [new_seen] * n_L
-            cache0.layer_seq_lens[:] = [active_len] * n_L
-            return logits, None, kv_caches
+                new_seen = seen + T
+                active_len = new_seen if new_seen <= max_seq else max_seq
+                rope_pos = seen % self.freqs_real.size(0)
+
+                if T == 1:
+                    logits = runner.step(idx, rope_pos, write_pos, active_len)
+                else:
+                    logits = runner.verify_step(idx, rope_pos, write_pos, active_len)
+                if not return_all_logits and T > 1:
+                    logits = logits[:, -1:, :]
+                n_L = self.config.n_layer
+                cache0.total_seen_tokens[:] = [new_seen] * n_L
+                cache0.layer_seq_lens[:] = [active_len] * n_L
+                return logits, None, kv_caches
 
         if self.config.pos_emb == "learned":
             assert (

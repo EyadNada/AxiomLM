@@ -64,6 +64,7 @@ class SpeculativePromptLookupDecoder:
         max_new_tokens: int = 64,
         cache: Optional[StaticKVCache] = None,
         device: Optional[torch.device] = None,
+        use_cpp_loop: bool = True,
     ) -> Tuple[List[int], Dict[str, Any]]:
         """
         Executes speculative prompt lookup decoding.
@@ -74,6 +75,7 @@ class SpeculativePromptLookupDecoder:
             max_new_tokens: Number of tokens to generate.
             cache: Pre-allocated StaticKVCache (if None, one is created automatically).
             device: Target torch device (defaults to model device).
+            use_cpp_loop: Whether to use the bare-metal C++ speculative engine (default: True).
 
         Returns:
             Tuple of (generated_tokens, stats_dict)
@@ -117,66 +119,92 @@ class SpeculativePromptLookupDecoder:
             torch.mps.synchronize()
         t0 = time.perf_counter()
 
-        with torch.no_grad():
-            while len(generated) < target_total:
-                candidates = find_candidate_ngram(
-                    generated,
-                    ngram_size=self.ngram_size,
-                    max_spec_tokens=self.max_spec_tokens,
-                )
-
-                if not candidates:
-                    # Single-token fallback decode step
-                    curr = torch.tensor(
-                        [[generated[-1]]], device=device, dtype=torch.long
+        # 2. Check if pure native C++ speculative decode engine is available
+        runner = getattr(model, "get_decode_runner", lambda c: None)(cache)
+        if (
+            use_cpp_loop
+            and runner is not None
+            and hasattr(runner, "speculative_decode")
+            and len(generated) < target_total
+        ):
+            (
+                generated,
+                final_seen,
+                fwd_calls,
+                total_drafted,
+                total_accepted,
+                _,
+            ) = runner.speculative_decode(
+                generated,
+                target_total - len(generated),
+                self.ngram_size,
+                self.max_spec_tokens,
+                cache.total_seen_tokens[0],
+            )
+            cache.total_seen_tokens[:] = [final_seen] * n_L
+            cache.layer_seq_lens[:] = [min(final_seen, cache.max_seq_len)] * n_L
+            model_forward_calls += fwd_calls
+        else:
+            with torch.no_grad():
+                while len(generated) < target_total:
+                    candidates = find_candidate_ngram(
+                        generated,
+                        ngram_size=self.ngram_size,
+                        max_spec_tokens=self.max_spec_tokens,
                     )
-                    logits, _, _ = model(curr, kv_caches=kv_caches)
-                    next_t = logits[:, -1, :].argmax(dim=-1).item()
-                    generated.append(next_t)
-                    model_forward_calls += 1
-                else:
-                    # Multi-token speculative verification step
-                    k_cand = len(candidates)
-                    verif_seq = [generated[-1]] + candidates
-                    verif_tensor = torch.tensor(
-                        [verif_seq], device=device, dtype=torch.long
-                    )
-                    checkpoint_seen = cache.total_seen_tokens[0]
 
-                    logits, _, _ = model(
-                        verif_tensor, kv_caches=kv_caches, return_all_logits=True
-                    )
-                    model_forward_calls += 1
-                    total_drafted += k_cand
+                    if not candidates:
+                        # Single-token fallback decode step
+                        curr = torch.tensor(
+                            [[generated[-1]]], device=device, dtype=torch.long
+                        )
+                        logits, _, _ = model(curr, kv_caches=kv_caches)
+                        next_t = logits[:, -1, :].argmax(dim=-1).item()
+                        generated.append(next_t)
+                        model_forward_calls += 1
+                    else:
+                        # Multi-token speculative verification step
+                        k_cand = len(candidates)
+                        verif_seq = [generated[-1]] + candidates
+                        verif_tensor = torch.tensor(
+                            [verif_seq], device=device, dtype=torch.long
+                        )
+                        checkpoint_seen = cache.total_seen_tokens[0]
 
-                    preds = logits[0].argmax(dim=-1).tolist()
-                    accepted = 0
+                        logits, _, _ = model(
+                            verif_tensor, kv_caches=kv_caches, return_all_logits=True
+                        )
+                        model_forward_calls += 1
+                        total_drafted += k_cand
 
-                    for j in range(k_cand):
-                        pred_tok = preds[j]
-                        if pred_tok == candidates[j]:
-                            generated.append(pred_tok)
-                            accepted += 1
-                            if len(generated) >= target_total:
+                        preds = logits[0].argmax(dim=-1).tolist()
+                        accepted = 0
+
+                        for j in range(k_cand):
+                            pred_tok = preds[j]
+                            if pred_tok == candidates[j]:
+                                generated.append(pred_tok)
+                                accepted += 1
+                                if len(generated) >= target_total:
+                                    break
+                            else:
+                                # Mismatch: accept model's genuine prediction and discard rest
+                                generated.append(pred_tok)
+                                accepted += 1
                                 break
                         else:
-                            # Mismatch: accept model's genuine prediction and discard rest
-                            generated.append(pred_tok)
-                            accepted += 1
-                            break
-                    else:
-                        # All candidates matched! Accept bonus token from last verified position
-                        if len(generated) < target_total:
-                            bonus_tok = preds[k_cand]
-                            generated.append(bonus_tok)
-                            accepted += 1
+                            # All candidates matched! Accept bonus token from last verified position
+                            if len(generated) < target_total:
+                                bonus_tok = preds[k_cand]
+                                generated.append(bonus_tok)
+                                accepted += 1
 
-                    total_accepted += max(0, accepted - 1)
+                        total_accepted += max(0, accepted - 1)
 
-                    # Rollback / advance KV cache pointers to exact accepted position
-                    active = min(checkpoint_seen + accepted, cache.max_seq_len)
-                    cache.total_seen_tokens[:] = [checkpoint_seen + accepted] * n_L
-                    cache.layer_seq_lens[:] = [active] * n_L
+                        # Rollback / advance KV cache pointers to exact accepted position
+                        active = min(checkpoint_seen + accepted, cache.max_seq_len)
+                        cache.total_seen_tokens[:] = [checkpoint_seen + accepted] * n_L
+                        cache.layer_seq_lens[:] = [active] * n_L
 
         if device.type == "mps":
             torch.mps.synchronize()

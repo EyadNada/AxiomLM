@@ -3,6 +3,9 @@
 #include <torch/extension.h>
 #include <ATen/mps/MPSStream.h>
 #include <iostream>
+#include <chrono>
+#include <vector>
+#include <tuple>
 
 static id<MTLLibrary> load_metal_library(id<MTLDevice> device, NSString* srcPath) {
     NSError *error = nil;
@@ -61,6 +64,8 @@ static id<MTLComputePipelineState> qmv_q8_g64_half_pso = nil;
 static id<MTLComputePipelineState> qmm_q8_g64_half_pso = nil;
 static id<MTLComputePipelineState> gqa_split_kv_pso = nil;
 static id<MTLComputePipelineState> gqa_reduce_pso = nil;
+static id<MTLComputePipelineState> embed_multi_half_pso = nil;
+static id<MTLComputePipelineState> argmax_multi_half_pso = nil;
 static bool is_initialized = false;
 
 void init_mps(std::string metal_path) {
@@ -96,6 +101,8 @@ void init_mps(std::string metal_path) {
             qmm_q8_g64_half_pso = get_pipeline(mtl_device, mtl_library, @"qmm_q8_g64_half_kernel");
             gqa_split_kv_pso = get_pipeline(mtl_device, mtl_library, @"gqa_flash_decode_split_kv_half_kernel");
             gqa_reduce_pso = get_pipeline(mtl_device, mtl_library, @"gqa_flash_decode_reduce_half_kernel");
+            embed_multi_half_pso = get_pipeline(mtl_device, mtl_library, @"embed_multi_half_kernel");
+            argmax_multi_half_pso = get_pipeline(mtl_device, mtl_library, @"argmax_multi_half_kernel");
         }
         is_initialized = true;
     }
@@ -245,6 +252,64 @@ torch::Tensor argmax_last_token_mps(torch::Tensor logits) {
     [encoder setBytes:&V length:sizeof(uint32_t) atIndex:2];
     [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
     return out;
+}
+
+static inline void dispatch_embed_multi(
+    id<MTLComputeCommandEncoder> encoder,
+    id<MTLBuffer> idx_buf,
+    const torch::Tensor& wte,
+    torch::Tensor& x_out,
+    uint32_t D,
+    uint32_t T) {
+    [encoder setComputePipelineState:embed_multi_half_pso];
+    [encoder setBuffer:idx_buf offset:0 atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(wte) offset:wte.storage_offset() * wte.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(x_out) offset:x_out.storage_offset() * x_out.element_size() atIndex:2];
+    [encoder setBytes:&D length:sizeof(uint32_t) atIndex:3];
+    [encoder dispatchThreadgroups:MTLSizeMake(T, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+}
+
+static inline void dispatch_argmax_multi(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& logits,
+    id<MTLBuffer> out_idx_buf,
+    uint32_t V,
+    uint32_t T) {
+    [encoder setComputePipelineState:argmax_multi_half_pso];
+    [encoder setBuffer:getMTLBufferStorage(logits) offset:logits.storage_offset() * logits.element_size() atIndex:0];
+    [encoder setBuffer:out_idx_buf offset:0 atIndex:1];
+    [encoder setBytes:&V length:sizeof(uint32_t) atIndex:2];
+    [encoder dispatchThreadgroups:MTLSizeMake(T, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+}
+
+static inline std::vector<int64_t> find_candidate_ngram_cpp(
+    const std::vector<int64_t>& input_ids,
+    int64_t ngram_size,
+    int64_t max_spec_tokens) {
+    int64_t len = (int64_t)input_ids.size();
+    if (len < ngram_size + 1) {
+        return {};
+    }
+    int64_t search_end = len - ngram_size;
+    const int64_t* target = input_ids.data() + search_end;
+
+    for (int64_t i = search_end - 1; i >= 0; --i) {
+        bool match = true;
+        for (int64_t k = 0; k < ngram_size; ++k) {
+            if (input_ids[i + k] != target[k]) {
+                match = false;
+                break;
+            }
+        }
+        if (match) {
+            int64_t start = i + ngram_size;
+            int64_t end = std::min(start + max_spec_tokens, search_end);
+            if (start < end) {
+                return std::vector<int64_t>(input_ids.begin() + start, input_ids.begin() + end);
+            }
+        }
+    }
+    return {};
 }
 
 torch::Tensor rmsnorm_infer_mps(torch::Tensor x, torch::Tensor weight, float eps) {
@@ -474,6 +539,41 @@ static inline void dispatch_rope_kv_cache_write(
             threadsPerThreadgroup:MTLSizeMake(threadGroupSize, 1, 1)];
 }
 
+static inline void dispatch_rope_kv_cache_write_offset(
+    id<MTLComputeCommandEncoder> encoder,
+    id<MTLBuffer> qkv_buf,
+    NSUInteger qkv_offset,
+    const torch::Tensor& freqs_cis,
+    torch::Tensor& k_cache,
+    torch::Tensor& v_cache,
+    uint32_t q_pairs,
+    uint32_t kv_pairs,
+    uint32_t half_head_dim,
+    uint32_t max_seq_len,
+    int64_t start_pos,
+    uint32_t write_pos) {
+    uint32_t total_pairs = q_pairs + (kv_pairs << 1);
+    [encoder setComputePipelineState:rope_kv_write_half_pso];
+
+    NSUInteger freqs_offset = (freqs_cis.storage_offset() + start_pos * half_head_dim * 2) * freqs_cis.element_size();
+    NSUInteger k_offset = k_cache.storage_offset() * k_cache.element_size();
+    NSUInteger v_offset = v_cache.storage_offset() * v_cache.element_size();
+
+    [encoder setBuffer:qkv_buf offset:qkv_offset atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(freqs_cis) offset:freqs_offset atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(k_cache) offset:k_offset atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(v_cache) offset:v_offset atIndex:3];
+    [encoder setBytes:&q_pairs length:sizeof(uint32_t) atIndex:4];
+    [encoder setBytes:&kv_pairs length:sizeof(uint32_t) atIndex:5];
+    [encoder setBytes:&half_head_dim length:sizeof(uint32_t) atIndex:6];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:7];
+    [encoder setBytes:&write_pos length:sizeof(uint32_t) atIndex:8];
+
+    NSUInteger threadGroupSize = 256;
+    [encoder dispatchThreadgroups:MTLSizeMake((total_pairs + threadGroupSize - 1) / threadGroupSize, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(threadGroupSize, 1, 1)];
+}
+
 void rope_kv_cache_write_mps(
     torch::Tensor qkv,
     torch::Tensor freqs_cis,
@@ -680,6 +780,54 @@ static inline void dispatch_gqa_flash_decode_into(
     }
 }
 
+static inline void dispatch_gqa_flash_decode_into_offset(
+    id<MTLComputeCommandEncoder> encoder,
+    id<MTLBuffer> q_buf,
+    NSUInteger q_offset,
+    const torch::Tensor& k_cache,
+    const torch::Tensor& v_cache,
+    id<MTLBuffer> out_buf,
+    NSUInteger out_offset,
+    torch::Tensor& partial_O,
+    torch::Tensor& partial_m,
+    torch::Tensor& partial_l,
+    uint32_t max_seq_len,
+    uint32_t active_len,
+    uint32_t num_splits) {
+    float scale = 0.125f; // 1.0f / sqrt(64)
+    uint32_t n_kv_head = 4;
+
+    [encoder setComputePipelineState:gqa_split_kv_pso];
+    [encoder setBuffer:q_buf offset:q_offset atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(k_cache) offset:k_cache.storage_offset() * k_cache.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(v_cache) offset:v_cache.storage_offset() * v_cache.element_size() atIndex:2];
+    [encoder setBuffer:out_buf offset:out_offset atIndex:3];
+    [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:4];
+    [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:5];
+    [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:6];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:7];
+    [encoder setBytes:&active_len length:sizeof(uint32_t) atIndex:8];
+    [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:9];
+    [encoder setBytes:&scale length:sizeof(float) atIndex:10];
+
+    MTLSize tgSize = MTLSizeMake(32, 1, 1);
+    MTLSize gridSize = MTLSizeMake(n_kv_head, num_splits, 1);
+    [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:tgSize];
+
+    if (num_splits > 1) {
+        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        [encoder setComputePipelineState:gqa_reduce_pso];
+        [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:0];
+        [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:1];
+        [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:2];
+        [encoder setBuffer:out_buf offset:out_offset atIndex:3];
+        [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:4];
+
+        MTLSize reduceGrid = MTLSizeMake(12, 1, 1);
+        [encoder dispatchThreadgroups:reduceGrid threadsPerThreadgroup:tgSize];
+    }
+}
+
 torch::Tensor gqa_flash_decode_mps(
     torch::Tensor q,
     torch::Tensor k_cache,
@@ -800,6 +948,7 @@ struct DecodeGraphState {
     int64_t head_dim = 0;
     int64_t q_dim = 0;
     int64_t kv_dim = 0;
+    int64_t qkv_dim = 0;
     uint32_t q_pairs = 0;
     uint32_t kv_pairs = 0;
     uint32_t half_head_dim = 0;
@@ -807,6 +956,8 @@ struct DecodeGraphState {
     bool enable_gqa = false;
     float eps = 1e-6f;
     bool initialized = false;
+    id<MTLBuffer> shared_idx_buf = nil;
+    id<MTLBuffer> shared_argmax_buf = nil;
 
     DecodeGraphState(
         torch::Tensor wte_w,
@@ -841,6 +992,7 @@ struct DecodeGraphState {
           head_dim(hd),
           q_dim(n_h * hd),
           kv_dim(n_kvh * hd),
+          qkv_dim(n_h * hd + 2 * n_kvh * hd),
           q_pairs((uint32_t)((n_h * hd) / 2)),
           kv_pairs((uint32_t)((n_kvh * hd) / 2)),
           half_head_dim((uint32_t)(hd / 2)),
@@ -850,7 +1002,6 @@ struct DecodeGraphState {
           initialized(true) {
         auto opts = wte_weight.options();
         int64_t d_model = q_dim;
-        int64_t qkv_dim = q_dim + 2 * kv_dim;
         int64_t gu_dim = gate_up_weights[0].size(0);
         int64_t hidden_dim = gu_dim / 2;
         int64_t vocab_size = wte_weight.size(0);
@@ -878,6 +1029,8 @@ struct DecodeGraphState {
         swiglu_buf_multi = torch::empty({1, 8, hidden_dim}, opts);
         mlp_out_buf_multi = torch::empty({1, 8, d_model}, opts);
         logits_buf_multi = torch::empty({1, 8, vocab_size}, opts);
+        shared_idx_buf = [mtl_device newBufferWithLength:16 * sizeof(int64_t) options:MTLResourceStorageModeShared];
+        shared_argmax_buf = [mtl_device newBufferWithLength:16 * sizeof(int64_t) options:MTLResourceStorageModeShared];
     }
 
     torch::Tensor step(
@@ -1030,6 +1183,239 @@ struct DecodeGraphState {
         at::linear_out(logits_cur, norm_cur, wte_weight);
         return logits_cur;
     }
+
+    void encode_step_internal(int64_t start_pos, int64_t write_pos, int64_t active_len) {
+        auto stream = at::mps::getCurrentMPSStream();
+        id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+        dispatch_embed_multi(encoder, shared_idx_buf, wte_weight, x_buf, (uint32_t)q_dim, 1);
+        dispatch_rmsnorm_infer_into(encoder, x_buf, ln1_weights[0], norm_buf, eps);
+
+        for (int64_t i = 0; i < n_layer; ++i) {
+            at::linear_out(qkv_buf, norm_buf, c_attn_weights[i]);
+            dispatch_rope_kv_cache_write(
+                stream->commandEncoder(),
+                qkv_buf,
+                freqs_real,
+                k_caches[i],
+                v_caches[i],
+                q_pairs,
+                kv_pairs,
+                half_head_dim,
+                max_seq_len,
+                start_pos,
+                (uint32_t)write_pos);
+
+            uint32_t n_splits = (active_len <= 64) ? 1 : ((active_len <= 256) ? 4 : 8);
+            dispatch_gqa_flash_decode_into(
+                stream->commandEncoder(),
+                qkv_buf,
+                k_caches[i],
+                v_caches[i],
+                attn_y_buf,
+                partial_O_buf,
+                partial_m_buf,
+                partial_l_buf,
+                max_seq_len,
+                (uint32_t)active_len,
+                n_splits);
+            at::linear_out(attn_out_buf, attn_y_buf, c_proj_weights[i]);
+
+            dispatch_add_rmsnorm_infer_into(
+                stream->commandEncoder(), x_buf, attn_out_buf, ln2_weights[i], norm_buf, eps);
+
+            at::linear_out(gate_up_buf, norm_buf, gate_up_weights[i]);
+            dispatch_swiglu_gate_up_into(stream->commandEncoder(), gate_up_buf, swiglu_buf);
+            at::linear_out(mlp_out_buf, swiglu_buf, w_down_weights[i]);
+
+            const torch::Tensor& next_ln_w = (i + 1 < n_layer) ? ln1_weights[i + 1] : lnf_weight;
+            dispatch_add_rmsnorm_infer_into(
+                stream->commandEncoder(), x_buf, mlp_out_buf, next_ln_w, norm_buf, eps);
+        }
+
+        at::linear_out(logits_buf, norm_buf, wte_weight);
+        dispatch_argmax_multi(stream->commandEncoder(), logits_buf, shared_argmax_buf, (uint32_t)wte_weight.size(0), 1);
+    }
+
+    void encode_verify_step_internal(int64_t T, int64_t start_pos, int64_t write_pos) {
+        auto x_cur = x_buf_multi.narrow(1, 0, T);
+        auto norm_cur = norm_buf_multi.narrow(1, 0, T);
+        auto qkv_cur = qkv_buf_multi.narrow(1, 0, T);
+        auto attn_y_cur = attn_y_buf_multi.narrow(1, 0, T);
+        auto attn_out_cur = attn_out_buf_multi.narrow(1, 0, T);
+        auto gate_up_cur = gate_up_buf_multi.narrow(1, 0, T);
+        auto swiglu_cur = swiglu_buf_multi.narrow(1, 0, T);
+        auto mlp_out_cur = mlp_out_buf_multi.narrow(1, 0, T);
+        auto logits_cur = logits_buf_multi.narrow(1, 0, T);
+
+        auto stream = at::mps::getCurrentMPSStream();
+        id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+        dispatch_embed_multi(encoder, shared_idx_buf, wte_weight, x_cur, (uint32_t)q_dim, (uint32_t)T);
+        dispatch_rmsnorm_infer_into(encoder, x_cur, ln1_weights[0], norm_cur, eps);
+
+        id<MTLBuffer> qkv_buf_storage = getMTLBufferStorage(qkv_cur);
+        id<MTLBuffer> attn_y_buf_storage = getMTLBufferStorage(attn_y_cur);
+        NSUInteger elem_sz = qkv_cur.element_size();
+
+        for (int64_t i = 0; i < n_layer; ++i) {
+            at::linear_out(qkv_cur, norm_cur, c_attn_weights[i]);
+
+            encoder = stream->commandEncoder();
+            for (int64_t t = 0; t < T; ++t) {
+                NSUInteger qkv_t_offset = (qkv_cur.storage_offset() + t * qkv_dim) * elem_sz;
+                dispatch_rope_kv_cache_write_offset(
+                    encoder,
+                    qkv_buf_storage,
+                    qkv_t_offset,
+                    freqs_real,
+                    k_caches[i],
+                    v_caches[i],
+                    q_pairs,
+                    kv_pairs,
+                    half_head_dim,
+                    max_seq_len,
+                    start_pos + t,
+                    (uint32_t)((write_pos + t) % max_seq_len));
+            }
+
+            for (int64_t t = 0; t < T; ++t) {
+                NSUInteger qkv_t_offset = (qkv_cur.storage_offset() + t * qkv_dim) * elem_sz;
+                NSUInteger attn_y_t_offset = (attn_y_cur.storage_offset() + t * q_dim) * elem_sz;
+                uint32_t cur_active = (uint32_t)(start_pos + t + 1);
+                if (cur_active > max_seq_len) cur_active = max_seq_len;
+                uint32_t n_splits = (cur_active <= 64) ? 1 : ((cur_active <= 256) ? 4 : 8);
+
+                dispatch_gqa_flash_decode_into_offset(
+                    encoder,
+                    qkv_buf_storage,
+                    qkv_t_offset,
+                    k_caches[i],
+                    v_caches[i],
+                    attn_y_buf_storage,
+                    attn_y_t_offset,
+                    partial_O_buf,
+                    partial_m_buf,
+                    partial_l_buf,
+                    max_seq_len,
+                    cur_active,
+                    n_splits);
+                [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            }
+
+            at::linear_out(attn_out_cur, attn_y_cur, c_proj_weights[i]);
+
+            encoder = stream->commandEncoder();
+            dispatch_add_rmsnorm_infer_into(
+                encoder, x_cur, attn_out_cur, ln2_weights[i], norm_cur, eps);
+
+            at::linear_out(gate_up_cur, norm_cur, gate_up_weights[i]);
+
+            encoder = stream->commandEncoder();
+            dispatch_swiglu_gate_up_into(encoder, gate_up_cur, swiglu_cur);
+
+            at::linear_out(mlp_out_cur, swiglu_cur, w_down_weights[i]);
+
+            const torch::Tensor& next_ln_w = (i + 1 < n_layer) ? ln1_weights[i + 1] : lnf_weight;
+            encoder = stream->commandEncoder();
+            dispatch_add_rmsnorm_infer_into(
+                encoder, x_cur, mlp_out_cur, next_ln_w, norm_cur, eps);
+        }
+
+        at::linear_out(logits_cur, norm_cur, wte_weight);
+        dispatch_argmax_multi(stream->commandEncoder(), logits_cur, shared_argmax_buf, (uint32_t)wte_weight.size(0), (uint32_t)T);
+    }
+
+    std::tuple<std::vector<int64_t>, int64_t, int64_t, int64_t, int64_t, double>
+    speculative_decode(
+        const std::vector<int64_t>& initial_tokens,
+        int64_t max_new_tokens,
+        int64_t ngram_size,
+        int64_t max_spec_tokens,
+        int64_t start_pos) {
+        at::NoGradGuard no_grad;
+        std::vector<int64_t> generated = initial_tokens;
+        int64_t target_total = (int64_t)initial_tokens.size() + max_new_tokens;
+        int64_t checkpoint_seen = start_pos;
+        int64_t model_forward_calls = 0;
+        int64_t total_drafted = 0;
+        int64_t total_accepted = 0;
+
+        auto stream = at::mps::getCurrentMPSStream();
+        stream->synchronize(at::mps::SyncType::COMMIT_AND_WAIT);
+        auto t0 = std::chrono::high_resolution_clock::now();
+
+        long* idx_ptr = (long*)[shared_idx_buf contents];
+        long* preds = (long*)[shared_argmax_buf contents];
+
+        while ((int64_t)generated.size() < target_total) {
+            std::vector<int64_t> candidates = find_candidate_ngram_cpp(generated, ngram_size, max_spec_tokens);
+            int64_t k_cand = (int64_t)candidates.size();
+
+            if (k_cand == 0) {
+                int64_t rope_pos = checkpoint_seen % freqs_real.size(0);
+                int64_t write_pos = checkpoint_seen % max_seq_len;
+                int64_t cur_active = std::min(checkpoint_seen + 1, (int64_t)max_seq_len);
+
+                idx_ptr[0] = generated.back();
+
+                encode_step_internal(rope_pos, write_pos, cur_active);
+                stream->synchronize(at::mps::SyncType::COMMIT_AND_WAIT);
+
+                generated.push_back(preds[0]);
+                checkpoint_seen += 1;
+                model_forward_calls += 1;
+            } else {
+                int64_t T = 1 + k_cand;
+                int64_t rope_pos = checkpoint_seen % freqs_real.size(0);
+                int64_t write_pos = checkpoint_seen % max_seq_len;
+
+                idx_ptr[0] = generated.back();
+                for (int64_t c = 0; c < k_cand; ++c) {
+                    idx_ptr[1 + c] = candidates[c];
+                }
+
+                encode_verify_step_internal(T, rope_pos, write_pos);
+                stream->synchronize(at::mps::SyncType::COMMIT_AND_WAIT);
+
+                total_drafted += k_cand;
+                model_forward_calls += 1;
+
+                int64_t accepted = 0;
+                bool all_matched = true;
+
+                for (int64_t j = 0; j < k_cand; ++j) {
+                    int64_t pred_tok = preds[j];
+                    if (pred_tok == candidates[j]) {
+                        generated.push_back(pred_tok);
+                        accepted += 1;
+                        if ((int64_t)generated.size() >= target_total) {
+                            all_matched = false;
+                            break;
+                        }
+                    } else {
+                        generated.push_back(pred_tok);
+                        accepted += 1;
+                        all_matched = false;
+                        break;
+                    }
+                }
+
+                if (all_matched && (int64_t)generated.size() < target_total) {
+                    int64_t bonus_tok = preds[k_cand];
+                    generated.push_back(bonus_tok);
+                    accepted += 1;
+                }
+
+                total_accepted += std::max((int64_t)0, accepted - 1);
+                checkpoint_seen += accepted;
+            }
+        }
+
+        stream->synchronize(at::mps::SyncType::COMMIT_AND_WAIT);
+        auto t1 = std::chrono::high_resolution_clock::now();
+        double elapsed_seconds = std::chrono::duration<double>(t1 - t0).count();
+
+        return std::make_tuple(generated, checkpoint_seen, model_forward_calls, total_drafted, total_accepted, elapsed_seconds);
+    }
 };
 
 struct QuantizedDecodeGraphState {
@@ -1079,6 +1465,7 @@ struct QuantizedDecodeGraphState {
     int64_t head_dim = 0;
     int64_t q_dim = 0;
     int64_t kv_dim = 0;
+    int64_t qkv_dim = 0;
     uint32_t q_pairs = 0;
     uint32_t kv_pairs = 0;
     uint32_t half_head_dim = 0;
@@ -1087,6 +1474,8 @@ struct QuantizedDecodeGraphState {
     bool is_q4 = true;
     float eps = 1e-6f;
     bool initialized = false;
+    id<MTLBuffer> shared_idx_buf = nil;
+    id<MTLBuffer> shared_argmax_buf = nil;
 
     QuantizedDecodeGraphState(
         torch::Tensor wte_emb,
@@ -1134,6 +1523,7 @@ struct QuantizedDecodeGraphState {
           head_dim(hd),
           q_dim(n_h * hd),
           kv_dim(n_kvh * hd),
+          qkv_dim(n_h * hd + 2 * n_kvh * hd),
           q_pairs((uint32_t)((n_h * hd) / 2)),
           kv_pairs((uint32_t)((n_kvh * hd) / 2)),
           half_head_dim((uint32_t)(hd / 2)),
@@ -1144,7 +1534,6 @@ struct QuantizedDecodeGraphState {
           initialized(true) {
         auto opts = wte_embed.options();
         int64_t d_model = q_dim;
-        int64_t qkv_dim = q_dim + 2 * kv_dim;
         int64_t gu_dim = gate_up_packed[0].size(0);
         int64_t hidden_dim = gu_dim / 2;
         int64_t vocab_size = lm_head_packed.size(0);
@@ -1172,6 +1561,8 @@ struct QuantizedDecodeGraphState {
         swiglu_buf_multi = torch::empty({1, 8, hidden_dim}, opts);
         mlp_out_buf_multi = torch::empty({1, 8, d_model}, opts);
         logits_buf_multi = torch::empty({1, 8, vocab_size}, opts);
+        shared_idx_buf = [mtl_device newBufferWithLength:16 * sizeof(int64_t) options:MTLResourceStorageModeShared];
+        shared_argmax_buf = [mtl_device newBufferWithLength:16 * sizeof(int64_t) options:MTLResourceStorageModeShared];
     }
 
     torch::Tensor step(
@@ -1366,6 +1757,281 @@ struct QuantizedDecodeGraphState {
 
         return logits_cur;
     }
+
+    void encode_step_internal(int64_t start_pos, int64_t write_pos, int64_t active_len) {
+        auto stream = at::mps::getCurrentMPSStream();
+        id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+        dispatch_embed_multi(encoder, shared_idx_buf, wte_embed, x_buf, (uint32_t)q_dim, 1);
+        dispatch_rmsnorm_infer_into(encoder, x_buf, ln1_weights[0], norm_buf, eps);
+
+        for (int64_t i = 0; i < n_layer; ++i) {
+            if (is_q4) {
+                dispatch_qmv_q4_g64_into(encoder, norm_buf, c_attn_packed[i], c_attn_sb[i], qkv_buf);
+            } else {
+                dispatch_qmv_q8_g64_into(encoder, norm_buf, c_attn_packed[i], c_attn_sb[i], qkv_buf);
+            }
+
+            dispatch_rope_kv_cache_write(
+                encoder,
+                qkv_buf,
+                freqs_real,
+                k_caches[i],
+                v_caches[i],
+                q_pairs,
+                kv_pairs,
+                half_head_dim,
+                max_seq_len,
+                start_pos,
+                (uint32_t)write_pos);
+
+            uint32_t n_splits = (active_len <= 64) ? 1 : ((active_len <= 256) ? 4 : 8);
+            dispatch_gqa_flash_decode_into(
+                encoder,
+                qkv_buf,
+                k_caches[i],
+                v_caches[i],
+                attn_y_buf,
+                partial_O_buf,
+                partial_m_buf,
+                partial_l_buf,
+                max_seq_len,
+                (uint32_t)active_len,
+                n_splits);
+
+            if (is_q4) {
+                dispatch_qmv_q4_g64_into(encoder, attn_y_buf, c_proj_packed[i], c_proj_sb[i], attn_out_buf);
+            } else {
+                dispatch_qmv_q8_g64_into(encoder, attn_y_buf, c_proj_packed[i], c_proj_sb[i], attn_out_buf);
+            }
+
+            dispatch_add_rmsnorm_infer_into(
+                encoder, x_buf, attn_out_buf, ln2_weights[i], norm_buf, eps);
+
+            if (is_q4) {
+                dispatch_qmv_q4_g64_into(encoder, norm_buf, gate_up_packed[i], gate_up_sb[i], gate_up_buf);
+            } else {
+                dispatch_qmv_q8_g64_into(encoder, norm_buf, gate_up_packed[i], gate_up_sb[i], gate_up_buf);
+            }
+
+            dispatch_swiglu_gate_up_into(encoder, gate_up_buf, swiglu_buf);
+
+            if (is_q4) {
+                dispatch_qmv_q4_g64_into(encoder, swiglu_buf, w_down_packed[i], w_down_sb[i], mlp_out_buf);
+            } else {
+                dispatch_qmv_q8_g64_into(encoder, swiglu_buf, w_down_packed[i], w_down_sb[i], mlp_out_buf);
+            }
+
+            const torch::Tensor& next_ln_w = (i + 1 < n_layer) ? ln1_weights[i + 1] : lnf_weight;
+            dispatch_add_rmsnorm_infer_into(
+                encoder, x_buf, mlp_out_buf, next_ln_w, norm_buf, eps);
+        }
+
+        if (is_q4) {
+            dispatch_qmv_q4_g64_into(encoder, norm_buf, lm_head_packed, lm_head_sb, logits_buf);
+        } else {
+            dispatch_qmv_q8_g64_into(encoder, norm_buf, lm_head_packed, lm_head_sb, logits_buf);
+        }
+
+        dispatch_argmax_multi(encoder, logits_buf, shared_argmax_buf, (uint32_t)lm_head_packed.size(0), 1);
+    }
+
+    void encode_verify_step_internal(int64_t T, int64_t start_pos, int64_t write_pos) {
+        auto x_cur = x_buf_multi.narrow(1, 0, T);
+        auto norm_cur = norm_buf_multi.narrow(1, 0, T);
+        auto qkv_cur = qkv_buf_multi.narrow(1, 0, T);
+        auto attn_y_cur = attn_y_buf_multi.narrow(1, 0, T);
+        auto attn_out_cur = attn_out_buf_multi.narrow(1, 0, T);
+        auto gate_up_cur = gate_up_buf_multi.narrow(1, 0, T);
+        auto swiglu_cur = swiglu_buf_multi.narrow(1, 0, T);
+        auto mlp_out_cur = mlp_out_buf_multi.narrow(1, 0, T);
+        auto logits_cur = logits_buf_multi.narrow(1, 0, T);
+
+        auto stream = at::mps::getCurrentMPSStream();
+        id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+        dispatch_embed_multi(encoder, shared_idx_buf, wte_embed, x_cur, (uint32_t)q_dim, (uint32_t)T);
+        dispatch_rmsnorm_infer_into(encoder, x_cur, ln1_weights[0], norm_cur, eps);
+
+        id<MTLBuffer> qkv_buf_storage = getMTLBufferStorage(qkv_cur);
+        id<MTLBuffer> attn_y_buf_storage = getMTLBufferStorage(attn_y_cur);
+        NSUInteger elem_sz = qkv_cur.element_size();
+
+        for (int64_t i = 0; i < n_layer; ++i) {
+            if (is_q4) {
+                dispatch_qmm_q4_g64_into(encoder, norm_cur, c_attn_packed[i], c_attn_sb[i], qkv_cur);
+            } else {
+                dispatch_qmm_q8_g64_into(encoder, norm_cur, c_attn_packed[i], c_attn_sb[i], qkv_cur);
+            }
+
+            for (int64_t t = 0; t < T; ++t) {
+                NSUInteger qkv_t_offset = (qkv_cur.storage_offset() + t * qkv_dim) * elem_sz;
+                dispatch_rope_kv_cache_write_offset(
+                    encoder,
+                    qkv_buf_storage,
+                    qkv_t_offset,
+                    freqs_real,
+                    k_caches[i],
+                    v_caches[i],
+                    q_pairs,
+                    kv_pairs,
+                    half_head_dim,
+                    max_seq_len,
+                    start_pos + t,
+                    (uint32_t)((write_pos + t) % max_seq_len));
+            }
+
+            for (int64_t t = 0; t < T; ++t) {
+                NSUInteger qkv_t_offset = (qkv_cur.storage_offset() + t * qkv_dim) * elem_sz;
+                NSUInteger attn_y_t_offset = (attn_y_cur.storage_offset() + t * q_dim) * elem_sz;
+                uint32_t cur_active = (uint32_t)(start_pos + t + 1);
+                if (cur_active > max_seq_len) cur_active = max_seq_len;
+                uint32_t n_splits = (cur_active <= 64) ? 1 : ((cur_active <= 256) ? 4 : 8);
+
+                dispatch_gqa_flash_decode_into_offset(
+                    encoder,
+                    qkv_buf_storage,
+                    qkv_t_offset,
+                    k_caches[i],
+                    v_caches[i],
+                    attn_y_buf_storage,
+                    attn_y_t_offset,
+                    partial_O_buf,
+                    partial_m_buf,
+                    partial_l_buf,
+                    max_seq_len,
+                    cur_active,
+                    n_splits);
+                [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            }
+
+            if (is_q4) {
+                dispatch_qmm_q4_g64_into(encoder, attn_y_cur, c_proj_packed[i], c_proj_sb[i], attn_out_cur);
+            } else {
+                dispatch_qmm_q8_g64_into(encoder, attn_y_cur, c_proj_packed[i], c_proj_sb[i], attn_out_cur);
+            }
+
+            dispatch_add_rmsnorm_infer_into(
+                encoder, x_cur, attn_out_cur, ln2_weights[i], norm_cur, eps);
+
+            if (is_q4) {
+                dispatch_qmm_q4_g64_into(encoder, norm_cur, gate_up_packed[i], gate_up_sb[i], gate_up_cur);
+            } else {
+                dispatch_qmm_q8_g64_into(encoder, norm_cur, gate_up_packed[i], gate_up_sb[i], gate_up_cur);
+            }
+
+            dispatch_swiglu_gate_up_into(encoder, gate_up_cur, swiglu_cur);
+
+            if (is_q4) {
+                dispatch_qmm_q4_g64_into(encoder, swiglu_cur, w_down_packed[i], w_down_sb[i], mlp_out_cur);
+            } else {
+                dispatch_qmm_q8_g64_into(encoder, swiglu_cur, w_down_packed[i], w_down_sb[i], mlp_out_cur);
+            }
+
+            const torch::Tensor& next_ln_w = (i + 1 < n_layer) ? ln1_weights[i + 1] : lnf_weight;
+            dispatch_add_rmsnorm_infer_into(
+                encoder, x_cur, mlp_out_cur, next_ln_w, norm_cur, eps);
+        }
+
+        if (is_q4) {
+            dispatch_qmm_q4_g64_into(encoder, norm_cur, lm_head_packed, lm_head_sb, logits_cur);
+        } else {
+            dispatch_qmm_q8_g64_into(encoder, norm_cur, lm_head_packed, lm_head_sb, logits_cur);
+        }
+
+        dispatch_argmax_multi(encoder, logits_cur, shared_argmax_buf, (uint32_t)lm_head_packed.size(0), (uint32_t)T);
+    }
+
+    std::tuple<std::vector<int64_t>, int64_t, int64_t, int64_t, int64_t, double>
+    speculative_decode(
+        const std::vector<int64_t>& initial_tokens,
+        int64_t max_new_tokens,
+        int64_t ngram_size,
+        int64_t max_spec_tokens,
+        int64_t start_pos) {
+        at::NoGradGuard no_grad;
+        std::vector<int64_t> generated = initial_tokens;
+        int64_t target_total = (int64_t)initial_tokens.size() + max_new_tokens;
+        int64_t checkpoint_seen = start_pos;
+        int64_t model_forward_calls = 0;
+        int64_t total_drafted = 0;
+        int64_t total_accepted = 0;
+
+        auto stream = at::mps::getCurrentMPSStream();
+        stream->synchronize(at::mps::SyncType::COMMIT_AND_WAIT);
+        auto t0 = std::chrono::high_resolution_clock::now();
+
+        long* idx_ptr = (long*)[shared_idx_buf contents];
+        long* preds = (long*)[shared_argmax_buf contents];
+
+        while ((int64_t)generated.size() < target_total) {
+            std::vector<int64_t> candidates = find_candidate_ngram_cpp(generated, ngram_size, max_spec_tokens);
+            int64_t k_cand = (int64_t)candidates.size();
+
+            if (k_cand == 0) {
+                int64_t rope_pos = checkpoint_seen % freqs_real.size(0);
+                int64_t write_pos = checkpoint_seen % max_seq_len;
+                int64_t cur_active = std::min(checkpoint_seen + 1, (int64_t)max_seq_len);
+
+                idx_ptr[0] = generated.back();
+
+                encode_step_internal(rope_pos, write_pos, cur_active);
+                stream->synchronize(at::mps::SyncType::COMMIT_AND_WAIT);
+
+                generated.push_back(preds[0]);
+                checkpoint_seen += 1;
+                model_forward_calls += 1;
+            } else {
+                int64_t T = 1 + k_cand;
+                int64_t rope_pos = checkpoint_seen % freqs_real.size(0);
+                int64_t write_pos = checkpoint_seen % max_seq_len;
+
+                idx_ptr[0] = generated.back();
+                for (int64_t c = 0; c < k_cand; ++c) {
+                    idx_ptr[1 + c] = candidates[c];
+                }
+
+                encode_verify_step_internal(T, rope_pos, write_pos);
+                stream->synchronize(at::mps::SyncType::COMMIT_AND_WAIT);
+
+                total_drafted += k_cand;
+                model_forward_calls += 1;
+
+                int64_t accepted = 0;
+                bool all_matched = true;
+
+                for (int64_t j = 0; j < k_cand; ++j) {
+                    int64_t pred_tok = preds[j];
+                    if (pred_tok == candidates[j]) {
+                        generated.push_back(pred_tok);
+                        accepted += 1;
+                        if ((int64_t)generated.size() >= target_total) {
+                            all_matched = false;
+                            break;
+                        }
+                    } else {
+                        generated.push_back(pred_tok);
+                        accepted += 1;
+                        all_matched = false;
+                        break;
+                    }
+                }
+
+                if (all_matched && (int64_t)generated.size() < target_total) {
+                    int64_t bonus_tok = preds[k_cand];
+                    generated.push_back(bonus_tok);
+                    accepted += 1;
+                }
+
+                total_accepted += std::max((int64_t)0, accepted - 1);
+                checkpoint_seen += accepted;
+            }
+        }
+
+        stream->synchronize(at::mps::SyncType::COMMIT_AND_WAIT);
+        auto t1 = std::chrono::high_resolution_clock::now();
+        double elapsed_seconds = std::chrono::duration<double>(t1 - t0).count();
+
+        return std::make_tuple(generated, checkpoint_seen, model_forward_calls, total_drafted, total_accepted, elapsed_seconds);
+    }
 };
 
 torch::Tensor cross_entropy_forward_mps(torch::Tensor logits, torch::Tensor targets, int ignore_index) {
@@ -1543,7 +2209,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           int64_t,
           float>())
       .def("step", &DecodeGraphState::step)
-      .def("verify_step", &DecodeGraphState::verify_step);
+      .def("verify_step", &DecodeGraphState::verify_step)
+      .def("speculative_decode", &DecodeGraphState::speculative_decode);
   pybind11::class_<QuantizedDecodeGraphState, std::shared_ptr<QuantizedDecodeGraphState>>(m, "MPSQuantizedDecodeRunner")
       .def(pybind11::init<
           torch::Tensor,
@@ -1569,7 +2236,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           bool,
           float>())
       .def("step", &QuantizedDecodeGraphState::step)
-      .def("verify_step", &QuantizedDecodeGraphState::verify_step);
+      .def("verify_step", &QuantizedDecodeGraphState::verify_step)
+      .def("speculative_decode", &QuantizedDecodeGraphState::speculative_decode);
   m.def("cross_entropy_forward_mps", &cross_entropy_forward_mps, "MPS CE Fwd");
   m.def("cross_entropy_backward_mps", &cross_entropy_backward_mps, "MPS CE Bwd");
   m.def("flash_attention_forward_mps", &flash_attention_forward_mps, "MPS FlashAttention Fwd");

@@ -224,6 +224,68 @@ class TestSpeculativePromptLookup(unittest.TestCase):
                 c_step.layer_seq_lens[:] = [seen_saved] * 2
                 c_run.layer_seq_lens[:] = [seen_saved] * 2
 
+    def test_pure_cpp_speculative_loop_parity(self):
+        """
+        Verify that Phase 6 Pure C++ Speculative Loop produces 100% token-for-token
+        mathematical parity with the Python speculative reference decoder across
+        FP16, Q4_G64, and Q8_G64 configurations.
+        """
+        if not torch.backends.mps.is_available():
+            return
+        device = torch.device("mps")
+        torch.manual_seed(42)
+        config = ModelConfig(
+            arch="modern",
+            n_layer=2,
+            n_head=4,
+            n_kv_head=2,
+            n_embd=256,
+            vocab_size=512,
+            block_size=512,
+            use_fused_kernels=True,
+        )
+
+        pattern = [15, 28, 42, 60, 75, 88, 102, 133, 175, 210]
+        prompt = pattern * 4 + pattern[:4]
+        max_new_tokens = 32
+
+        decoder = SpeculativePromptLookupDecoder(ngram_size=2, max_spec_tokens=4)
+
+        for quant_mode in [None, "q4", "q8"]:
+            model = Transformer(config).to(device=device, dtype=torch.float16).eval()
+            model.quantize(quant_mode)
+
+            # 1. Run Python speculative loop
+            tokens_py, stats_py = decoder.generate(
+                model=model,
+                prompt_tokens=prompt,
+                max_new_tokens=max_new_tokens,
+                device=device,
+                use_cpp_loop=False,
+            )
+
+            # 2. Run Pure C++ speculative loop
+            tokens_cpp, stats_cpp = decoder.generate(
+                model=model,
+                prompt_tokens=prompt,
+                max_new_tokens=max_new_tokens,
+                device=device,
+                use_cpp_loop=True,
+            )
+
+            # 3. Assert exact 100% token parity
+            self.assertEqual(
+                tokens_py,
+                tokens_cpp,
+                f"Mode {quant_mode} C++ loop generated tokens differed from Python loop:\n"
+                f"Py:  {tokens_py}\nCpp: {tokens_cpp}",
+            )
+            self.assertEqual(len(tokens_py), len(tokens_cpp))
+            self.assertEqual(len(tokens_cpp), len(prompt) + max_new_tokens)
+            self.assertEqual(
+                stats_py["accepted_draft_tokens"], stats_cpp["accepted_draft_tokens"]
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

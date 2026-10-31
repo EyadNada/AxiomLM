@@ -317,6 +317,38 @@ kernel void embed_rmsnorm_forward_half_kernel(
 }
 
 // ----------------------------------------------------------------------------
+// 1D-2. Batched Embedding Lookup Kernel (FP16)
+// Copies D-dimensional embeddings for T tokens (T in 1..8) into x_out directly
+// from unified shared memory buffer idx without PyTorch index_select dispatch.
+// ----------------------------------------------------------------------------
+kernel void embed_multi_half_kernel(
+    device const long *idx [[buffer(0)]],
+    device const half *wte [[buffer(1)]],
+    device half *x_out [[buffer(2)]],
+    constant uint &D [[buffer(3)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint2 tid_in_tg [[thread_position_in_threadgroup]],
+    uint2 tg_size [[threads_per_threadgroup]]) {
+  uint row_idx = tgpig.x;
+  uint tid = tid_in_tg.x;
+  uint block_dim = tg_size.x;
+
+  long token_id = idx[row_idx];
+  device const half *row_wte = wte + token_id * long(D);
+  device half *row_x = x_out + row_idx * long(D);
+
+  uint D_vec4 = D >> 2;
+  device const half4 *wte4 = (device const half4 *)row_wte;
+  device half4 *x4 = (device half4 *)row_x;
+  for (uint i = tid; i < D_vec4; i += block_dim) {
+    x4[i] = wte4[i];
+  }
+  for (uint i = (D_vec4 << 2) + tid; i < D; i += block_dim) {
+    row_x[i] = row_wte[i];
+  }
+}
+
+// ----------------------------------------------------------------------------
 // 1E. Fast Single-Threadgroup Argmax Kernel over Vocabulary Logits (FP16 & FP32)
 // Replaces 340+ us PyTorch MPSGraph argmax with a 4 us SIMD-group reduction
 // ----------------------------------------------------------------------------
@@ -367,6 +399,65 @@ kernel void argmax_half_kernel(
 
   if (tid == 0) {
     out_idx[0] = long(shared_idx[0]);
+  }
+}
+
+// ----------------------------------------------------------------------------
+// 1E-2. Multi-Row In-Threadgroup Argmax Kernel over Vocabulary Logits (FP16)
+// Reduces V vocabulary logits for T tokens (T in 1..8) in parallel on Metal GPU.
+// Directly writes token IDs into unified shared memory out_idx without logit copying.
+// ----------------------------------------------------------------------------
+kernel void argmax_multi_half_kernel(
+    device const half *logits [[buffer(0)]],
+    device long *out_idx [[buffer(1)]],
+    constant uint &V [[buffer(2)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint2 tid_in_tg [[thread_position_in_threadgroup]],
+    uint2 tg_size [[threads_per_threadgroup]]) {
+  uint row_idx = tgpig.x;
+  uint tid = tid_in_tg.x;
+  uint block_dim = tg_size.x;
+
+  device const half *row_logits = logits + row_idx * V;
+  float best_val = -1e38f;
+  uint best_idx = 0;
+
+  uint V_vec4 = V >> 2;
+  device const half4 *logits4 = (device const half4 *)row_logits;
+  for (uint i = tid; i < V_vec4; i += block_dim) {
+    half4 h4 = logits4[i];
+    uint base = i << 2;
+    float v0 = float(h4.x), v1 = float(h4.y), v2 = float(h4.z), v3 = float(h4.w);
+    if (v0 > best_val) { best_val = v0; best_idx = base; }
+    if (v1 > best_val) { best_val = v1; best_idx = base + 1; }
+    if (v2 > best_val) { best_val = v2; best_idx = base + 2; }
+    if (v3 > best_val) { best_val = v3; best_idx = base + 3; }
+  }
+  for (uint i = (V_vec4 << 2) + tid; i < V; i += block_dim) {
+    float v = float(row_logits[i]);
+    if (v > best_val) { best_val = v; best_idx = i; }
+  }
+
+  threadgroup float shared_val[256];
+  threadgroup uint shared_idx[256];
+  shared_val[tid] = best_val;
+  shared_idx[tid] = best_idx;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  for (uint stride = block_dim >> 1; stride > 0; stride >>= 1) {
+    if (tid < stride) {
+      float other_v = shared_val[tid + stride];
+      uint other_i = shared_idx[tid + stride];
+      if (other_v > shared_val[tid] || (other_v == shared_val[tid] && other_i < shared_idx[tid])) {
+        shared_val[tid] = other_v;
+        shared_idx[tid] = other_i;
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+
+  if (tid == 0) {
+    out_idx[row_idx] = long(shared_idx[0]);
   }
 }
 
