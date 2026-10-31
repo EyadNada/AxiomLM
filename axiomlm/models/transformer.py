@@ -315,8 +315,15 @@ class Transformer(nn.Module):
         if self._quant_mode in ["q4", "q8"] and hasattr(
             _METAL_MOD, "MPSQuantizedDecodeRunner"
         ):
+            k_ptr = (
+                cache0.k_caches[0].data_ptr()
+                if hasattr(cache0, "k_caches") and cache0.k_caches
+                else None
+            )
             if (
                 self._mps_quant_cache_id != id(cache0)
+                or getattr(self, "_mps_quant_cache_ptr", None) != k_ptr
+                or getattr(self, "_mps_quant_mode", None) != self._quant_mode
                 or self._mps_quant_decode_runner is None
             ):
                 from ..kernels.quant import (
@@ -427,13 +434,21 @@ class Transformer(nn.Module):
                     eps_val,
                 )
                 self._mps_quant_cache_id = id(cache0)
+                self._mps_quant_cache_ptr = k_ptr
+                self._mps_quant_mode = self._quant_mode
             return self._mps_quant_decode_runner
 
         # 2. Standard FP16 MPSDecodeRunner
         if hasattr(_METAL_MOD, "MPSDecodeRunner"):
             w_dtype = self.transformer.wte.weight.dtype
+            k_ptr = (
+                cache0.k_caches[0].data_ptr()
+                if hasattr(cache0, "k_caches") and cache0.k_caches
+                else None
+            )
             if (
                 self._mps_decode_cache_id != id(cache0)
+                or getattr(self, "_mps_decode_cache_ptr", None) != k_ptr
                 or self._mps_decode_dtype != w_dtype
                 or self._mps_decode_runner is None
             ):
@@ -509,6 +524,7 @@ class Transformer(nn.Module):
                     lnf_mod.eps,
                 )
                 self._mps_decode_cache_id = id(cache0)
+                self._mps_decode_cache_ptr = k_ptr
                 self._mps_decode_dtype = w_dtype
             return self._mps_decode_runner
 

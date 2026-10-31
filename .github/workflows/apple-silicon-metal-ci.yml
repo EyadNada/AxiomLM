@@ -1,0 +1,62 @@
+name: Apple Silicon Metal CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  metal-hardware-ci:
+    name: Metal GPU & ARM NEON Hardware Validation (Apple Silicon)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install psutil pytest
+          pip install -e .
+
+      - name: Compile Native Apple Silicon Kernels (Metal MSL + ARM NEON C++)
+        run: |
+          python axiomlm/kernels/build_kernels.py
+          ls -la axiomlm/kernels/axiom_metal_kernels.so
+          ls -la axiomlm/kernels/axiom_neon_kernels.so
+
+      - name: Run Metal Hardware Kernel Tests
+        run: |
+          pytest -v tests/test_kernels.py
+
+      - name: Run Speculative Decoding Tests (Python & Pure C++ Loops)
+        run: |
+          pytest -v tests/test_speculative.py
+
+      - name: Run Speculative Adversarial & Rejection Boundary Tests
+        run: |
+          pytest -v tests/test_speculative_adversarial.py
+
+      - name: Run Metal Split-KV Tiling & Non-Power-of-2 Boundary Tests
+        run: |
+          pytest -v tests/test_metal_boundary_and_tiling.py
+
+      - name: Run Quantization SNR, Cosine Similarity & Drift Tests
+        run: |
+          pytest -v tests/test_quantization_drift_and_perplexity.py
+
+      - name: Run Unified Memory Stability & Leak Stress Tests
+        run: |
+          pytest -v tests/test_memory_leak_and_stress.py
+
+      - name: AxiomLM Engine Benchmark Smoke & Performance Assertion
+        run: |
+          python benchmarks/benchmark_axiomlm.py --prompt 64 --gen 32 --repetitions 1
