@@ -11,13 +11,14 @@ import sys
 # Ensure repository root is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import time
 import argparse
-from typing import Dict, Any
+import time
+from typing import Any
+
 import numpy as np
 import torch
 
-from axiomlm import Transformer, ModelConfig
+from axiomlm import ModelConfig, Transformer
 from axiomlm.engine.paged_cache import StaticKVCache
 from axiomlm.engine.speculative import SpeculativePromptLookupDecoder
 
@@ -27,9 +28,11 @@ def benchmark_engine_mode(
     prompt_tensor: torch.Tensor,
     gen_tokens: int = 128,
     repetitions: int = 3,
-    device: torch.device = torch.device("mps"),
-) -> Dict[str, Any]:
+    device: torch.device | None = None,
+) -> dict[str, Any]:
     """Measures prefill and autoregressive decode throughput for a configured AxiomLM model state."""
+    if device is None:
+        device = torch.device("mps")
     prompt_len = prompt_tensor.size(1)
     prefill_speeds = []
     decode_speeds = []
@@ -89,7 +92,7 @@ def run_axiomlm_benchmarks(
     prompt_tokens: int = 512,
     gen_tokens: int = 128,
     repetitions: int = 3,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Executes the full suite of AxiomLM architectural optimizations."""
     device = torch.device("mps")
     print("=" * 70)
@@ -119,7 +122,7 @@ def run_axiomlm_benchmarks(
     prompt_data = [int(i % 50000) for i in range(prompt_tokens)]
     prompt_tensor = torch.tensor([prompt_data], device=device, dtype=torch.long)
 
-    results: Dict[str, Any] = {
+    results: dict[str, Any] = {
         "engine": "AxiomLM",
         "prompt_tokens": prompt_tokens,
         "gen_tokens": gen_tokens,
@@ -250,6 +253,8 @@ def run_axiomlm_benchmarks(
         "tokens_per_forward": round(avg_tpf, 2),
         "speedup_vs_python_loop": round(avg_spec_cpp / avg_spec_py, 2),
     }
+    # Backward-compatible alias pointing to the top-performing C++ speculative engine
+    results["axiomlm_speculative_q4"] = results["axiomlm_speculative_q4_cpp_loop"]
     print(
         f"  • Decode Speed: {avg_spec_cpp:.2f} tok/s (± {std_spec_cpp:.2f}) [Latency: {spec_cpp_lat} ms/tok]"
     )

@@ -10,11 +10,12 @@ import sys
 # Ensure repository root is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import argparse
 import json
 import shutil
 import subprocess
-import argparse
-from typing import Dict, Any
+from typing import Any
+
 from benchmarks.export_gguf import prepare_benchmark_models
 
 
@@ -24,7 +25,7 @@ def run_llama_bench(
     gen_tokens: int = 128,
     repetitions: int = 3,
     n_gpu_layers: int = 99,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Executes llama-bench with JSON output and parses exact throughput and latencies."""
     llama_bench_bin = shutil.which("llama-bench")
     if not llama_bench_bin:
@@ -63,7 +64,7 @@ def run_llama_bench(
     json_str = stdout_text[json_start:]
     bench_data = json.loads(json_str)
 
-    results: Dict[str, Any] = {
+    results: dict[str, Any] = {
         "model_path": model_path,
         "prompt_tokens": prompt_tokens,
         "gen_tokens": gen_tokens,
@@ -100,7 +101,7 @@ def run_llama_cpp_benchmarks(
     prompt_tokens: int = 512,
     gen_tokens: int = 128,
     repetitions: int = 3,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Runs standardized llama-bench suite across both FP16 and Q4_0 precision targets."""
     print("=" * 70)
     print(

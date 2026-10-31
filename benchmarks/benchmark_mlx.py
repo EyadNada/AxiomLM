@@ -10,15 +10,16 @@ import sys
 # Ensure repository root is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import time
-import math
 import argparse
-from typing import Dict, Any, Tuple, List
+import math
+import time
+from typing import Any
+
 import numpy as np
 
 try:
     import mlx.core as mx
-    import mlx.nn as nn
+    from mlx import nn
 except ImportError:
     print("[Error] MLX is not installed. Install via pip install mlx")
     sys.exit(1)
@@ -47,7 +48,7 @@ class MLXAttention(nn.Module):
         self,
         x: mx.array,
         mask: mx.array = None,
-        cache: Tuple[mx.array, mx.array] = None,
+        cache: tuple[mx.array, mx.array] = None,
     ):
         B, L, _ = x.shape
         q = (
@@ -113,7 +114,7 @@ class MLXBlock(nn.Module):
         self,
         x: mx.array,
         mask: mx.array = None,
-        cache: Tuple[mx.array, mx.array] = None,
+        cache: tuple[mx.array, mx.array] = None,
     ):
         h, new_cache = self.attn(self.ln_1(x), mask=mask, cache=cache)
         x = x + h
@@ -145,7 +146,7 @@ class MLXTransformer(nn.Module):
         self.head = nn.Linear(n_embd, vocab_size, bias=False)
 
     def __call__(
-        self, tokens: mx.array, caches: List[Tuple[mx.array, mx.array]] = None
+        self, tokens: mx.array, caches: list[tuple[mx.array, mx.array]] = None
     ):
         x = self.embed(tokens)
         new_caches = []
@@ -162,7 +163,7 @@ def benchmark_mlx_decode(
     prompt_tokens: int = 512,
     gen_tokens: int = 128,
     repetitions: int = 3,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Measures MLX prompt processing and decode throughput under identical parameters."""
     model = MLXTransformer()
     if dtype == mx.float16:
@@ -226,7 +227,7 @@ def run_mlx_benchmarks(
     prompt_tokens: int = 512,
     gen_tokens: int = 128,
     repetitions: int = 3,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Runs standardized MLX suite for both FP16 and FP32 targets."""
     print("=" * 70)
     print(

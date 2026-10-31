@@ -4,13 +4,13 @@ Captures host hardware, SoC characteristics, operating system, and framework ver
 to guarantee full experimental reproducibility for academic publication.
 """
 
-import os
-import sys
 import json
-import subprocess
+import os
 import platform
 import shutil
-from typing import Dict, Any
+import subprocess
+import sys
+from typing import Any
 
 
 def get_command_output(cmd: list) -> str:
@@ -24,7 +24,7 @@ def get_command_output(cmd: list) -> str:
         return ""
 
 
-def get_git_info() -> Dict[str, str]:
+def get_git_info() -> dict[str, str]:
     """Retrieves current Git commit hash, branch, and working tree dirty status."""
     commit = get_command_output(["git", "rev-parse", "HEAD"])
     branch = get_command_output(["git", "rev-parse", "--abbrev-ref", "HEAD"])
@@ -36,9 +36,9 @@ def get_git_info() -> Dict[str, str]:
     }
 
 
-def get_mac_hardware_telemetry() -> Dict[str, Any]:
+def get_mac_hardware_telemetry() -> dict[str, Any]:
     """Captures Apple Silicon SoC architecture, CPU/GPU core counts, and unified memory."""
-    telemetry: Dict[str, Any] = {
+    telemetry: dict[str, Any] = {
         "os": platform.system(),
         "os_release": platform.release(),
         "os_version": (
@@ -95,9 +95,9 @@ def get_mac_hardware_telemetry() -> Dict[str, Any]:
     return telemetry
 
 
-def get_software_stack_versions() -> Dict[str, str]:
+def get_software_stack_versions() -> dict[str, str]:
     """Captures versions of all installed ML compilers and runtime libraries."""
-    versions: Dict[str, str] = {
+    versions: dict[str, str] = {
         "python": sys.version.split()[0],
     }
 
@@ -134,7 +134,7 @@ def get_software_stack_versions() -> Dict[str, str]:
     return versions
 
 
-def collect_system_telemetry() -> Dict[str, Any]:
+def collect_system_telemetry() -> dict[str, Any]:
     """Collects complete reproducibility manifest."""
     return {
         "hardware": get_mac_hardware_telemetry(),

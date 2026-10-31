@@ -31,9 +31,10 @@ When comparing inference systems, reviewers rightfully scrutinize baseline parit
 | **llama.cpp Metal Baseline** | Q4_0 | `690.2 ± 4.1` | `1.45 ms` | — | `1.00x` |
 | **AxiomLM Quantized Metal GEMV** | **Q8_G64** | **`551.3 ± 4.6`** | **`1.81 ms`** | — | **`0.80x`** |
 | **AxiomLM Quantized Metal GEMV** | **Q4_G64** | **`724.6 ± 1.5`** | **`1.38 ms`** | — | **`1.05x`** |
-| **AxiomLM Speculative Batched QMM** | **Q4_G64 (K=3)** | **`780.4 ± 0.0`** | **`1.28 ms`** | — | **`1.13x`** |
+| **AxiomLM Speculative Batched QMM** | Q4_G64 (Python Loop, K=3) | `790.2 ± 12.3` | `1.27 ms` | — | `1.14x` |
+| **AxiomLM Pure C++ Speculative Engine** | **Q4_G64 (C++ Loop, K=3)** | **`1,055.1 ± 0.8`** | **`0.95 ms`** | — | **`1.53x`** |
 
-> *Note on Short-Context Peaks: In short contexts ($T < 192$) with minimal memory footprint, AxiomLM Q4_G64 reaches up to **`1,035.3 tok/s`**, and multi-token candidate verification compute rate reaches **`2,538.1 tok/s`** ($T=7$).*
+> *Note on Short-Context Peaks: In short contexts ($T < 192$) with minimal memory footprint, AxiomLM Q4_G64 reaches up to **`1,035.3 tok/s`**, Pure C++ Speculative Decoding reaches **`1,104.2 tok/s`**, and multi-token candidate verification compute rate reaches **`2,538.1 tok/s`** ($T=7$).*
 
 ---
 

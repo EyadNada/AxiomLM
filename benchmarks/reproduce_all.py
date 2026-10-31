@@ -11,18 +11,18 @@ import sys
 # Ensure repository root is in python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import json
 import argparse
+import json
 from datetime import datetime
-from typing import Dict, Any
+from typing import Any
 
-from benchmarks.hardware_telemetry import collect_system_telemetry
+from benchmarks.benchmark_axiomlm import run_axiomlm_benchmarks
 from benchmarks.benchmark_llama_cpp import run_llama_cpp_benchmarks
 from benchmarks.benchmark_mlx import run_mlx_benchmarks
-from benchmarks.benchmark_axiomlm import run_axiomlm_benchmarks
+from benchmarks.hardware_telemetry import collect_system_telemetry
 
 
-def generate_markdown_comparison_table(results: Dict[str, Any]) -> str:
+def generate_markdown_comparison_table(results: dict[str, Any]) -> str:
     """Generates a clean Markdown comparison table from the combined benchmark run."""
     lines = []
     lines.append(
@@ -77,11 +77,24 @@ def generate_markdown_comparison_table(results: Dict[str, Any]) -> str:
         f"| **AxiomLM Quantized Metal GEMV** | **Q4_G64** | **`{ax_q4['decode_tok_s']:.1f} ± {ax_q4['decode_stddev']:.1f}`** | **`{ax_q4['decode_latency_ms']:.2f} ms`** | — | **`{(ax_q4['decode_tok_s'] / llama_q4):.2f}x`** |"
     )
 
-    # 8. AxiomLM Speculative Q4
-    ax_spec = results["axiomlm"]["axiomlm_speculative_q4"]
-    lines.append(
-        f"| **AxiomLM Speculative Batched QMM** | **Q4_G64 (K={ax_spec['k']})** | **`{ax_spec['decode_tok_s']:.1f} ± {ax_spec['decode_stddev']:.1f}`** | **`{ax_spec['decode_latency_ms']:.2f} ms`** | — | **`{(ax_spec['decode_tok_s'] / llama_q4):.2f}x`** |"
-    )
+    # 8. AxiomLM Speculative Q4 (Python Loop Baseline)
+    if "axiomlm_speculative_q4_python_loop" in results["axiomlm"]:
+        ax_py = results["axiomlm"]["axiomlm_speculative_q4_python_loop"]
+        lines.append(
+            f"| **AxiomLM Speculative (Python Loop)** | **Q4_G64 (K={ax_py['k']})** | **`{ax_py['decode_tok_s']:.1f} ± {ax_py['decode_stddev']:.1f}`** | **`{ax_py['decode_latency_ms']:.2f} ms`** | — | **`{(ax_py['decode_tok_s'] / llama_q4):.2f}x`** |"
+        )
+
+    # 9. AxiomLM Pure C++ Speculative Engine (Zero Host Overhead)
+    if "axiomlm_speculative_q4_cpp_loop" in results["axiomlm"]:
+        ax_cpp = results["axiomlm"]["axiomlm_speculative_q4_cpp_loop"]
+        lines.append(
+            f"| **AxiomLM Pure C++ Speculative Engine** | **Q4_G64 (K={ax_cpp['k']})** | **`{ax_cpp['decode_tok_s']:.1f} ± {ax_cpp['decode_stddev']:.1f}`** | **`{ax_cpp['decode_latency_ms']:.2f} ms`** | — | **`{(ax_cpp['decode_tok_s'] / llama_q4):.2f}x`** |"
+        )
+    elif "axiomlm_speculative_q4" in results["axiomlm"]:
+        ax_spec = results["axiomlm"]["axiomlm_speculative_q4"]
+        lines.append(
+            f"| **AxiomLM Speculative Batched QMM** | **Q4_G64 (K={ax_spec['k']})** | **`{ax_spec['decode_tok_s']:.1f} ± {ax_spec['decode_stddev']:.1f}`** | **`{ax_spec['decode_latency_ms']:.2f} ms`** | — | **`{(ax_spec['decode_tok_s'] / llama_q4):.2f}x`** |"
+        )
 
     return "\n".join(lines)
 
@@ -91,7 +104,7 @@ def run_full_reproducibility_suite(
     gen_tokens: int = 128,
     repetitions: int = 3,
     output_dir: str = "benchmarks/results",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Runs the complete reproducibility suite across all three frameworks."""
     start_time = datetime.now()
     timestamp_str = start_time.strftime("%Y%m%d_%H%M%S")
