@@ -1,0 +1,1368 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="High-Performance PyTorch Pretraining Framework & Systems SLM">
+      
+      
+        <meta name="author" content="Eyad Nada">
+      
+      
+      
+        <link rel="prev" href="..">
+      
+      
+        <link rel="next" href="../api/models/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Architecture Report - AxiomLM</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#axiomlm-high-performance-autoregressive-language-modeling-with-modern-architectures-and-polar-matrix-optimization" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="AxiomLM" class="md-header__button md-logo" aria-label="AxiomLM" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AxiomLM
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Architecture Report
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="indigo"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="white" data-md-color-accent="indigo"  aria-hidden="true"  type="radio" name="__palette" id="__palette_1">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/EyadNada/AxiomLM" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    EyadNada/AxiomLM
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Overview
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Architecture Report
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../api/models/" class="md-tabs__link">
+          
+  
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+  
+
+<nav class="md-nav md-nav--primary md-nav--lifted md-nav--integrated" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="AxiomLM" class="md-nav__button md-logo" aria-label="AxiomLM" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    AxiomLM
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/EyadNada/AxiomLM" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    EyadNada/AxiomLM
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture Report
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture Report
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-executive-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Executive Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-architectural-mathematics-formulations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Architectural Mathematics &amp; Formulations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Architectural Mathematics &amp; Formulations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-complex-rotary-position-embeddings-rope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Complex Rotary Position Embeddings (RoPE)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-root-mean-square-normalization-rmsnorm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Root Mean Square Normalization (RMSNorm)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-swiglu-gated-feed-forward-networks-single-gemm-fusion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 SwiGLU Gated Feed-Forward Networks &amp; Single-GEMM Fusion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-zero-copy-grouped-query-attention-gqa-sliding-window-ring-buffer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 Zero-Copy Grouped-Query Attention (GQA) &amp; Sliding-Window Ring Buffer
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-optimization-the-muon-matrix-optimizer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Optimization: The Muon Matrix Optimizer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Optimization: The Muon Matrix Optimizer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-quintic-newtonschulz-polar-matrix-orthogonalization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Quintic Newton–Schulz Polar Matrix Orthogonalization
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-hardware-systems-engineering-roofline-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Hardware Systems Engineering &amp; Roofline Analysis
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Hardware Systems Engineering &amp; Roofline Analysis">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-apple-silicon-cpu-vs-gpu-hardware-execution-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Apple Silicon CPU vs. GPU Hardware Execution Paths
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-arithmetic-intensity-roofline-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Arithmetic Intensity &amp; Roofline Model
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-empirical-evaluation-component-ablation-study-apple-m3-pro-18-gb" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Empirical Evaluation &amp; Component Ablation Study (Apple M3 Pro, 18 GB)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Empirical Evaluation &amp; Component Ablation Study (Apple M3 Pro, 18 GB)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-end-to-end-autoregressive-inference-optimization-hierarchy-prompt-512-decode-256-total-context-t-768-b1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 End-to-End Autoregressive Inference Optimization Hierarchy (Prompt = 512, Decode = 256, Total Context T = 768, \(B=1\))
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-controlled-cross-framework-autoregressive-matrix-apple-m3-pro-18-gb" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Controlled Cross-Framework Autoregressive Matrix (Apple M3 Pro, 18 GB)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-architectural-specifications-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Architectural Specifications Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-related-work-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Related Work &amp; References
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/engine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Inference Engine
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/optim/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Optimizer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/dengine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Loader
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="axiomlm-high-performance-autoregressive-language-modeling-with-modern-architectures-and-polar-matrix-optimization">AxiomLM: High-Performance Autoregressive Language Modeling with Modern Architectures and Polar Matrix Optimization</h1>
+<p><strong>Technical Report &amp; Architectural Whitepaper</strong>
+<em>AxiomLM Engineering &amp; Deep Learning Systems Research</em></p>
+<p><a href="../assets/AxiomLM_Research_Paper_Draft.pdf">Download Complete Paper Draft (PDF) :octicons-file-badge-16:</a>{ .md-button .md-button--primary }</p>
+<hr />
+<h2 id="1-executive-summary">1. Executive Summary</h2>
+<p><strong>AxiomLM</strong> is a 124M-class causal language model and bare-metal execution framework engineered to bridge the gap between modern Transformer architectures and low-level hardware execution on <strong>Apple Silicon (<code>Apple M3 Pro</code>: 12-Core ARM64 CPU with 6 Performance + 6 Efficiency cores, 18-Core Metal 4 GPU, 18 GB LPDDR5 Unified Memory)</strong> and NVIDIA CUDA GPUs. While classic autoregressive baselines (such as GPT-2, <strong>124,475,904 parameters</strong> with padded vocabulary <span class="arithmatex">\(V=50,304\)</span>) rely on learned absolute positional embeddings, post-LayerNorm, 12-head Multi-Head Attention (MHA) with <span class="arithmatex">\(O(T^2)\)</span> dynamic memory allocations, and coordinate-wise AdamW updates, AxiomLM (<strong>114,150,144 active weight-tied parameters</strong>; <strong>152,783,616 untied parameters</strong> in Hugging Face <code>.safetensors</code> format) co-designs its algorithmic topology with custom Metal Shading Language (MSL) and ARM NEON SIMD kernels:</p>
+<ul>
+<li><strong>1,035.3 tokens/sec (<code>0.97 ms/tok</code>) Peak Decode Throughput (Q4_G64)</strong>: An <strong>175.5x speedup</strong> over eager PyTorch MPS (<code>5.9 tok/s</code>), <strong>4.20x faster</strong> than the paper FP16 baseline (<code>246.5 tok/s</code>), and <strong>+70% faster</strong> than Apple MLX Q4 (<code>610 tok/s</code>).</li>
+<li><strong>838.9 tokens/sec (<code>1.19 ms/tok</code>) Speculative Batched QMM Decode (<span class="arithmatex">\(K=3\)</span>)</strong>: Multi-token candidate verification in a single Metal command buffer with exact mathematical parity to greedy decoding.</li>
+<li><strong>2,538.1 tokens/sec (<code>0.394 ms/tok</code>) Candidate Verification Rate</strong>: Amortized per-token verification cost for <span class="arithmatex">\(T=7\)</span> candidate tokens evaluated in a single forward pass.</li>
+<li><strong>539.7 tokens/sec (<code>1.85 ms/tok</code>) Near-Lossless Q8_G64 Decode</strong>: Peaking at <code>683.2 tok/s</code> on short context.</li>
+<li><strong>421.7 tokens/sec (<code>2.37 ms/tok</code>) Pure FP16 Decode Runner</strong>: Peaking at <code>489.1 tok/s</code> on short context via 16-token register-tiled Split-KV Flash-Decode.</li>
+<li><strong>969.6 tokens/sec (<code>1.03 ms/tok</code>) at 4096 Context Length</strong>: Bounded to <strong>12.00 MB</strong> of active KV-cache memory via an <span class="arithmatex">\(O(1)\)</span> pre-allocated ring buffer (a <strong>95.8% reduction</strong> vs. 288.00 MB for unbounded FP32 MHA).</li>
+<li><strong>0.00% Perplexity Degradation</strong>: Trained from scratch on TinyStories (<code>exports/AxiomLM-124M</code>, step 1,318, <strong>PPL = 4.21</strong> on held-out passages / <strong>2.13</strong> on short prompts) and TinyShakespeare/Systems (<code>exports/AxiomLM-124M-Systems</code>, step 1,386, <strong>PPL = 8.97</strong>), achieving exact numerical parity (<code>Max Logit Diff = 2.19e-05</code>) between standard PyTorch and fused Metal/NEON kernels.</li>
+<li><strong>52.0% Reduction in Training Steps</strong>: The 5-step quintic Newton–Schulz <strong>Muon</strong> optimizer reaches AdamW's 50-step validation loss (<code>2.9352</code>) in <strong>24 steps</strong> on <code>data/systems_shards</code> (<code>1.2747</code> at step 50).</li>
+</ul>
+<pre><code>                           ┌──────────────────────────────────────────────────────────┐
+                           │                 AxiomLM Causal Transformer               │
+                           └────────────────────────────┬─────────────────────────────┘
+                                                        │
+                                    ┌───────────────────┴───────────────────┐
+                                    ▼                                       ▼
+                     ┌─────────────────────────────┐         ┌─────────────────────────────┐
+                     │   Algorithmic Innovations   │         │     Systems Engineering     │
+                     ├─────────────────────────────┤         ├─────────────────────────────┤
+                     │ • Rotary Embeddings (RoPE)  │         │ • Custom Triton GPU Kernels │
+                     │ • RMSNorm (Pre-Norm)        │         │ • Apple Silicon ARM NEON    │
+                     │ • SwiGLU Gated MLP          │         │ • Apple Metal Shading MSL   │
+                     │ • Zero-Copy GQA (12Q / 4KV) │         │ • Tiled FlashAttention SDPA │
+                     │ • Muon Newton-Schulz Opt    │         │ • O(1) Ring-Buffer KV-Cache │
+                     └─────────────────────────────┘         └─────────────────────────────┘
+</code></pre>
+<hr />
+<h2 id="2-architectural-mathematics-formulations">2. Architectural Mathematics &amp; Formulations</h2>
+<h3 id="21-complex-rotary-position-embeddings-rope">2.1 Complex Rotary Position Embeddings (RoPE)</h3>
+<p>Traditional absolute positional embeddings add a static lookup vector <span class="arithmatex">\(p_t \in \mathbb{R}^d\)</span> to token embeddings <span class="arithmatex">\(x_t\)</span>, which breaks translational invariance in self-attention:
+$<span class="arithmatex">\(\text{Attention}(q_m, k_n) = (x_m + p_m)^T W_q^T W_k (x_n + p_n)\)</span>$</p>
+<p>AxiomLM adopts <strong>Rotary Position Embeddings (RoPE)</strong> (Su et al., 2024), encoding position directly by rotating query and key vectors in complex 2D orthogonal subspaces:
+$<span class="arithmatex">\(R_{\Theta, m}^d = \text{diag}\left( R_{\theta_1, m}, R_{\theta_2, m}, \dots, R_{\theta_{d/2}, m} \right)\)</span>$
+where each <span class="arithmatex">\(2 \times 2\)</span> rotation block is defined as:
+$<span class="arithmatex">\(R_{\theta_i, m} = \begin{pmatrix} \cos(m \theta_i) &amp; -\sin(m \theta_i) \\ \sin(m \theta_i) &amp; \cos(m \theta_i) \end{pmatrix}, \quad \theta_i = 10000^{-2(i-1)/d}\)</span>$</p>
+<p>The inner product between rotated query <span class="arithmatex">\(q_m\)</span> and key <span class="arithmatex">\(k_n\)</span> satisfies:
+$<span class="arithmatex">\(\langle R_{\Theta, m} q, R_{\Theta, n} k \rangle = q^T R_{\Theta, n-m} k = g(q, k, m-n)\)</span>$
+This guarantees that attention weights depend purely on the relative token distance <span class="arithmatex">\((m - n)\)</span> and eliminates the <span class="arithmatex">\(1024 \times 768\)</span> learned positional embedding matrix (<code>wpe</code>, saving <span class="arithmatex">\(786,432\)</span> parameters). In <code>metal_kernels.metal</code>, <code>rope_kernel</code> and <code>rope_half_kernel</code> apply complex rotations in-place using pre-cached contiguous <code>float2</code> frequency pairs (<code>freqs_real</code>) to avoid runtime complex-to-real tensor conversions.</p>
+<hr />
+<h3 id="22-root-mean-square-normalization-rmsnorm">2.2 Root Mean Square Normalization (RMSNorm)</h3>
+<p>Standard LayerNorm enforces zero-mean and unit-variance:
+$<span class="arithmatex">\(\text{LN}(x) = \frac{x - \mu}{\sigma} \odot \gamma + \beta\)</span>$</p>
+<p>Mean-centering (<span class="arithmatex">\(\mu\)</span>) requires an additional reduction pass over the hidden dimension <span class="arithmatex">\(d = 768\)</span>. AxiomLM replaces LayerNorm with <strong>RMSNorm</strong> (Zhang &amp; Sennrich, 2019):
+$<span class="arithmatex">\(\text{RMSNorm}(x) = \frac{x}{\text{RMS}(x)} \odot \gamma, \quad \text{RMS}(x) = \sqrt{\frac{1}{d} \sum_{i=1}^d x_i^2 + \epsilon}\)</span>$</p>
+<p><strong>Hardware Co-Design</strong>: In <code>rmsnorm_forward_kernel</code> and <code>rmsnorm_forward_half_kernel</code>, inputs are loaded via 128-bit vectorized <code>float4</code> / <code>half4</code> transactions, accumulated in thread registers, and reduced across 32-thread warps via the Apple GPU hardware <code>simd_sum()</code> instruction with a single 8-warp <code>threadgroup</code> barrier. This reduces global memory round-trips by <span class="arithmatex">\(74.0\%\)</span> and achieves a <strong>2.03x Forward+Backward speedup</strong> (<code>2.06 ms</code> vs. <code>4.18 ms</code> on Apple M3 Pro) and <strong>3.85x Forward speedup</strong>.</p>
+<hr />
+<h3 id="23-swiglu-gated-feed-forward-networks-single-gemm-fusion">2.3 SwiGLU Gated Feed-Forward Networks &amp; Single-GEMM Fusion</h3>
+<p>Instead of standard two-layer GELU MLPs (<span class="arithmatex">\(W_2 \cdot \text{GELU}(W_1 x)\)</span> with <span class="arithmatex">\(d_{\text{ffn}} = 3072\)</span>), AxiomLM employs the <strong>SwiGLU (Swish-Gated Linear Unit)</strong> architecture (Shazeer, 2020):
+$<span class="arithmatex">\(\text{SwiGLU}(x) = \left( \text{Swish}(x W_{\text{gate}}) \odot (x W_{\text{up}}) \right) W_{\text{down}}, \quad \text{Swish}(z) = z \cdot \sigma(z) = \frac{z}{1 + e^{-z}}\)</span>$</p>
+<p>To maintain parameter balance across the three linear projections (<span class="arithmatex">\(W_{\text{gate}}, W_{\text{up}}, W_{\text{down}}\)</span>), the intermediate hidden dimension is scaled to a multiple of 64:
+$<span class="arithmatex">\(d_{\text{ffn}} = 64 \times \left\lceil \frac{\frac{8}{3} d_{\text{model}}}{64} \right\rceil = 2048\)</span>$</p>
+<p><strong>Hardware Co-Design</strong>: During inference (<code>eval()</code> mode), <code>FusedSwiGLUMLP</code> concatenates <span class="arithmatex">\(W_{\text{gate}}\)</span> and <span class="arithmatex">\(W_{\text{up}}\)</span> into a single cached <span class="arithmatex">\([4096, 768]\)</span> matrix so each Transformer block dispatches <strong>one fused GEMM instead of two</strong>, followed by the 128-bit vectorized <code>swiglu_forward_kernel</code> / <code>swiglu_forward_half_kernel</code> in GPU SRAM.</p>
+<p><img alt="SwiGLU vs GELU Activation Landscape" src="../assets/14_swiglu_vs_gelu_activation_landscape.png" /></p>
+<hr />
+<h3 id="24-zero-copy-grouped-query-attention-gqa-sliding-window-ring-buffer">2.4 Zero-Copy Grouped-Query Attention (GQA) &amp; Sliding-Window Ring Buffer</h3>
+<p>Standard Multi-Head Attention (MHA) allocates <span class="arithmatex">\(n_q = 12\)</span> Query heads and <span class="arithmatex">\(n_{kv} = 12\)</span> Key-Value heads (<span class="arithmatex">\(d_{\text{head}} = 64\)</span>). AxiomLM implements <strong>Grouped-Query Attention (GQA)</strong> (Ainslie et al., 2023) with <span class="arithmatex">\(n_q = 12\)</span> and <span class="arithmatex">\(n_{kv} = 4\)</span> (<span class="arithmatex">\(3:1\)</span> sharing ratio):</p>
+<ol>
+<li><strong>Zero-Copy GQA Dispatch (<code>enable_gqa=True</code>)</strong>: Naive GQA implementations call <code>repeat_kv()</code> to materialize and copy 4 KV heads into 12 KV heads prior to attention, which creates a memory-bandwidth bottleneck during decoding (<code>0.1442 ms</code> per call on M3 Pro). AxiomLM passes the 4-head <span class="arithmatex">\(K, V\)</span> tensors directly into <code>F.scaled_dot_product_attention(..., enable_gqa=True)</code> (<code>0.0135 ms</code>, <strong>10.7x faster dispatch</strong> with zero memory expansion), reducing active KV-cache memory by <strong>66.7% (<span class="arithmatex">\(3\times\)</span>)</strong> in FP32 and <strong>83.3% (<span class="arithmatex">\(6\times\)</span>)</strong> in FP16.</li>
+<li><strong>Pre-Allocated Ring-Buffer KV-Cache &amp; Sliding-Window Attention (SWA)</strong>: Standard PyTorch decoding invokes <code>torch.cat([k_prev, k], dim=2)</code> on every layer and token (<span class="arithmatex">\(24\)</span> allocations per step). AxiomLM provides both a vLLM-style block-table <code>PagedKVCache</code> and a contiguous zero-allocation <code>StaticKVCache</code> pre-allocated to <code>[n_layer, 2, B, n_kv_head, max_seq_len, head_dim]</code>.</li>
+<li><strong>Sliding-Window Eviction Trade-Off</strong>: When <code>ring_buffer=True</code> and sequence length <span class="arithmatex">\(T\)</span> exceeds the ring window <span class="arithmatex">\(W\)</span> (e.g., <span class="arithmatex">\(W = 1024\)</span> at <span class="arithmatex">\(T = 4096\)</span>), new KV states overwrite slot <span class="arithmatex">\(\text{pos} \bmod W\)</span> in <span class="arithmatex">\(O(1)\)</span> time. Mathematically, this converts full causal attention into <strong>Sliding-Window Attention (SWA)</strong> (Beltagy et al., 2020; Jiang et al., 2023) with receptive field <span class="arithmatex">\(W\)</span>:
+   $<span class="arithmatex">\(\text{Attention}_{\text{ring}}(q_t, K, V) = \text{softmax}\left(\frac{q_t K_{t-W+1:t}^T}{\sqrt{d_k}}\right) V_{t-W+1:t}\)</span>$
+   While this bounds the KV-cache footprint to a constant <strong>12.00 MB</strong> at <span class="arithmatex">\(T=4096\)</span> (<strong>95.8% reduction</strong> vs. 288.00 MB unbounded FP32 MHA) and sustains <strong>237.9 tok/s</strong>, tokens evicted prior to <span class="arithmatex">\(t - W\)</span> can no longer be attended to directly; higher-layer representations preserve only compressed summary information unless initial "attention sink" tokens (Xiao et al., 2023) are pinned.</li>
+</ol>
+<p><img alt="KV-Cache Memory Scaling" src="../assets/13_long_context_kv_cache_scaling.png" /></p>
+<hr />
+<h2 id="3-optimization-the-muon-matrix-optimizer">3. Optimization: The Muon Matrix Optimizer</h2>
+<h3 id="31-quintic-newtonschulz-polar-matrix-orthogonalization">3.1 Quintic Newton–Schulz Polar Matrix Orthogonalization</h3>
+<p>Standard first-order optimizers (SGD, AdamW) treat 2D weight matrices <span class="arithmatex">\(W \in \mathbb{R}^{m \times n}\)</span> as flat 1D vectors, ignoring their spectral structure. AxiomLM integrates the <strong>Muon (MomentUm Orthogonalized by Newton–Schulz)</strong> optimizer (Jordan et al., 2024) for all internal 2D weight matrices (routing 1D RMSNorm gains and token embeddings to AdamW). Given Nesterov momentum matrix <span class="arithmatex">\(G\)</span>, Muon approximates the orthogonal polar factor <span class="arithmatex">\(U = G(G^TG)^{-1/2}\)</span> via a 5-step quintic Newton–Schulz polynomial iteration:</p>
+<div class="arithmatex">\[X_0 = \frac{G}{\|G\|_F + \epsilon}$$
+$$X_{k+1} = a X_k + B_k X_k, \quad \text{where } A_k = X_k X_k^T, \quad B_k = b A_k + c A_k^2\]</div>
+<p>With minimax quintic coefficients:
+$<span class="arithmatex">\(a = 3.4445, \quad b = -4.7750, \quad c = 2.0315\)</span>$</p>
+<p><strong>Spectral Convergence Behavior</strong>: Unlike standard cubic Newton–Schulz (<span class="arithmatex">\(\frac{1}{2}X(3I - X^TX)\)</span>), which converges monotonically to <span class="arithmatex">\(1.0\)</span> but requires 10–15 steps, the quintic polynomial <span class="arithmatex">\(p(x) = 3.4445x - 4.7750x^3 + 2.0315x^5\)</span> maximizes the derivative near zero (<span class="arithmatex">\(p'(0) = 3.4445 &gt; 3\)</span>) to lift tiny singular values rapidly within <span class="arithmatex">\(k = 5\)</span> steps. Consequently, after 5 iterations, the singular values <span class="arithmatex">\(\sigma_i(X_5)\)</span> are compressed into a tight equioscillating band <strong><span class="arithmatex">\([1 - \delta, 1 + \delta] \approx [0.7, 1.3]\)</span> around <span class="arithmatex">\(1.0\)</span></strong> (rather than exactly <span class="arithmatex">\(1.0000\)</span>). Executing these 15 dense matrix multiplications in native FP16 on the Apple M3 Pro GPU prevents gradient collapse along low-rank singular directions and reduces the training steps required to match AdamW's 50-step loss by <strong>52.0%</strong>.</p>
+<p><img alt="Muon 5-Step Newton-Schulz Singular Value Spectrum Compression" src="../assets/11_newton_schulz_spectral_flattening.png" /></p>
+<hr />
+<h2 id="4-hardware-systems-engineering-roofline-analysis">4. Hardware Systems Engineering &amp; Roofline Analysis</h2>
+<h3 id="41-apple-silicon-cpu-vs-gpu-hardware-execution-paths">4.1 Apple Silicon CPU vs. GPU Hardware Execution Paths</h3>
+<p>On the <strong>Apple M3 Pro SoC</strong>, CPU and GPU cores share <strong>18 GB of LPDDR5 Unified Memory</strong> behind the System Level Cache (SLC), but utilize distinct instruction sets and execution units:</p>
+<ol>
+<li><strong>18-Core Metal 4 GPU (<code>axiomlm/kernels/metal_kernels.metal</code>, <code>mps_kernels.mm</code>)</strong>:</li>
+<li><strong>32-Lane SIMD-Group Reductions</strong>: <code>rmsnorm_forward_kernel</code>, <code>cross_entropy_forward_kernel</code>, and <code>cross_entropy_backward_kernel</code> execute warp-level reductions in hardware registers via <code>simd_sum()</code> and <code>simd_max()</code>, synchronizing across warps using a 32-float <code>threadgroup</code> shared-memory array.</li>
+<li><strong>Single-Pass Online Normalizer Cross-Entropy</strong>: Rather than materializing intermediate softmax tensors or scanning vocabulary logits (<span class="arithmatex">\(V = 50,304\)</span>) three times, <code>cross_entropy_forward_kernel</code> computes the running maximum <span class="arithmatex">\(m\)</span> and rescaled exponential sum <span class="arithmatex">\(s \leftarrow s \cdot \exp(m_{\text{old}} - m_{\text{new}}) + \exp(x - m_{\text{new}})\)</span> (Milakov &amp; Gimelshein, 2018) in a <strong>single memory pass</strong>, achieving a <strong>3.07x Forward+Backward speedup</strong> (<code>24.34 ms</code> vs. <code>74.71 ms</code>).</li>
+<li><strong>Note on GPU <code>simdgroup</code> vs. CPU AMX</strong>: On Apple Silicon, the <strong>Apple Matrix Coprocessor (AMX)</strong> is attached to the <strong>ARM64 CPU cores</strong> (invoked via Apple Accelerate / <code>cblas</code> during CPU matrix operations), whereas GPU matrix operations execute on the <strong>18-core Metal GPU</strong> via MPSGraph and Metal <code>simdgroup</code> instructions.</li>
+<li><strong>12-Core ARM64 CPU (<code>axiomlm/kernels/cpu_neon_kernels.cpp</code>)</strong>:</li>
+<li>Compiled with <code>-O3 -ffast-math -mcpu=apple-m3</code>, processing 4 FP32 elements per cycle in 128-bit <code>float32x4_t</code> registers using <code>vfmaq_f32</code> (vector fused multiply-accumulate) and <code>vaddvq_f32</code> horizontal reductions.</li>
+</ol>
+<h3 id="42-arithmetic-intensity-roofline-model">4.2 Arithmetic Intensity &amp; Roofline Model</h3>
+<div class="arithmatex">\[\text{Arithmetic Intensity } (I) = \frac{\text{Total FLOPs}}{\text{Total Bytes Transferred from Unified Memory}}\]</div>
+<p><img alt="Hardware Roofline Model" src="../assets/12_hardware_roofline_mfu_analysis.png" /></p>
+<hr />
+<h2 id="5-empirical-evaluation-component-ablation-study-apple-m3-pro-18-gb">5. Empirical Evaluation &amp; Component Ablation Study (<code>Apple M3 Pro</code>, 18 GB)</h2>
+<p>All benchmarks below can be reproduced directly via <code>python examples/04_paper_ablations_and_perplexity.py</code>.</p>
+<h3 id="51-end-to-end-autoregressive-inference-optimization-hierarchy-prompt-512-decode-256-total-context-t-768-b1">5.1 End-to-End Autoregressive Inference Optimization Hierarchy (<code>Prompt = 512, Decode = 256, Total Context T = 768</code>, <span class="arithmatex">\(B=1\)</span>)</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Optimization Stage</th>
+<th style="text-align: center;">KV Heads</th>
+<th style="text-align: center;">Kernels &amp; Execution Mode</th>
+<th style="text-align: center;">Cache &amp; Quantization</th>
+<th style="text-align: center;">Throughput (<code>tok/s</code>)</th>
+<th style="text-align: center;">Speedup vs. Stage 1</th>
+<th style="text-align: center;">Latency (<code>ms/tok</code>)</th>
+<th style="text-align: center;">Active KV Cache (<code>MB</code>)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>1. Classic MHA (Eager <span class="arithmatex">\(O(T^2)\)</span>, No Cache)</strong></td>
+<td style="text-align: center;">12</td>
+<td style="text-align: center;">Standard PyTorch MPS</td>
+<td style="text-align: center;">None (FP32)</td>
+<td style="text-align: center;"><code>5.9 tok/s</code></td>
+<td style="text-align: center;"><code>1.00x</code></td>
+<td style="text-align: center;"><code>169.49 ms</code></td>
+<td style="text-align: center;"><code>54.00 MB</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>2. + Dynamic KV-Cache (Classic MHA)</strong></td>
+<td style="text-align: center;">12</td>
+<td style="text-align: center;">Standard PyTorch MPS</td>
+<td style="text-align: center;">Tuple <code>torch.cat</code> (FP32)</td>
+<td style="text-align: center;"><code>124.1 tok/s</code></td>
+<td style="text-align: center;"><code>21.03x</code></td>
+<td style="text-align: center;"><code>8.06 ms</code></td>
+<td style="text-align: center;"><code>53.93 MB</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>3. + Modern Zero-Copy GQA + Static KV</strong></td>
+<td style="text-align: center;">4</td>
+<td style="text-align: center;">Standard PyTorch MPS</td>
+<td style="text-align: center;"><code>StaticKVCache</code> (FP32)</td>
+<td style="text-align: center;"><code>162.6 tok/s</code></td>
+<td style="text-align: center;"><code>27.56x</code></td>
+<td style="text-align: center;"><code>6.15 ms</code></td>
+<td style="text-align: center;"><code>18.00 MB</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>4. + Fused Metal/NEON Kernels (FP32 Engine)</strong></td>
+<td style="text-align: center;">4</td>
+<td style="text-align: center;">Fused Metal / NEON</td>
+<td style="text-align: center;"><code>StaticKVCache</code> (FP32)</td>
+<td style="text-align: center;"><code>181.1 tok/s</code></td>
+<td style="text-align: center;"><code>30.70x</code></td>
+<td style="text-align: center;"><code>5.52 ms</code></td>
+<td style="text-align: center;"><code>18.00 MB</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>5. + Native FP16 Fused Metal + Static Ring KV</strong></td>
+<td style="text-align: center;">4</td>
+<td style="text-align: center;">Fused Metal (<code>half4</code>)</td>
+<td style="text-align: center;"><code>StaticKVCache</code> (FP16)</td>
+<td style="text-align: center;"><code>246.5 tok/s</code></td>
+<td style="text-align: center;"><code>41.78x</code></td>
+<td style="text-align: center;"><code>4.06 ms</code></td>
+<td style="text-align: center;"><code>9.00 MB</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>6. + C++ Decode Graph Runner (<code>MPSDecodeRunner</code>)</strong></td>
+<td style="text-align: center;">4</td>
+<td style="text-align: center;">Pure C++ Metal Encoder</td>
+<td style="text-align: center;"><code>StaticKVCache</code> (FP16)</td>
+<td style="text-align: center;"><strong><code>421.7 tok/s</code></strong></td>
+<td style="text-align: center;"><strong><code>71.47x</code></strong></td>
+<td style="text-align: center;"><strong><code>2.37 ms</code></strong></td>
+<td style="text-align: center;"><strong><code>9.00 MB</code></strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>7. + Split-KV Flash-Decode (<span class="arithmatex">\(B_r=16\)</span>) Short-Context</strong></td>
+<td style="text-align: center;">4</td>
+<td style="text-align: center;">Tiled Split-KV MSL</td>
+<td style="text-align: center;"><code>StaticKVCache</code> (FP16)</td>
+<td style="text-align: center;"><strong><code>489.1 tok/s</code></strong></td>
+<td style="text-align: center;"><strong><code>82.90x</code></strong></td>
+<td style="text-align: center;"><strong><code>2.04 ms</code></strong></td>
+<td style="text-align: center;"><strong><code>2.25 MB</code></strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>8. + In-Register Q8_G64 Quantized GEMV</strong></td>
+<td style="text-align: center;">4</td>
+<td style="text-align: center;"><code>qmv_q8_g64</code> MSL</td>
+<td style="text-align: center;">Static Ring (Q8 Weights)</td>
+<td style="text-align: center;"><strong><code>539.7 tok/s</code></strong></td>
+<td style="text-align: center;"><strong><code>91.47x</code></strong></td>
+<td style="text-align: center;"><strong><code>1.85 ms</code></strong></td>
+<td style="text-align: center;"><strong><code>9.00 MB</code></strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>9. + In-Register Q4_G64 Quantized GEMV (Standard)</strong></td>
+<td style="text-align: center;">4</td>
+<td style="text-align: center;"><code>qmv_q4_g64</code> MSL</td>
+<td style="text-align: center;">Static Ring (Q4 Weights)</td>
+<td style="text-align: center;"><strong><code>767.5 tok/s</code></strong></td>
+<td style="text-align: center;"><strong><code>130.08x</code></strong></td>
+<td style="text-align: center;"><strong><code>1.30 ms</code></strong></td>
+<td style="text-align: center;"><strong><code>9.00 MB</code></strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>10. + In-Register Q4_G64 Short-Context Peak</strong></td>
+<td style="text-align: center;">4</td>
+<td style="text-align: center;"><code>qmv_q4_g64</code> MSL</td>
+<td style="text-align: center;">Short Arena (<span class="arithmatex">\(T &lt; 192\)</span>)</td>
+<td style="text-align: center;"><strong><code>1,035.3 tok/s</code></strong></td>
+<td style="text-align: center;"><strong><code>175.47x</code></strong></td>
+<td style="text-align: center;"><strong><code>0.97 ms</code></strong></td>
+<td style="text-align: center;"><strong><code>2.25 MB</code></strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>11. + Speculative Batched QMM Decoding (<span class="arithmatex">\(K=3\)</span>)</strong></td>
+<td style="text-align: center;">4</td>
+<td style="text-align: center;"><code>qmm_q4_g64</code> + Prompt Lookup</td>
+<td style="text-align: center;">Speculative Cache (Q4)</td>
+<td style="text-align: center;"><strong><code>838.9 tok/s</code></strong></td>
+<td style="text-align: center;"><strong><code>142.19x</code></strong></td>
+<td style="text-align: center;"><strong><code>1.19 ms</code></strong></td>
+<td style="text-align: center;"><strong><code>9.00 MB</code></strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>12. Multi-Token Verification Compute Rate (<span class="arithmatex">\(T=7\)</span>)</strong></td>
+<td style="text-align: center;">4</td>
+<td style="text-align: center;"><code>qmm_q4_g64</code> C++ <code>verify_step</code></td>
+<td style="text-align: center;">Multi-Token Register Stream</td>
+<td style="text-align: center;"><strong><code>2,538.1 tok/s</code></strong></td>
+<td style="text-align: center;"><strong><code>430.19x</code></strong></td>
+<td style="text-align: center;"><strong><code>0.394 ms</code></strong></td>
+<td style="text-align: center;"><strong><code>9.00 MB</code></strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Long-Context 4096-Token Ring-Buffer (<span class="arithmatex">\(W=1024\)</span>, Q4)</strong></td>
+<td style="text-align: center;">4</td>
+<td style="text-align: center;"><code>qmv_q4_g64</code> + Split-KV</td>
+<td style="text-align: center;">Rolling Ring (Q4 Weights)</td>
+<td style="text-align: center;"><strong><code>969.6 tok/s</code></strong></td>
+<td style="text-align: center;"><strong><code>164.34x</code></strong></td>
+<td style="text-align: center;"><strong><code>1.03 ms</code></strong></td>
+<td style="text-align: center;"><strong><code>12.00 MB</code></strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="52-controlled-cross-framework-autoregressive-matrix-apple-m3-pro-18-gb">5.2 Controlled Cross-Framework Autoregressive Matrix (Apple M3 Pro, 18 GB)</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Framework / Engine</th>
+<th style="text-align: center;">Precision</th>
+<th style="text-align: center;">Model Footprint</th>
+<th style="text-align: center;">Decode Speed (<code>tok/s</code>)</th>
+<th style="text-align: center;">Step Latency</th>
+<th style="text-align: center;">Relative Speedup vs. Eager MPS</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>PyTorch MPS Eager (Un-cached)</strong></td>
+<td style="text-align: center;">FP32</td>
+<td style="text-align: center;"><code>456.6 MB</code></td>
+<td style="text-align: center;"><code>5.9 tok/s</code></td>
+<td style="text-align: center;"><code>169.49 ms/tok</code></td>
+<td style="text-align: center;"><code>1.00x</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>AxiomLM Research Paper Baseline</strong></td>
+<td style="text-align: center;">FP16</td>
+<td style="text-align: center;"><code>228.3 MB</code></td>
+<td style="text-align: center;"><code>246.5 tok/s</code></td>
+<td style="text-align: center;"><code>4.06 ms/tok</code></td>
+<td style="text-align: center;"><code>41.78x</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>PyTorch MPS Eager (Cached Static KV)</strong></td>
+<td style="text-align: center;">FP16</td>
+<td style="text-align: center;"><code>228.3 MB</code></td>
+<td style="text-align: center;"><code>273.3 – 364.9 tok/s</code></td>
+<td style="text-align: center;"><code>2.74 – 3.66 ms/tok</code></td>
+<td style="text-align: center;"><code>46.3x – 61.8x</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Apple <code>MLX</code> (<code>v0.32.4</code>, Native Metal Graph)</strong></td>
+<td style="text-align: center;">FP16</td>
+<td style="text-align: center;"><code>228.3 MB</code></td>
+<td style="text-align: center;"><code>345.7 tok/s</code></td>
+<td style="text-align: center;"><code>2.89 ms/tok</code></td>
+<td style="text-align: center;"><code>58.59x</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong><code>llama.cpp</code> (<code>v0.7.0</code>, Native Metal GGUF <code>F16</code>)</strong></td>
+<td style="text-align: center;">FP16</td>
+<td style="text-align: center;"><code>228.3 MB</code></td>
+<td style="text-align: center;"><code>384.9 tok/s</code></td>
+<td style="text-align: center;"><code>2.60 ms/tok</code></td>
+<td style="text-align: center;"><code>65.24x</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>AxiomLM Modern Decode Runner</strong></td>
+<td style="text-align: center;"><strong>FP16</strong></td>
+<td style="text-align: center;"><code>228.3 MB</code></td>
+<td style="text-align: center;"><strong><code>421.7 tok/s</code></strong></td>
+<td style="text-align: center;"><strong><code>2.37 ms/tok</code></strong></td>
+<td style="text-align: center;"><strong><code>71.47x</code></strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><em>AxiomLM FP16 Short-Context Peak</em></td>
+<td style="text-align: center;"><em>FP16</em></td>
+<td style="text-align: center;"><code>228.3 MB</code></td>
+<td style="text-align: center;"><strong><code>489.1 tok/s</code></strong></td>
+<td style="text-align: center;"><strong><code>2.04 ms/tok</code></strong></td>
+<td style="text-align: center;"><strong><code>82.90x</code></strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Apple <code>MLX</code> (<code>v0.32.4</code>, <code>Q4_0</code>)</strong></td>
+<td style="text-align: center;">Q4_0</td>
+<td style="text-align: center;"><code>68.5 MB</code></td>
+<td style="text-align: center;"><code>580 – 620 tok/s</code></td>
+<td style="text-align: center;"><code>1.61 – 1.72 ms/tok</code></td>
+<td style="text-align: center;"><code>98.3x – 105.1x</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong><code>llama.cpp</code> (<code>v0.7.0</code>, <code>Q4_0</code>)</strong></td>
+<td style="text-align: center;">Q4_0</td>
+<td style="text-align: center;"><code>67.4 MB</code></td>
+<td style="text-align: center;"><code>720 – 780 tok/s</code></td>
+<td style="text-align: center;"><code>1.28 – 1.39 ms/tok</code></td>
+<td style="text-align: center;"><code>122.0x – 132.2x</code></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>AxiomLM Quantized Metal GEMV</strong></td>
+<td style="text-align: center;"><strong>Q8_G64 (Near-Lossless)</strong></td>
+<td style="text-align: center;"><code>121.3 MB</code></td>
+<td style="text-align: center;"><strong><code>539.7 tok/s</code></strong></td>
+<td style="text-align: center;"><strong><code>1.85 ms/tok</code></strong></td>
+<td style="text-align: center;"><strong><code>91.47x</code></strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>AxiomLM Quantized Metal GEMV</strong></td>
+<td style="text-align: center;"><strong>Q4_G64 (Standard)</strong></td>
+<td style="text-align: center;"><code>64.2 MB</code></td>
+<td style="text-align: center;"><strong><code>767.5 tok/s</code></strong></td>
+<td style="text-align: center;"><strong><code>1.30 ms/tok</code></strong></td>
+<td style="text-align: center;"><strong><code>130.08x</code></strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><em>AxiomLM Q4 Short-Context Peak</em></td>
+<td style="text-align: center;"><em>Q4_G64</em></td>
+<td style="text-align: center;"><code>64.2 MB</code></td>
+<td style="text-align: center;"><strong><code>1,035.3 tok/s</code></strong></td>
+<td style="text-align: center;"><strong><code>0.97 ms/tok</code></strong></td>
+<td style="text-align: center;"><strong><code>175.47x</code></strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>AxiomLM Speculative Batched QMM</strong></td>
+<td style="text-align: center;"><strong>Q4_G64 (<span class="arithmatex">\(K=3\)</span>)</strong></td>
+<td style="text-align: center;"><code>64.2 MB</code></td>
+<td style="text-align: center;"><strong><code>838.9 tok/s</code></strong></td>
+<td style="text-align: center;"><strong><code>1.19 ms/tok</code></strong></td>
+<td style="text-align: center;"><strong><code>142.19x</code></strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>AxiomLM Candidate Verification Rate</strong></td>
+<td style="text-align: center;"><strong>Q4_G64 (<span class="arithmatex">\(T=7\)</span>)</strong></td>
+<td style="text-align: center;"><code>64.2 MB</code></td>
+<td style="text-align: center;"><strong><code>2,538.1 tok/s</code> eff.</strong></td>
+<td style="text-align: center;"><strong><code>0.394 ms/tok</code></strong></td>
+<td style="text-align: center;"><strong><code>430.19x</code></strong></td>
+</tr>
+</tbody>
+</table>
+<p><img alt="Apple M3 Pro 5-Stage Ablation and Ring Buffer" src="../assets/15_apple_m3_pro_ablation_and_ring_buffer.png" /></p>
+<hr />
+<h2 id="6-architectural-specifications-summary">6. Architectural Specifications Summary</h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Hyperparameter</th>
+<th style="text-align: left;">Classic Baseline (<code>arch="classic"</code>, GPT-2)</th>
+<th style="text-align: left;">AxiomLM Modern Specification (<code>arch="modern"</code>)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Total Parameters</strong></td>
+<td style="text-align: left;"><strong>124,475,904</strong> (<span class="arithmatex">\(V=50,304\)</span>) / 124,439,808 (<span class="arithmatex">\(V=50,257\)</span>)</td>
+<td style="text-align: left;"><strong>114,150,144 active tied</strong> (<strong>152,783,616 untied</strong> HF format)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Trained Checkpoints</strong></td>
+<td style="text-align: left;">Baseline Reference</td>
+<td style="text-align: left;"><code>AxiomLM-124M</code> (Step 1,318, PPL <strong>4.21</strong>) &amp; <code>AxiomLM-124M-Systems</code> (Step 1,386, PPL <strong>8.97</strong>)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Layers (<span class="arithmatex">\(n_{\text{layer}}\)</span>)</strong></td>
+<td style="text-align: left;">12</td>
+<td style="text-align: left;"><strong>12</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Hidden Dimension (<span class="arithmatex">\(d_{\text{model}}\)</span>)</strong></td>
+<td style="text-align: left;">768</td>
+<td style="text-align: left;"><strong>768</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Attention Query Heads (<span class="arithmatex">\(n_{\text{head}}\)</span>)</strong></td>
+<td style="text-align: left;">12</td>
+<td style="text-align: left;"><strong>12</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Key-Value Heads (<span class="arithmatex">\(n_{\text{kv}}\)</span>)</strong></td>
+<td style="text-align: left;">12 (MHA)</td>
+<td style="text-align: left;"><strong>4 (Zero-Copy Grouped-Query Attention)</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Positional Encoding</strong></td>
+<td style="text-align: left;">Learned Absolute (<code>wpe</code>, 1024)</td>
+<td style="text-align: left;"><strong>Rotary Position Embeddings (RoPE, <span class="arithmatex">\(\theta=10000.0\)</span>)</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Normalization</strong></td>
+<td style="text-align: left;">Post-LayerNorm</td>
+<td style="text-align: left;"><strong>Pre-RMSNorm (Fused Metal <code>simd_sum</code> / NEON)</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Feed-Forward Network</strong></td>
+<td style="text-align: left;">2-Layer GELU (3072)</td>
+<td style="text-align: left;"><strong>SwiGLU Bilinear Gating (2048, Fused Gate+Up GEMM)</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Primary Optimizer</strong></td>
+<td style="text-align: left;">AdamW</td>
+<td style="text-align: left;"><strong>Muon (5-Step Quintic Newton–Schulz) + AdamW</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Decoding Engine</strong></td>
+<td style="text-align: left;">Eager Full Recompute</td>
+<td style="text-align: left;"><strong><span class="arithmatex">\(O(1)\)</span> Static Ring-Buffer &amp; Block-Table <code>PagedKVCache</code></strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Benchmark Hardware</strong></td>
+<td style="text-align: left;">Apple M3 Pro (12C CPU, 18C GPU, 18 GB)</td>
+<td style="text-align: left;"><strong>Apple M3 Pro (12C CPU: 6P+6E, 18C GPU, 18 GB Unified Memory)</strong></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7-related-work-references">7. Related Work &amp; References</h2>
+<ol>
+<li><strong>Vaswani, A., et al.</strong> (2017). <em>Attention Is All You Need</em>. Advances in Neural Information Processing Systems (NeurIPS), 30.</li>
+<li><strong>Radford, A., et al.</strong> (2019). <em>Language Models are Unsupervised Multitask Learners</em>. OpenAI Technical Report (GPT-2).</li>
+<li><strong>Zhang, B., &amp; Sennrich, R.</strong> (2019). <em>Root Mean Square Layer Normalization</em>. Advances in Neural Information Processing Systems (NeurIPS), 32.</li>
+<li><strong>Shazeer, N.</strong> (2020). <em>GLU Variants Improve Transformer</em>. arXiv preprint arXiv:2002.05202.</li>
+<li><strong>Su, J., et al.</strong> (2024). <em>RoFormer: Enhanced Transformer with Rotary Position Embedding</em>. Neurocomputing, 568, 127063.</li>
+<li><strong>Ainslie, J., et al.</strong> (2023). <em>GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints</em>. Proceedings of EMNLP 2023.</li>
+<li><strong>Dao, T.</strong> (2023). <em>FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning</em>. arXiv preprint arXiv:2307.08691.</li>
+<li><strong>Milakov, M., &amp; Gimelshein, N.</strong> (2018). <em>Online Normalizer Calculation for Softmax</em>. arXiv preprint arXiv:1805.02867.</li>
+<li><strong>Kwon, W., et al.</strong> (2023). <em>Efficient Memory Management for Large Language Model Serving with PagedAttention</em>. Proceedings of ACM SOSP 2023 (vLLM).</li>
+<li><strong>Xiao, G., et al.</strong> (2023). <em>Efficient Streaming Language Models with Attention Sinks (StreamingLLM)</em>. ICLR 2024.</li>
+<li><strong>Beltagy, I., Peters, M. E., &amp; Cohan, A.</strong> (2020). <em>Longformer: The Long-Document Transformer</em>. arXiv preprint arXiv:2004.05150.</li>
+<li><strong>Jordan, K., Bernstein, J., et al.</strong> (2024). <em>Muon: An Optimizer for Hidden Layers in Neural Networks</em>. Technical Report.</li>
+</ol>
+<hr />
+<p><em>AxiomLM — Engineered for reproducible systems performance, mathematical rigor, and bare-metal hardware efficiency.</em></p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "toc.integrate", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="../javascripts/mathjax.js"></script>
+      
+        <script src="https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
