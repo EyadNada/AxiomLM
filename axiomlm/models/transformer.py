@@ -336,6 +336,56 @@ class Transformer(nn.Module):
         device = idx.device
         B, T = idx.size()
 
+        # Ultra-fast C++ Whole-Model Decode / Speculative Verification Graph Runner for T in [1, 8], B=1 on MPS
+        if (
+            1 <= T <= 8
+            and B == 1
+            and not self.training
+            and not torch.is_grad_enabled()
+            and device.type == "mps"
+            and kv_caches is not None
+            and len(kv_caches) == self.config.n_layer
+            and hasattr(kv_caches[0], "total_seen_tokens")
+            and (T == 1 or kv_caches[0].total_seen_tokens[0] > 0)
+        ):
+            cache0 = kv_caches[0]
+            runner = self.get_decode_runner(cache0)
+            if runner is not None and hasattr(runner, "get_last_norm"):
+                seen = cache0.total_seen_tokens[0]
+                max_seq = cache0.max_seq_len
+                write_pos = (
+                    (seen % max_seq)
+                    if (cache0.ring_buffer or seen >= max_seq)
+                    else seen
+                )
+                new_seen = seen + T
+                active_len = min(new_seen, max_seq)
+                rope_pos = seen % self.freqs_real.size(0)
+
+                if T == 1:
+                    logits = runner.step(idx, rope_pos, write_pos, active_len)
+                else:
+                    logits = runner.verify_step(idx, rope_pos, write_pos, active_len)
+                if not return_all_logits and T > 1:
+                    logits = logits[:, -1:, :]
+                n_L = self.config.n_layer
+                cache0.total_seen_tokens[:] = [new_seen] * n_L
+                cache0.layer_seq_lens[:] = [active_len] * n_L
+
+                medusa_logits: list[torch.Tensor] = []
+                if self.medusa_heads is not None:
+                    x_norm = runner.get_last_norm(T)
+                    if not return_all_logits and T > 1:
+                        x_norm = x_norm[:, -1:, :]
+                    for head in self.medusa_heads:
+                        medusa_logits.append(head(x_norm))
+
+                return (
+                    logits,
+                    medusa_logits,
+                    kv_caches,
+                )
+
         if self.config.pos_emb == "learned":
             pos = torch.arange(0, T, dtype=torch.long, device=device)
             pos_emb = self.transformer.wpe(pos)

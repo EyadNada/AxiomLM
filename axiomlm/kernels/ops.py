@@ -351,6 +351,48 @@ class FusedSwiGLUMLP(nn.Module):
 # ----------------------------------------------------------------------------
 
 
+def _safe_sdpa(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    is_causal: bool = False,
+) -> torch.Tensor:
+    """Dispatches to F.scaled_dot_product_attention with resilient fallback for Metal compiler/pipeline errors."""
+    try:
+        if attn_mask is not None:
+            return F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        return F.scaled_dot_product_attention(q, k, v, is_causal=is_causal)
+    except RuntimeError as e:
+        err_str = str(e)
+        if (
+            "CompilerError" in err_str
+            or "pipeline state object" in err_str
+            or "deferred-static-alloca-size" in err_str
+            or "cooperative_tensor" in err_str
+            or "failed to create" in err_str.lower()
+            or "metal" in err_str.lower()
+        ):
+            # Apple Metal MPS compiler limitation on headless/virtualized CI runners:
+            # Fall back to eager mathematically equivalent scaled dot-product attention
+            scale = 1.0 / math.sqrt(q.size(-1))
+            scores = torch.matmul(q, k.transpose(-2, -1)) * scale
+            if is_causal and attn_mask is None:
+                T_q, T_k = q.size(-2), k.size(-2)
+                c_mask = torch.ones(T_q, T_k, dtype=torch.bool, device=q.device).tril(
+                    diagonal=T_k - T_q
+                )
+                scores = scores.masked_fill(~c_mask, float("-inf"))
+            elif attn_mask is not None:
+                if attn_mask.dtype == torch.bool:
+                    scores = scores.masked_fill(~attn_mask, float("-inf"))
+                else:
+                    scores = scores + attn_mask
+            weights = F.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype)
+            return torch.matmul(weights, v)
+        raise
+
+
 class FusedSDPAFunction(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -386,9 +428,9 @@ class FusedSDPAFunction(torch.autograd.Function):
                     diagonal=-sliding_window
                 )
                 attn_mask = causal_mask & ~window_mask
-                out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+                out = _safe_sdpa(q, k, v, attn_mask=attn_mask)
             else:
-                out = F.scaled_dot_product_attention(q, k, v, is_causal=is_causal)
+                out = _safe_sdpa(q, k, v, is_causal=is_causal)
 
         ctx.save_for_backward(q, k, v)
         ctx.is_causal = is_causal
@@ -414,53 +456,11 @@ class FusedSDPAFunction(torch.autograd.Function):
                     diagonal=-ctx.sliding_window
                 )
                 attn_mask = causal_mask & ~window_mask
-                out = F.scaled_dot_product_attention(q_, k_, v_, attn_mask=attn_mask)
+                out = _safe_sdpa(q_, k_, v_, attn_mask=attn_mask)
             else:
-                out = F.scaled_dot_product_attention(
-                    q_, k_, v_, is_causal=ctx.is_causal
-                )
+                out = _safe_sdpa(q_, k_, v_, is_causal=ctx.is_causal)
             out.backward(grad_output)
         return q_.grad, k_.grad, v_.grad, None, None
-
-
-def _safe_sdpa(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    attn_mask: torch.Tensor | None = None,
-    is_causal: bool = False,
-) -> torch.Tensor:
-    """Dispatches to F.scaled_dot_product_attention with resilient fallback for Metal compiler/pipeline errors."""
-    try:
-        if attn_mask is not None:
-            return F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
-        return F.scaled_dot_product_attention(q, k, v, is_causal=is_causal)
-    except RuntimeError as e:
-        err_str = str(e)
-        if (
-            "CompilerError" in err_str
-            or "pipeline state object" in err_str
-            or "deferred-static-alloca-size" in err_str
-            or "cooperative_tensor" in err_str
-        ):
-            # Apple Metal MPS compiler limitation on headless/virtualized CI runners:
-            # Fall back to eager mathematically equivalent scaled dot-product attention
-            scale = 1.0 / math.sqrt(q.size(-1))
-            scores = torch.matmul(q, k.transpose(-2, -1)) * scale
-            if is_causal:
-                T_q, T_k = q.size(-2), k.size(-2)
-                c_mask = torch.ones(T_q, T_k, dtype=torch.bool, device=q.device).tril(
-                    diagonal=T_k - T_q
-                )
-                scores = scores.masked_fill(~c_mask, float("-inf"))
-            elif attn_mask is not None:
-                if attn_mask.dtype == torch.bool:
-                    scores = scores.masked_fill(~attn_mask, float("-inf"))
-                else:
-                    scores = scores + attn_mask
-            weights = F.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype)
-            return torch.matmul(weights, v)
-        raise
 
 
 def fused_sdpa(

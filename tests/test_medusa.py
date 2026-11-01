@@ -200,6 +200,7 @@ class TestMedusaSpeculative(unittest.TestCase):
         Verify that training Medusa heads on a repeated sequence enables high
         draft acceptance rate (>65%) and reduces total model forward passes.
         """
+        torch.manual_seed(42)
         dtype = torch.float16 if self.device.type == "mps" else torch.float32
         model = Transformer(self.config).to(device=self.device, dtype=dtype).eval()
         model.add_medusa_heads(num_heads=3)
@@ -268,7 +269,12 @@ class TestMedusaSpeculative(unittest.TestCase):
         """Verify Medusa speculative decoding produces exact greedy parity under Q4_G64 quantization."""
         if not is_mps_available():
             self.skipTest("MPS backend unavailable")
+        from axiomlm.kernels import _METAL_MOD
 
+        if _METAL_MOD is None or not hasattr(_METAL_MOD, "MPSQuantizedDecodeRunner"):
+            self.skipTest("Metal quantized decode runner unavailable")
+
+        torch.manual_seed(42)
         device = torch.device("mps")
         model = Transformer(self.config).to(device=device, dtype=torch.float16).eval()
         model.add_medusa_heads(num_heads=3)
@@ -320,7 +326,12 @@ class TestMedusaSpeculative(unittest.TestCase):
         """Verify Medusa speculative decoding produces exact greedy parity under Q8_G64 quantization."""
         if not is_mps_available():
             self.skipTest("MPS backend unavailable")
+        from axiomlm.kernels import _METAL_MOD
 
+        if _METAL_MOD is None or not hasattr(_METAL_MOD, "MPSQuantizedDecodeRunner"):
+            self.skipTest("Metal quantized decode runner unavailable")
+
+        torch.manual_seed(42)
         device = torch.device("mps")
         model = Transformer(self.config).to(device=device, dtype=torch.float16).eval()
         model.add_medusa_heads(num_heads=3)

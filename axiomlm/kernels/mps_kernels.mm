@@ -1416,6 +1416,13 @@ struct DecodeGraphState {
 
         return std::make_tuple(generated, checkpoint_seen, model_forward_calls, total_drafted, total_accepted, elapsed_seconds);
     }
+
+    torch::Tensor get_last_norm(int64_t T = 1) {
+        if (T == 1) {
+            return norm_buf.clone();
+        }
+        return norm_buf_multi.narrow(1, 0, T).clone();
+    }
 };
 
 struct QuantizedDecodeGraphState {
@@ -2032,6 +2039,13 @@ struct QuantizedDecodeGraphState {
 
         return std::make_tuple(generated, checkpoint_seen, model_forward_calls, total_drafted, total_accepted, elapsed_seconds);
     }
+
+    torch::Tensor get_last_norm(int64_t T = 1) {
+        if (T == 1) {
+            return norm_buf.clone();
+        }
+        return norm_buf_multi.narrow(1, 0, T).clone();
+    }
 };
 
 torch::Tensor cross_entropy_forward_mps(torch::Tensor logits, torch::Tensor targets, int ignore_index) {
@@ -2210,7 +2224,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           float>())
       .def("step", &DecodeGraphState::step)
       .def("verify_step", &DecodeGraphState::verify_step)
-      .def("speculative_decode", &DecodeGraphState::speculative_decode);
+      .def("speculative_decode", &DecodeGraphState::speculative_decode)
+      .def("get_last_norm", &DecodeGraphState::get_last_norm, pybind11::arg("T") = 1);
   pybind11::class_<QuantizedDecodeGraphState, std::shared_ptr<QuantizedDecodeGraphState>>(m, "MPSQuantizedDecodeRunner")
       .def(pybind11::init<
           torch::Tensor,
@@ -2237,7 +2252,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           float>())
       .def("step", &QuantizedDecodeGraphState::step)
       .def("verify_step", &QuantizedDecodeGraphState::verify_step)
-      .def("speculative_decode", &QuantizedDecodeGraphState::speculative_decode);
+      .def("speculative_decode", &QuantizedDecodeGraphState::speculative_decode)
+      .def("get_last_norm", &QuantizedDecodeGraphState::get_last_norm, pybind11::arg("T") = 1);
   m.def("cross_entropy_forward_mps", &cross_entropy_forward_mps, "MPS CE Fwd");
   m.def("cross_entropy_backward_mps", &cross_entropy_backward_mps, "MPS CE Bwd");
   m.def("flash_attention_forward_mps", &flash_attention_forward_mps, "MPS FlashAttention Fwd");
