@@ -398,6 +398,7 @@ class Transformer(nn.Module):
         bound to the given KV cache instance.
         """
         device = next(self.parameters()).device
+        head_dim = self.config.n_embd // self.config.n_head
         if (
             device.type != "mps"
             or _METAL_MOD is None
@@ -407,6 +408,7 @@ class Transformer(nn.Module):
             or self.config.mlp_type != "swiglu"
             or self.config.bias
             or self.config.sliding_window is not None
+            or head_dim != 64
         ):
             return None
 

@@ -28,7 +28,7 @@ class TestSpeculativeAdversarial(unittest.TestCase):
             n_layer=4,
             n_head=4,
             n_kv_head=2,
-            n_embd=128,
+            n_embd=256,
             vocab_size=1000,
             block_size=block_size,
             norm_type="rmsnorm",
@@ -57,7 +57,7 @@ class TestSpeculativeAdversarial(unittest.TestCase):
 
         # Run greedy baseline
         cache_ref = StaticKVCache(
-            1, 128, 4, 2, 32, device=self.device, dtype=torch.float16
+            1, 128, 4, 2, 64, device=self.device, dtype=torch.float16
         )
         with torch.no_grad():
             prompt_tensor = torch.tensor(
@@ -124,7 +124,7 @@ class TestSpeculativeAdversarial(unittest.TestCase):
         for idx, prompt in enumerate(patterns):
             # Compute greedy reference
             cache_ref = StaticKVCache(
-                1, 128, 4, 2, 32, device=self.device, dtype=torch.float16
+                1, 128, 4, 2, 64, device=self.device, dtype=torch.float16
             )
             with torch.no_grad():
                 pt_tensor = torch.tensor([prompt], device=self.device, dtype=torch.long)
@@ -172,7 +172,7 @@ class TestSpeculativeAdversarial(unittest.TestCase):
         """
         model = self._create_toy_model()
         code_motif = [11, 22, 33, 44, 55, 66, 77, 88] * 4
-        cache = StaticKVCache(1, 128, 4, 2, 32, device=self.device, dtype=torch.float16)
+        cache = StaticKVCache(1, 128, 4, 2, 64, device=self.device, dtype=torch.float16)
 
         decoder = SpeculativePromptLookupDecoder(ngram_size=3, max_spec_tokens=4)
         gen_tokens, stats = decoder.generate(
@@ -203,7 +203,7 @@ class TestSpeculativeAdversarial(unittest.TestCase):
         model = self._create_toy_model(block_size=block_size)
         pattern = [1, 2, 3, 4, 5] * 7  # 35 tokens
         cache = StaticKVCache(
-            1, block_size, 4, 2, 32, device=self.device, dtype=torch.float16
+            1, block_size, 4, 2, 64, device=self.device, dtype=torch.float16
         )
 
         decoder = SpeculativePromptLookupDecoder(ngram_size=3, max_spec_tokens=4)

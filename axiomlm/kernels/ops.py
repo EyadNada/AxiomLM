@@ -11,6 +11,7 @@ Automatically dispatches to:
 - Vectorized PyTorch reference fallback
 """
 
+import math
 from typing import Any
 
 import torch
@@ -422,26 +423,56 @@ class FusedSDPAFunction(torch.autograd.Function):
         return q_.grad, k_.grad, v_.grad, None, None
 
 
+def _safe_sdpa(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    is_causal: bool = False,
+) -> torch.Tensor:
+    """Dispatches to F.scaled_dot_product_attention with resilient fallback for Metal compiler/pipeline errors."""
+    try:
+        if attn_mask is not None:
+            return F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        return F.scaled_dot_product_attention(q, k, v, is_causal=is_causal)
+    except RuntimeError as e:
+        err_str = str(e)
+        if (
+            "CompilerError" in err_str
+            or "pipeline state object" in err_str
+            or "deferred-static-alloca-size" in err_str
+            or "cooperative_tensor" in err_str
+        ):
+            # Apple Metal MPS compiler limitation on headless/virtualized CI runners:
+            # Fall back to eager mathematically equivalent scaled dot-product attention
+            scale = 1.0 / math.sqrt(q.size(-1))
+            scores = torch.matmul(q, k.transpose(-2, -1)) * scale
+            if is_causal:
+                T_q, T_k = q.size(-2), k.size(-2)
+                c_mask = torch.ones(T_q, T_k, dtype=torch.bool, device=q.device).tril(
+                    diagonal=T_k - T_q
+                )
+                scores = scores.masked_fill(~c_mask, float("-inf"))
+            elif attn_mask is not None:
+                if attn_mask.dtype == torch.bool:
+                    scores = scores.masked_fill(~attn_mask, float("-inf"))
+                else:
+                    scores = scores + attn_mask
+            weights = F.softmax(scores, dim=-1, dtype=torch.float32).to(q.dtype)
+            return torch.matmul(weights, v)
+        raise
+
+
 def fused_sdpa(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     is_causal: bool = False,
+    attn_mask: torch.Tensor | None = None,
     sliding_window: int | None = None,
 ) -> torch.Tensor:
     """Functional interface for Fused SDPA (FlashAttention) with Sliding Window & Zero-Copy GQA Support."""
-    enable_gqa = q.size(1) != k.size(1)
-    if (
-        not torch.is_grad_enabled()
-        and not (q.device.type == "cuda" and HAS_TRITON)
-        and sliding_window is None
-    ):
-        return F.scaled_dot_product_attention(
-            q, k, v, is_causal=is_causal, enable_gqa=enable_gqa
-        )
-    if enable_gqa and (
-        sliding_window is not None or (q.device.type == "cuda" and HAS_TRITON)
-    ):
+    if q.size(1) != k.size(1):
         n_rep = q.size(1) // k.size(1)
         B, n_kv_head, T_k, head_dim = k.shape
         k = (
@@ -454,10 +485,23 @@ def fused_sdpa(
             .expand(B, n_kv_head, n_rep, T_k, head_dim)
             .reshape(B, n_kv_head * n_rep, T_k, head_dim)
         )
-    elif enable_gqa:
-        return F.scaled_dot_product_attention(
-            q, k, v, is_causal=is_causal, enable_gqa=True
+
+    if (
+        not torch.is_grad_enabled()
+        and not (q.device.type == "cuda" and HAS_TRITON)
+        and sliding_window is None
+    ):
+        return _safe_sdpa(q, k, v, attn_mask=attn_mask, is_causal=is_causal)
+
+    if sliding_window is not None and is_causal:
+        T = q.size(2)
+        causal_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril()
+        window_mask = torch.ones(T, T, dtype=torch.bool, device=q.device).tril(
+            diagonal=-sliding_window
         )
+        mask = causal_mask & ~window_mask
+        return _safe_sdpa(q, k, v, attn_mask=mask)
+
     return FusedSDPAFunction.apply(q, k, v, is_causal, sliding_window)
 
 
@@ -485,9 +529,20 @@ def flash_attention_mps(
         return _METAL_MOD.flash_attention_forward_mps(
             q.contiguous(), k.contiguous(), v.contiguous(), is_causal
         )
-    return F.scaled_dot_product_attention(
-        q, k, v, is_causal=is_causal, enable_gqa=(q.size(1) != k.size(1))
-    )
+    if q.size(1) != k.size(1):
+        n_rep = q.size(1) // k.size(1)
+        B, n_kv_head, T_k, head_dim = k.shape
+        k = (
+            k[:, :, None, :, :]
+            .expand(B, n_kv_head, n_rep, T_k, head_dim)
+            .reshape(B, n_kv_head * n_rep, T_k, head_dim)
+        )
+        v = (
+            v[:, :, None, :, :]
+            .expand(B, n_kv_head, n_rep, T_k, head_dim)
+            .reshape(B, n_kv_head * n_rep, T_k, head_dim)
+        )
+    return _safe_sdpa(q, k, v, is_causal=is_causal)
 
 
 def gqa_flash_decode_mps(
@@ -521,7 +576,20 @@ def gqa_flash_decode_mps(
     v_in = v_cache if v_cache.dim() == 4 else v_cache.unsqueeze(0)
     k_active = k_in[:, :, :active_len, :]
     v_active = v_in[:, :, :active_len, :]
-    out = F.scaled_dot_product_attention(q_4d, k_active, v_active, enable_gqa=True)
+    if q_4d.size(1) != k_active.size(1):
+        n_rep = q_4d.size(1) // k_active.size(1)
+        B, n_kv_head, T_k, head_dim = k_active.shape
+        k_active = (
+            k_active[:, :, None, :, :]
+            .expand(B, n_kv_head, n_rep, T_k, head_dim)
+            .reshape(B, n_kv_head * n_rep, T_k, head_dim)
+        )
+        v_active = (
+            v_active[:, :, None, :, :]
+            .expand(B, n_kv_head, n_rep, T_k, head_dim)
+            .reshape(B, n_kv_head * n_rep, T_k, head_dim)
+        )
+    out = _safe_sdpa(q_4d, k_active, v_active, is_causal=False)
     return out.view(orig_shape)
 
 
