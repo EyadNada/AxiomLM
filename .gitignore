@@ -61,3 +61,8 @@ research_paper.docx
 docs/assets/*.html
 docs/assets/*Backup.pdf
 docs/assets/*_v2.pdf
+
+# Private Research Notes & ArXiv Intelligence
+arxiv.md
+arXiv.md
+research_paper_information.md
