@@ -1,5 +1,5 @@
 site_name: AxiomLM
-site_description: High-Performance PyTorch Pretraining Framework & Systems SLM
+site_description: Bare-Metal LLM Inference Engine & Systems Architecture for Apple Silicon
 site_author: Eyad Nada
 repo_url: https://github.com/EyadNada/AxiomLM
 repo_name: EyadNada/AxiomLM

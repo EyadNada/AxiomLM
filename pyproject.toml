@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "axiomlm"
 version = "0.1.0"
-description = "A high-performance PyTorch library for modern autoregressive Transformer modeling, fused hardware kernels, and spectral matrix optimization."
+description = "Bare-Metal LLM Inference Engine & Systems Architecture for Apple Silicon with custom Metal/NEON kernels, quantized speculative decoding, and spectral pretraining."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

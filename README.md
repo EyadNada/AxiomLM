@@ -2,7 +2,9 @@
 
 # AxiomLM
 
-**High-Performance PyTorch Pretraining Framework & Systems SLM**
+**Bare-Metal LLM Inference Engine & Systems Architecture for Apple Silicon**
+
+*Custom Metal/NEON fused kernels, sub-millisecond quantized speculative decoding, and spectral pretraining.*
 
 </div>
 
