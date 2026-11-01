@@ -45,6 +45,10 @@ jobs:
         run: |
           pytest -v tests/test_speculative_adversarial.py
 
+      - name: Run Neural Medusa Speculative Tests (Phase 7)
+        run: |
+          pytest -v tests/test_medusa.py
+
       - name: Run Metal Split-KV Tiling & Non-Power-of-2 Boundary Tests
         run: |
           pytest -v tests/test_metal_boundary_and_tiling.py

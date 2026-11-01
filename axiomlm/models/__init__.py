@@ -3,6 +3,7 @@ AxiomLM Models Subpackage.
 """
 
 from .attention import CausalSelfAttention
+from .medusa import MedusaHead, compute_medusa_loss
 from .modules import (
     MLP,
     RMSNorm,
@@ -25,11 +26,13 @@ __all__ = [
     "Block",
     "CausalSelfAttention",
     "GPTConfig",
+    "MedusaHead",
     "ModelConfig",
     "RMSNorm",
     "SwiGLUMLP",
     "Transformer",
     "apply_rope",
+    "compute_medusa_loss",
     "precompute_rope_frequencies",
     "repeat_kv",
 ]

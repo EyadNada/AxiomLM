@@ -86,9 +86,6 @@ def generate_markdown_comparison_table(results: dict[str, Any]) -> str:
         lines.append(
             f"| **AxiomLM Quantized Metal GEMV** | **Q4_G64** | **`{ax_q4['decode_tok_s']:.1f} ± {ax_q4['decode_stddev']:.1f}`** | **`{ax_q4['decode_latency_ms']:.2f} ms`** | — | **`{(ax_q4['decode_tok_s'] / llama_q4):.2f}x`** |"
         )
-    lines.append(
-        f"| **AxiomLM Quantized Metal GEMV** | **Q4_G64** | **`{ax_q4['decode_tok_s']:.1f} ± {ax_q4['decode_stddev']:.1f}`** | **`{ax_q4['decode_latency_ms']:.2f} ms`** | — | **`{(ax_q4['decode_tok_s'] / llama_q4):.2f}x`** |"
-    )
 
     # 8. AxiomLM Speculative Q4 (Python Loop Baseline)
     if "axiomlm_speculative_q4_python_loop" in results["axiomlm"]:
@@ -107,6 +104,13 @@ def generate_markdown_comparison_table(results: dict[str, Any]) -> str:
         ax_spec = results["axiomlm"]["axiomlm_speculative_q4"]
         lines.append(
             f"| **AxiomLM Speculative Batched QMM** | **Q4_G64 (K={ax_spec['k']})** | **`{ax_spec['decode_tok_s']:.1f} ± {ax_spec['decode_stddev']:.1f}`** | **`{ax_spec['decode_latency_ms']:.2f} ms`** | — | **`{(ax_spec['decode_tok_s'] / llama_q4):.2f}x`** |"
+        )
+
+    # 10. AxiomLM Neural Medusa Speculative Engine (Phase 7 Multi-Head Self-Drafting)
+    if "axiomlm_medusa_q4" in results["axiomlm"]:
+        ax_med = results["axiomlm"]["axiomlm_medusa_q4"]
+        lines.append(
+            f"| **AxiomLM Neural Medusa Engine** | **Q4_G64 (K={ax_med['k']})** | **`{ax_med['decode_tok_s']:.1f} ± {ax_med['decode_stddev']:.1f}`** | **`{ax_med['decode_latency_ms']:.2f} ms`** | — | **`{(ax_med['decode_tok_s'] / llama_q4):.2f}x`** |"
         )
 
     return "\n".join(lines)

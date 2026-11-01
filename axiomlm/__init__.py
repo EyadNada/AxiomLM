@@ -15,7 +15,9 @@ from .engine.inference import (
     load_model,
     sample_logits,
 )
+from .engine.medusa import MedusaSpeculativeDecoder, train_medusa_heads
 from .models.attention import CausalSelfAttention
+from .models.medusa import MedusaHead, compute_medusa_loss
 from .models.modules import (
     MLP,
     RMSNorm,
@@ -62,6 +64,8 @@ __all__ = [
     "DataLoaderLite",
     "GPTConfig",
     "InferenceEngine",
+    "MedusaHead",
+    "MedusaSpeculativeDecoder",
     "ModelConfig",
     "Muon",
     "RMSNorm",
@@ -70,6 +74,7 @@ __all__ = [
     "__version__",
     "apply_rope",
     "calculate_mfu",
+    "compute_medusa_loss",
     "create_profiler",
     "dENGINE",
     "dengine",
@@ -89,5 +94,6 @@ __all__ = [
     "sample_logits",
     "telemetry",
     "train",
+    "train_medusa_heads",
     "zeropower_via_newtonschulz5",
 ]

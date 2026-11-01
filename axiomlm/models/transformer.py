@@ -11,6 +11,7 @@ from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 from ..kernels.ops import fused_cross_entropy
 from .attention import CausalSelfAttention
+from .medusa import MedusaHead
 from .modules import (
     MLP,
     RMSNorm,
@@ -60,6 +61,9 @@ class ModelConfig:
     arch: str | None = None  # Optional convenience preset ("modern" or "classic")
     quant_mode: str | None = (
         None  # Quantized decode mode: None (FP16), "q4" (Q4_G64), or "q8" (Q8_G64)
+    )
+    num_medusa_heads: int = (
+        0  # Number of auxiliary Medusa speculative self-drafting heads (e.g. 3)
     )
 
     def __post_init__(self):
@@ -226,6 +230,17 @@ class Transformer(nn.Module):
             self.freqs_cis = None
             self.freqs_real = None
 
+        # Neural Medusa speculative heads (auxiliary self-drafting)
+        if getattr(config, "num_medusa_heads", 0) > 0:
+            self.medusa_heads = nn.ModuleList(
+                [
+                    MedusaHead(config.n_embd, config.vocab_size)
+                    for _ in range(config.num_medusa_heads)
+                ]
+            )
+        else:
+            self.medusa_heads = None
+
         # Initialize weights
         self.apply(self._init_weights)
         self._mps_decode_cache_id: int | None = None
@@ -278,6 +293,93 @@ class Transformer(nn.Module):
                 device=target_dev, dtype=torch.float32
             ).contiguous()
         return ret
+
+    def add_medusa_heads(
+        self,
+        num_heads: int = 3,
+        use_residual: bool = False,
+    ):
+        """
+        Dynamically attaches auxiliary Medusa multi-token self-drafting prediction heads.
+        Head k predicts token (t + k + 2) directly from hidden state h_t.
+        """
+        self.config.num_medusa_heads = num_heads
+        self.medusa_heads = nn.ModuleList(
+            [
+                MedusaHead(
+                    self.config.n_embd,
+                    self.config.vocab_size,
+                    use_residual=use_residual,
+                )
+                for _ in range(num_heads)
+            ]
+        )
+        for head in self.medusa_heads:
+            self._init_weights(head)
+        target_dev = next(self.parameters()).device
+        target_dtype = self.lm_head.weight.dtype
+        self.medusa_heads.to(device=target_dev, dtype=target_dtype)
+        return self
+
+    def forward_with_medusa(
+        self,
+        idx: torch.Tensor,
+        kv_caches: list[Any] | None = None,
+        return_all_logits: bool = False,
+    ) -> tuple[torch.Tensor, list[torch.Tensor], list[Any] | None]:
+        """
+        Forward pass producing both primary next-token logits and Medusa self-drafting logits.
+
+        Returns:
+            Tuple of (base_logits, medusa_logits_list, new_kv_caches)
+        """
+        device = idx.device
+        B, T = idx.size()
+
+        if self.config.pos_emb == "learned":
+            pos = torch.arange(0, T, dtype=torch.long, device=device)
+            pos_emb = self.transformer.wpe(pos)
+            tok_emb = self.transformer.wte(idx)
+            x = tok_emb + pos_emb
+        else:
+            x = self.transformer.wte(idx)
+
+        new_kv_caches = []
+        for i, block in enumerate(self.transformer.h):
+            block_kv = (
+                kv_caches[i] if (kv_caches is not None and i < len(kv_caches)) else None
+            )
+            freqs_arg = (
+                self.freqs_real
+                if (self.config.use_fused_kernels and self.freqs_real is not None)
+                else self.freqs_cis
+            )
+            x, new_kv = block(
+                x,
+                freqs_cis=freqs_arg,
+                kv_cache=block_kv,
+                use_cache=(kv_caches is not None),
+            )
+            if new_kv is not None:
+                new_kv_caches.append(new_kv)
+
+        if kv_caches is not None and not return_all_logits:
+            x_target = x if T == 1 else x[:, -1:, :]
+        else:
+            x_target = x
+
+        x_norm = self.transformer.ln_f(x_target)
+        logits = self.lm_head(x_norm)
+        medusa_logits: list[torch.Tensor] = []
+        if self.medusa_heads is not None:
+            for head in self.medusa_heads:
+                medusa_logits.append(head(x_norm))
+
+        return (
+            logits,
+            medusa_logits,
+            (new_kv_caches if kv_caches is not None else None),
+        )
 
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):

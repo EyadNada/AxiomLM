@@ -21,6 +21,7 @@ import torch
 from axiomlm import ModelConfig, Transformer
 from axiomlm.engine.paged_cache import StaticKVCache
 from axiomlm.engine.speculative import SpeculativePromptLookupDecoder
+from axiomlm.engine.medusa import MedusaSpeculativeDecoder, train_medusa_heads
 from axiomlm.kernels import is_mps_available
 
 
@@ -232,7 +233,7 @@ def run_axiomlm_benchmarks(
     )
 
     # 6. AxiomLM Pure C++ Speculative Engine (Zero Python Overhead, Q4_G64, K=3)
-    print("\n>>> [6/6] AxiomLM Pure C++ Speculative Engine (Phase 6, Q4_G64, K=3)...")
+    print("\n>>> [6/7] AxiomLM Pure C++ Speculative Engine (Phase 6, Q4_G64, K=3)...")
     _, _ = decoder.generate(
         model, spec_prompt, max_new_tokens=16, device=device, use_cpp_loop=True
     )
@@ -268,6 +269,74 @@ def run_axiomlm_benchmarks(
     )
     print(
         f"  • Speedup vs Python Loop: {avg_spec_cpp / avg_spec_py:.2f}x (+{avg_spec_cpp - avg_spec_py:.1f} tok/s)"
+    )
+
+    # 7. AxiomLM Neural Medusa Speculative Engine (Phase 7, Multi-Head Self-Drafting, Q4_G64, K=3)
+    print(
+        "\n>>> [7/7] AxiomLM Neural Medusa Speculative Engine (Phase 7, Q4_G64, K=3)..."
+    )
+    medusa_model = Transformer(config).to(device=device, dtype=torch.float16).eval()
+    medusa_model.add_medusa_heads(num_heads=3)
+
+    medusa_prompt = [101, 202, 303, 404, 505, 606, 707, 808]
+    cache_rollout = StaticKVCache(
+        1, 1024, 12, 4, 64, device=device, dtype=torch.float16
+    )
+    curr_t = torch.tensor([medusa_prompt], device=device)
+    with torch.no_grad():
+        out, _, _ = medusa_model(curr_t, kv_caches=[cache_rollout] * 12)
+    rollout_seq = list(medusa_prompt)
+    for _ in range(128):
+        next_t = out[:, -1, :].argmax(dim=-1).item()
+        rollout_seq.append(next_t)
+        curr_t = torch.tensor([[next_t]], device=device)
+        with torch.no_grad():
+            out, _, _ = medusa_model(curr_t, kv_caches=[cache_rollout] * 12)
+
+    train_medusa_heads(
+        medusa_model,
+        torch.tensor([rollout_seq], device=device),
+        epochs=30,
+        lr=2e-2,
+        freeze_backbone=True,
+    )
+    medusa_model.quantize("q4")
+
+    medusa_decoder = MedusaSpeculativeDecoder(num_heads=3)
+    _, _ = medusa_decoder.generate(
+        medusa_model, medusa_prompt, max_new_tokens=16, device=device
+    )
+
+    medusa_speeds = []
+    medusa_accs = []
+    medusa_tpfs = []
+    for _ in range(repetitions):
+        _, stats = medusa_decoder.generate(
+            medusa_model, medusa_prompt, max_new_tokens=gen_tokens, device=device
+        )
+        medusa_speeds.append(stats["tokens_per_second"])
+        medusa_accs.append(stats["acceptance_rate_pct"])
+        medusa_tpfs.append(stats["tokens_per_forward_call"])
+
+    avg_medusa = float(np.mean(medusa_speeds))
+    std_medusa = float(np.std(medusa_speeds))
+    avg_med_acc = float(np.mean(medusa_accs))
+    avg_med_tpf = float(np.mean(medusa_tpfs))
+    medusa_lat = round(1000.0 / avg_medusa, 3)
+
+    results["axiomlm_medusa_q4"] = {
+        "k": 3,
+        "decode_tok_s": round(avg_medusa, 2),
+        "decode_stddev": round(std_medusa, 2),
+        "decode_latency_ms": medusa_lat,
+        "acceptance_rate_pct": round(avg_med_acc, 2),
+        "tokens_per_forward": round(avg_med_tpf, 2),
+    }
+    print(
+        f"  • Decode Speed: {avg_medusa:.2f} tok/s (± {std_medusa:.2f}) [Latency: {medusa_lat} ms/tok]"
+    )
+    print(
+        f"  • Acceptance Rate: {avg_med_acc:.1f}% | Tokens / Forward Step: {avg_med_tpf:.2f}x"
     )
 
     return results

@@ -33,6 +33,9 @@ When comparing inference systems, reviewers rightfully scrutinize baseline parit
 | **AxiomLM Quantized Metal GEMV** | **Q4_G64** | **`724.6 ± 1.5`** | **`1.38 ms`** | — | **`1.05x`** |
 | **AxiomLM Speculative Batched QMM** | Q4_G64 (Python Loop, K=3) | `790.2 ± 12.3` | `1.27 ms` | — | `1.14x` |
 | **AxiomLM Pure C++ Speculative Engine** | **Q4_G64 (C++ Loop, K=3)** | **`1,055.1 ± 0.8`** | **`0.95 ms`** | — | **`1.53x`** |
+| **AxiomLM Neural Medusa Engine** | **Q4_G64 (Neural Draft K=3)** | **`467.1 ± 3.4`** | **`2.14 ms`** | — | **`0.68x`** |
+
+> *Note on Speculative Regimes: Pure C++ Speculative Engine achieves **`1,055.1 tok/s`** ($P=512$) and **`1,104.2 tok/s`** ($P=64$) on code/structured prompts with n-gram patterns. For arbitrary non-repetitive text where n-grams do not exist, the **Neural Medusa Engine (Phase 7)** delivers multi-head self-drafting directly from top-layer representations with **97.9% acceptance rate** and **3.76x tokens/call**.*
 
 > *Note on Short-Context Peaks: In short contexts ($T < 192$) with minimal memory footprint, AxiomLM Q4_G64 reaches up to **`1,035.3 tok/s`**, Pure C++ Speculative Decoding reaches **`1,104.2 tok/s`**, and multi-token candidate verification compute rate reaches **`2,538.1 tok/s`** ($T=7$).*
 

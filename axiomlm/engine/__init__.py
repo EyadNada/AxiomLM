@@ -11,10 +11,12 @@ from .inference import (
     load_model,
     sample_logits,
 )
+from .medusa import MedusaSpeculativeDecoder, train_medusa_heads
 from .speculative import SpeculativePromptLookupDecoder, find_candidate_ngram
 
 __all__ = [
     "InferenceEngine",
+    "MedusaSpeculativeDecoder",
     "SpeculativePromptLookupDecoder",
     "benchmark_generation_speed",
     "export_checkpoint_to_hf",
@@ -23,4 +25,5 @@ __all__ = [
     "generate_with_cache",
     "load_model",
     "sample_logits",
+    "train_medusa_heads",
 ]

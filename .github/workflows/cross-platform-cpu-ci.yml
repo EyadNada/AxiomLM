@@ -44,6 +44,7 @@ jobs:
           pytest -v tests/test_all.py
           pytest -v tests/test_integration.py
           pytest -v tests/test_unit_edge_cases.py
+          pytest -v tests/test_medusa.py
 
       - name: Run Portable Quantization Packing & Math Tests
         run: |

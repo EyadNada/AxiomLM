@@ -86,7 +86,9 @@ AxiomLM leverages custom Metal Shading Language (MSL) compute shaders (`simd_sum
 | **9. + In-Register Q4_G64 Quantized GEMV (Standard)** | 4 | `qmv_q4_g64` MSL | Static Ring (Q4 Weights) | **`767.5 tok/s`** | **`130.08x`** | **`1.30 ms/tok`** | **`9.00 MB`** |
 | **10. + In-Register Q4_G64 Short-Context Peak** | 4 | `qmv_q4_g64` MSL | Short Arena ($T < 192$) | **`1,035.3 tok/s`** | **`175.47x`** | **`0.97 ms/tok`** | **`2.25 MB`** |
 | **11. + Speculative Batched QMM Decoding ($K=3$)** | 4 | `qmm_q4_g64` + Prompt Lookup | Speculative Cache (Q4) | **`838.9 tok/s`** | **`142.19x`** | **`1.19 ms/tok`** | **`9.00 MB`** |
-| **12. Multi-Token Verification Compute Rate ($T=7$)** | 4 | `qmm_q4_g64` C++ `verify_step` | Multi-Token Register Stream | **`2,538.1 tok/s`** | **`430.19x`** | **`0.394 ms/tok`** | **`9.00 MB`** |
+| **12. + Pure C++ Speculative Engine ($K=3$)** | 4 | Pure C++ Spec Loop | C++ Ring Buffer (Q4) | **`1,055.1 tok/s`** | **`178.83x`** | **`0.95 ms/tok`** | **`9.00 MB`** |
+| **13. + Neural Medusa Self-Drafting Engine ($K=3$)** | 4 | Medusa Auxiliary Heads | Neural Speculative Cache | **`467.1 tok/s`** | **`79.17x`** | **`2.14 ms/tok`** | **`9.00 MB`** |
+| **14. Multi-Token Verification Compute Rate ($T=7$)** | 4 | `qmm_q4_g64` C++ `verify_step` | Multi-Token Register Stream | **`2,538.1 tok/s`** | **`430.19x`** | **`0.394 ms/tok`** | **`9.00 MB`** |
 | **Long-Context 4096-Token Ring-Buffer ($W=1024$, Q4)** | 4 | `qmv_q4_g64` + Split-KV | Rolling Ring (Q4 Weights) | **`969.6 tok/s`** | **`164.34x`** | **`1.03 ms/tok`** | **`12.00 MB`** |
 
 ### 2. Custom Operator Kernel Microbenchmarks ($B=4, T=1024, D=768, V=50304$)
@@ -129,7 +131,9 @@ Controlled single-stream ($B=1$) autoregressive decode comparison on identical h
 | **AxiomLM Quantized Metal GEMV** | **Q8_G64 (Near-Lossless)** | **`539.7 tok/s`** | **`1.85 ms/tok`** | **`91.5x`** | **`2.19x`** |
 | **AxiomLM Quantized Metal GEMV** | **Q4_G64 (Standard)** | **`767.5 tok/s`** | **`1.30 ms/tok`** | **`130.1x`** | **`3.11x`** |
 | *AxiomLM Q4 Short-Context Peak* | *Q4_G64* | **`1,035.3 tok/s`** | **`0.97 ms/tok`** | **`175.5x`** | **`4.20x`** |
-| **AxiomLM Speculative Batched QMM** | **Q4_G64 ($K=3$)** | **`838.9 tok/s`** | **`1.19 ms/tok`** | **`142.2x`** | **`3.40x`** |
+| **AxiomLM Speculative Batched QMM** | **Q4_G64 ($K=3$, Python)** | **`838.9 tok/s`** | **`1.19 ms/tok`** | **`142.2x`** | **`3.40x`** |
+| **AxiomLM Pure C++ Speculative Engine** | **Q4_G64 ($K=3$, C++)** | **`1,055.1 tok/s`** | **`0.95 ms/tok`** | **`178.8x`** | **`4.28x`** |
+| **AxiomLM Neural Medusa Engine** | **Q4_G64 ($K=3$, Neural)** | **`467.1 tok/s`** | **`2.14 ms/tok`** | **`79.2x`** | **`1.89x`** |
 | **AxiomLM Candidate Verification Rate** | **Q4_G64 ($T=7$)** | **`2,538.1 tok/s` eff.** | **`0.394 ms/tok`** | **`430.2x`** | **`10.29x`** |
 
 > **Academic Reproducibility Harness**: All baseline comparisons and hardware numbers can be verified locally with a single command:
