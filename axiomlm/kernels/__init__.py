@@ -26,12 +26,16 @@ from .ops import (
 )
 from .quant import (
     dequantize_q4_g64,
+    dequantize_q4_marlin,
     dequantize_q8_g64,
     pack_linear_q4_g64,
+    pack_linear_q4_marlin,
     pack_linear_q8_g64,
     qmm_q4_g64,
+    qmm_q4_marlin,
     qmm_q8_g64,
     qmv_q4_g64,
+    qmv_q4_marlin,
     qmv_q8_g64,
 )
 
@@ -73,6 +77,7 @@ __all__ = [
     "FusedSwiGLUFunction",
     "FusedSwiGLUMLP",
     "dequantize_q4_g64",
+    "dequantize_q4_marlin",
     "dequantize_q8_g64",
     "flash_attention_mps",
     "fused_apply_rope",
@@ -83,9 +88,12 @@ __all__ = [
     "gqa_flash_decode_mps",
     "is_mps_available",
     "pack_linear_q4_g64",
+    "pack_linear_q4_marlin",
     "pack_linear_q8_g64",
     "qmm_q4_g64",
+    "qmm_q4_marlin",
     "qmm_q8_g64",
     "qmv_q4_g64",
+    "qmv_q4_marlin",
     "qmv_q8_g64",
 ]

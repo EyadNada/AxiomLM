@@ -1,4 +1,5 @@
 #include <metal_stdlib>
+#include <metal_simdgroup_matrix>
 using namespace metal;
 
 // ============================================================================
@@ -345,6 +346,47 @@ kernel void embed_multi_half_kernel(
   }
   for (uint i = (D_vec4 << 2) + tid; i < D; i += block_dim) {
     row_x[i] = row_wte[i];
+  }
+}
+
+// ----------------------------------------------------------------------------
+// 1D-3. On-The-Fly Q8_G64 Embedding Gather Kernel (Tied & Quantized Token Embeddings)
+// Replaces 525 MB uncompressed FP16 wte table with 262 MB Q8_G64 table
+// Unpacks 8-bit quantized token embeddings directly into FP16 row buffer
+// ----------------------------------------------------------------------------
+kernel void embed_q8_g64_gather_half_kernel(
+    device const long *idx [[buffer(0)]],
+    device const uint *w_packed [[buffer(1)]],
+    device const half2 *scales_biases [[buffer(2)]],
+    device half *x_out [[buffer(3)]],
+    constant uint &D [[buffer(4)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint2 tid_in_tg [[thread_position_in_threadgroup]],
+    uint2 tg_size [[threads_per_threadgroup]]) {
+  uint row_idx = tgpig.x;
+  uint tid = tid_in_tg.x;
+  uint block_dim = tg_size.x;
+
+  long token_id = idx[row_idx];
+  uint D_packed = D >> 2;
+  uint D_groups = D >> 6;
+
+  device const uint *row_w = w_packed + token_id * long(D_packed);
+  device const half2 *row_sb = scales_biases + token_id * long(D_groups);
+  device half *row_x = x_out + row_idx * long(D);
+  device half4 *x4 = (device half4 *)row_x;
+
+  for (uint i = tid; i < D_packed; i += block_dim) {
+    uint g = i >> 4;
+    half2 sb = row_sb[g];
+    uchar4 q = as_type<uchar4>(row_w[i]);
+    half4 h = half4(
+        fma(half(q.x), sb.x, sb.y),
+        fma(half(q.y), sb.x, sb.y),
+        fma(half(q.z), sb.x, sb.y),
+        fma(half(q.w), sb.x, sb.y)
+    );
+    x4[i] = h;
   }
 }
 
@@ -950,13 +992,20 @@ kernel void rope_kv_cache_write_half_kernel(
     constant uint &half_head_dim [[buffer(6)]],
     constant uint &max_seq_len [[buffer(7)]],
     constant uint &write_pos [[buffer(8)]],
+    device const half2 *qkv_bias [[buffer(9)]],
+    constant uint &has_bias [[buffer(10)]],
     uint tid [[thread_position_in_grid]]) {
     uint total_pairs = q_pairs + (kv_pairs << 1);
     if (tid >= total_pairs) return;
 
+    half2 raw_val = qkv[tid];
+    if (has_bias != 0u) {
+        raw_val += qkv_bias[tid];
+    }
+
     uint hd_idx = tid % half_head_dim;
     if (tid < q_pairs) {
-        float2 x_val = float2(qkv[tid]);
+        float2 x_val = float2(raw_val);
         float2 f_val = freqs_cis[hd_idx];
         float2 res;
         res.x = fma(x_val.x, f_val.x, -x_val.y * f_val.y);
@@ -965,7 +1014,7 @@ kernel void rope_kv_cache_write_half_kernel(
     } else if (tid < q_pairs + kv_pairs) {
         uint k_tid = tid - q_pairs;
         uint kv_head = k_tid / half_head_dim;
-        float2 x_val = float2(qkv[tid]);
+        float2 x_val = float2(raw_val);
         float2 f_val = freqs_cis[hd_idx];
         float2 res;
         res.x = fma(x_val.x, f_val.x, -x_val.y * f_val.y);
@@ -976,7 +1025,7 @@ kernel void rope_kv_cache_write_half_kernel(
         uint v_tid = tid - (q_pairs + kv_pairs);
         uint kv_head = v_tid / half_head_dim;
         uint dst_idx = (kv_head * max_seq_len + write_pos) * half_head_dim + hd_idx;
-        v_cache[dst_idx] = qkv[tid];
+        v_cache[dst_idx] = raw_val;
     }
 }
 
@@ -1316,7 +1365,8 @@ kernel void qmm_q4_g64_half_kernel(
 {
     // 2 SIMD-groups per threadgroup, 2 output rows per SIMD-group -> 4 output rows per threadgroup
     uint row_base = (tgpig.x * 2 + simd_group_id) * 2;
-    if (row_base >= N) return;
+    uint m_base = tgpig.y * 8u;
+    if (row_base >= N || m_base >= M) return;
 
     uint K_packed = K >> 3;       // K / 8 uint32 words per row
     uint K_groups = K >> 6;       // K / 64 groups per row
@@ -1324,7 +1374,7 @@ kernel void qmm_q4_g64_half_kernel(
     // Accumulators for up to 8 tokens x 2 output rows
     float acc[8][2] = {{0.0f}};
 
-    uint actual_M = min(M, 8u);
+    uint actual_M = min(M - m_base, 8u);
 
     for (uint idx = simd_lane_id; idx < K_packed; idx += 32) {
         uint k_elem = idx << 3;   // Starting element index (multiple of 8)
@@ -1338,7 +1388,7 @@ kernel void qmm_q4_g64_half_kernel(
         #pragma unroll
         for (uint m = 0; m < 8; ++m) {
             if (m < actual_M) {
-                device const half *x_m = x + m * K + k_elem;
+                device const half *x_m = x + (m_base + m) * K + k_elem;
                 x_lo[m] = *(device const half4 *)x_m;
                 x_hi[m] = *(device const half4 *)(x_m + 4);
                 x_sum[m] = float(x_lo[m].x + x_lo[m].y + x_lo[m].z + x_lo[m].w +
@@ -1381,8 +1431,8 @@ kernel void qmm_q4_g64_half_kernel(
 
     if (simd_lane_id == 0) {
         for (uint m = 0; m < actual_M; ++m) {
-            if (row_base + 0 < N) y[m * N + row_base + 0] = half(acc[m][0]);
-            if (row_base + 1 < N) y[m * N + row_base + 1] = half(acc[m][1]);
+            if (row_base + 0 < N) y[(m_base + m) * N + row_base + 0] = half(acc[m][0]);
+            if (row_base + 1 < N) y[(m_base + m) * N + row_base + 1] = half(acc[m][1]);
         }
     }
 }
@@ -1405,62 +1455,65 @@ kernel void qmv_q8_g64_half_kernel(
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]])
 {
-    uint row_base = (tgpig.x * 2 + simd_group_id) * 4;
-    if (row_base >= N) return;
+    // 4 SIMD-groups (128 threads) = 8 sub-warps of 16 lanes; 2 rows per sub-warp = 16 rows/TG.
+    // 16 lanes * 4 INT8 bytes/lane = 64 weights = 1 exact quantization group per step.
+    uint sg_row_base = tgpig.x * 16u + (simd_group_id << 2);
+    if (sg_row_base >= N) return;
+
+    uint sub_id = (simd_group_id << 1) | (simd_lane_id >> 4);
+    uint lane16 = simd_lane_id & 15u;
+    uint row_base = tgpig.x * 16u + (sub_id << 1);
 
     uint K_packed = K >> 2;       // K / 4 uint32 words per row
     uint K_groups = K >> 6;       // K / 64 groups per row
 
-    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+    bool valid0 = (row_base < N);
+    bool valid1 = (row_base + 1u < N);
+    float acc0 = 0.0f, acc1 = 0.0f;
 
-    for (uint idx = simd_lane_id; idx < K_packed; idx += 32) {
-        uint k_elem = idx << 2;   // Starting element index (multiple of 4)
-        uint g_idx = idx >> 4;    // Group index (every 16 uint32 words = 64 elements)
+    device const uint *w0 = w_packed + row_base * K_packed;
+    device const uint *w1 = w0 + K_packed;
+    device const half2 *sb0 = scales_biases + row_base * K_groups;
+    device const half2 *sb1 = sb0 + K_groups;
 
-        half4 x_vec = *(device const half4 *)(x + k_elem);
-        float x_sum = float(x_vec.x + x_vec.y + x_vec.z + x_vec.w);
+    for (uint g = 0; g < K_groups; ++g) {
+        uint idx = (g << 4) + lane16;
+        half4 x_vec = *(device const half4 *)(x + (idx << 2));
+        float4 fx = float4(x_vec);
+        float x_sum = (fx.x + fx.y) + (fx.z + fx.w);
 
-        #pragma unroll
-        for (uint r = 0; r < 4; ++r) {
-            uint row = row_base + r;
-            if (row < N) {
-                uint packed = w_packed[row * K_packed + idx];
-                half2 sb = scales_biases[row * K_groups + g_idx];
-                float scale = float(sb.x);
-                float bias  = float(sb.y);
-
-                float4 q = float4(packed & 0xFFu, (packed >> 8) & 0xFFu, (packed >> 16) & 0xFFu, (packed >> 24) & 0xFFu);
-                float d_prod = dot(float4(x_vec), q);
-                float val = fma(d_prod, scale, bias * x_sum);
-                if (r == 0) acc0 += val;
-                else if (r == 1) acc1 += val;
-                else if (r == 2) acc2 += val;
-                else acc3 += val;
-            }
+        if (valid0) {
+            uchar4 q0 = as_type<uchar4>(w0[idx]);
+            half2 s0 = sb0[g];
+            acc0 = fma(dot(fx, float4(q0)), float(s0.x), fma(float(s0.y), x_sum, acc0));
+        }
+        if (valid1) {
+            uchar4 q1 = as_type<uchar4>(w1[idx]);
+            half2 s1 = sb1[g];
+            acc1 = fma(dot(fx, float4(q1)), float(s1.x), fma(float(s1.y), x_sum, acc1));
         }
     }
 
-    acc0 = simd_sum(acc0);
-    acc1 = simd_sum(acc1);
-    acc2 = simd_sum(acc2);
-    acc3 = simd_sum(acc3);
+    acc0 += simd_shuffle_xor(acc0, 8u);
+    acc0 += simd_shuffle_xor(acc0, 4u);
+    acc0 += simd_shuffle_xor(acc0, 2u);
+    acc0 += simd_shuffle_xor(acc0, 1u);
 
-    if (simd_lane_id == 0) {
-        if (row_base + 0 < N) y[row_base + 0] = half(acc0);
-        if (row_base + 1 < N) y[row_base + 1] = half(acc1);
-        if (row_base + 2 < N) y[row_base + 2] = half(acc2);
-        if (row_base + 3 < N) y[row_base + 3] = half(acc3);
+    acc1 += simd_shuffle_xor(acc1, 8u);
+    acc1 += simd_shuffle_xor(acc1, 4u);
+    acc1 += simd_shuffle_xor(acc1, 2u);
+    acc1 += simd_shuffle_xor(acc1, 1u);
+
+    if (lane16 == 0u) {
+        if (valid0) y[row_base] = half(acc0);
+        if (valid1) y[row_base + 1u] = half(acc1);
     }
 }
 
 // ----------------------------------------------------------------------------
 // 6D. Quantized Batched Matrix-Vector Multiply Q8_G64 (Tall-and-Skinny GEMM)
-// Evaluates M tokens (M in [1, 8]) simultaneously against 8-bit weights
-// Weights are read from DRAM ONCE and reused across all M tokens in registers.
-// Input x: (M, K) half
-// Weight w_packed: (N, K / 4) uint32 (4 x 8-bit bytes per word)
-// ScalesBiases: (N, K / 64) half2 (scale, bias) per 64 weights
-// Output y: (M, N) half
+// Evaluates M tokens (tiled by 8) simultaneously against 8-bit weights.
+// Cooperative SRAM x-tiling + 16-lane group-aligned hardware uchar4 unpack.
 // ----------------------------------------------------------------------------
 kernel void qmm_q8_g64_half_kernel(
     device const half *x [[buffer(0)]],
@@ -1474,85 +1527,673 @@ kernel void qmm_q8_g64_half_kernel(
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]])
 {
-    // 2 SIMD-groups per threadgroup, 2 output rows per SIMD-group -> 4 output rows per threadgroup
-    uint row_base = (tgpig.x * 2 + simd_group_id) * 2;
-    if (row_base >= N) return;
+    // 4 SIMD-groups (128 threads) = 8 sub-warps of 16 lanes; 4 rows/sub-warp = 32 rows/TG
+    uint tg_row_base = tgpig.x * 32u;
+    uint m_base = tgpig.y * 8u;
+    if (tg_row_base >= N || m_base >= M) return;
 
-    uint K_packed = K >> 2;       // K / 4 uint32 words per row
-    uint K_groups = K >> 6;       // K / 64 groups per row
+    uint tid = (simd_group_id << 5) | simd_lane_id; // 0..127
+    uint m_ld = tid >> 4;                           // 0..7
+    uint c_ld = tid & 15u;                          // 0..15
 
-    // Accumulators for up to 8 tokens x 2 output rows
-    float acc[8][2] = {{0.0f}};
+    uint sub_id = (simd_group_id << 1) | (simd_lane_id >> 4); // 0..7
+    uint lane16 = simd_lane_id & 15u;                         // 0..15
+    uint row_base = tg_row_base + (sub_id << 2);
 
-    uint actual_M = min(M, 8u);
+    uint K_packed = K >> 2;
+    uint K_groups = K >> 6;
+    uint actual_M = min(M - m_base, 8u);
 
-    for (uint idx = simd_lane_id; idx < K_packed; idx += 32) {
-        uint k_elem = idx << 2;   // Starting element index (multiple of 4)
-        uint g_idx = idx >> 4;    // Group index (every 16 uint32 words = 64 elements)
+    threadgroup float4 s_x[8][16];
+    threadgroup float s_xsum[8][16];
 
-        half4 x_vec[8];
-        float x_sum[8];
+    float acc[8][4] = {{0.0f}};
 
+    for (uint g = 0; g < K_groups; ++g) {
+        if (m_ld < actual_M) {
+            half4 xv = *(device const half4 *)(x + (m_base + m_ld) * K + (g << 6) + (c_ld << 2));
+            float4 fxv = float4(xv);
+            s_x[m_ld][c_ld] = fxv;
+            s_xsum[m_ld][c_ld] = (fxv.x + fxv.y) + (fxv.z + fxv.w);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        float4 fx_reg[8];
+        float xsum_reg[8];
         #pragma unroll
         for (uint m = 0; m < 8; ++m) {
             if (m < actual_M) {
-                device const half *x_m = x + m * K + k_elem;
-                x_vec[m] = *(device const half4 *)x_m;
-                x_sum[m] = float(x_vec[m].x + x_vec[m].y + x_vec[m].z + x_vec[m].w);
+                fx_reg[m] = s_x[m][lane16];
+                xsum_reg[m] = s_xsum[m][lane16];
             }
         }
 
+        uint idx = (g << 4) + lane16;
         #pragma unroll
-        for (uint r = 0; r < 2; ++r) {
+        for (uint r = 0; r < 4; ++r) {
             uint row = row_base + r;
             if (row < N) {
-                uint packed = w_packed[row * K_packed + idx];
-                half2 sb = scales_biases[row * K_groups + g_idx];
+                uchar4 qb = as_type<uchar4>(w_packed[row * K_packed + idx]);
+                float4 qf = float4(qb);
+                half2 sb = scales_biases[row * K_groups + g];
                 float scale = float(sb.x);
                 float bias  = float(sb.y);
-
-                float4 q = float4(packed & 0xFFu, (packed >> 8) & 0xFFu, (packed >> 16) & 0xFFu, (packed >> 24) & 0xFFu);
 
                 #pragma unroll
                 for (uint m = 0; m < 8; ++m) {
                     if (m < actual_M) {
-                        float d_prod = dot(float4(x_vec[m]), q);
-                        acc[m][r] += fma(d_prod, scale, bias * x_sum[m]);
+                        acc[m][r] = fma(dot(fx_reg[m], qf), scale, fma(bias, xsum_reg[m], acc[m][r]));
                     }
                 }
             }
         }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
     #pragma unroll
     for (uint m = 0; m < 8; ++m) {
         if (m < actual_M) {
-            acc[m][0] = simd_sum(acc[m][0]);
-            acc[m][1] = simd_sum(acc[m][1]);
+            #pragma unroll
+            for (uint r = 0; r < 4; ++r) {
+                acc[m][r] += simd_shuffle_xor(acc[m][r], 8u);
+                acc[m][r] += simd_shuffle_xor(acc[m][r], 4u);
+                acc[m][r] += simd_shuffle_xor(acc[m][r], 2u);
+                acc[m][r] += simd_shuffle_xor(acc[m][r], 1u);
+            }
         }
     }
 
-    if (simd_lane_id == 0) {
+    if (lane16 == 0u) {
         for (uint m = 0; m < actual_M; ++m) {
-            if (row_base + 0 < N) y[m * N + row_base + 0] = half(acc[m][0]);
-            if (row_base + 1 < N) y[m * N + row_base + 1] = half(acc[m][1]);
+            #pragma unroll
+            for (uint r = 0; r < 4; ++r) {
+                if (row_base + r < N) {
+                    y[(m_base + m) * N + row_base + r] = half(acc[m][r]);
+                }
+            }
         }
     }
 }
 
 // ----------------------------------------------------------------------------
-// 7A. GQA Vector Flash-Decode Split-KV Kernel (T_q = 1, FP16)
-// Optimized for Apple Silicon M3 Pro GPU (18 cores, SIMD-width = 32)
-// Evaluates 3 Query heads per 1 KV head in registers (3:1 GQA)
-// Inputs:
-//   q: (1, 12, 1, 64) half (or contiguous [768] half)
-//   k_cache: (1, 4, max_seq_len, 64) half
-//   v_cache: (1, 4, max_seq_len, 64) half
-// Outputs:
-//   out: (1, 12, 1, 64) half (or [768] half)
-//   partial_O: (12, num_splits, 32) half2
-//   partial_m: (12, num_splits) float
-//   partial_l: (12, num_splits) float
+// 6E. MARLIN 64207531 + Ladder tTile Register-Direct Dequantization Kernels
+// Eliminates serial ALU shift/mask stalls via IEEE-754 Binary16 magic-exponent
+// parallel unpacking (1 shift, 0 uitofp) and eliminates 100% of Threadgroup
+// shared memory round-trips by writing directly to simdgroup_half8x8 registers.
+// Unified Weight Layout:
+//   w_marlin:  (N_tiles, K / 64, 32, 2) uint32 / uint2  (N_tiles = ceil(N / 8))
+//   sb_marlin: (N_tiles, K / 64, 8, 2)  half   / half2  (scale, bias)
+// ----------------------------------------------------------------------------
+inline void marlin_unpack_4x_half2(
+    uint w,
+    thread half2 &q0,
+    thread half2 &q1,
+    thread half2 &q2,
+    thread half2 &q3)
+{
+    uint w_hi = w >> 8;
+    q0 = as_type<half2>((w    & 0x000F000Fu) | 0x64006400u) - half2(1024.0h);
+    q1 = as_type<half2>((w    & 0x00F000F0u) | 0x54005400u) - half2(64.0h);
+    q2 = as_type<half2>((w_hi & 0x000F000Fu) | 0x64006400u) - half2(1024.0h);
+    q3 = as_type<half2>((w_hi & 0x00F000F0u) | 0x54005400u) - half2(64.0h);
+}
+
+kernel void qmv_q4_marlin_apple_kernel(
+    device const half *x [[buffer(0)]],
+    device const uint2 *w_marlin [[buffer(1)]],
+    device const half2 *sb_marlin [[buffer(2)]],
+    device half *y [[buffer(3)]],
+    constant uint &K [[buffer(4)]],
+    constant uint &N [[buffer(5)]],
+    constant uint &split_k [[buffer(6)]],
+    device const half *lin_bias [[buffer(7)]],
+    constant uint &has_bias [[buffer(8)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint sg_id [[simdgroup_index_in_threadgroup]],
+    uint2 tg_size [[threads_per_threadgroup]])
+{
+    uint num_sg = tg_size.x >> 5;
+    uint tiles_per_tg = num_sg / split_k;
+    uint local_tile = sg_id / split_k;
+    uint sk_id = sg_id % split_k;
+
+    uint tile_n = tgpig.x * tiles_per_tg + local_tile;
+    uint N_tiles = (N + 7u) >> 3;
+    uint K_groups = K >> 6;
+
+    uint r  = ((lane & 16u) >> 2) | ((lane & 6u) >> 1);
+    uint c0 = ((lane & 8u)  >> 1) | ((lane & 1u) << 1);
+    uint c1 = c0 + 1u;
+
+    float2 acc = float2(0.0f);
+    if (tile_n < N_tiles) {
+        device const uint2 *w_tile  = w_marlin  + tile_n * (K_groups * 32u);
+        device const half2 *sb_tile = sb_marlin + tile_n * (K_groups * 8u);
+
+        uint gk = sk_id;
+        if (gk < K_groups) {
+            uint2 wp_curr = w_tile[gk * 32u + lane];
+            half2 sb_lane = (lane < 8u) ? sb_tile[gk * 8u + lane] : half2(0.0h);
+
+            for (; gk + split_k < K_groups; gk += split_k) {
+                uint next_gk = gk + split_k;
+                uint2 wp_next = w_tile[next_gk * 32u + lane];
+                half2 sb_next = (lane < 8u) ? sb_tile[next_gk * 8u + lane] : half2(0.0h);
+
+                half2 sb0 = simd_shuffle(sb_lane, c0);
+                half2 sb1 = simd_shuffle(sb_lane, c1);
+                float2 sc = float2(float(sb0.x), float(sb1.x));
+                float2 bi = float2(float(sb0.y), float(sb1.y));
+
+                device const half *xk = x + (gk << 6) + r;
+                float fx0 = float(xk[0]),  fx1 = float(xk[8]),  fx2 = float(xk[16]), fx3 = float(xk[24]);
+                float fx4 = float(xk[32]), fx5 = float(xk[40]), fx6 = float(xk[48]), fx7 = float(xk[56]);
+                float x_sum = (fx0 + fx1 + fx2 + fx3) + (fx4 + fx5 + fx6 + fx7);
+
+                half2 q0, q1, q2, q3;
+                marlin_unpack_4x_half2(wp_curr.x, q0, q1, q2, q3);
+                float2 q_dot = fma(float2(q0), fx0, float2(q1) * fx1);
+                q_dot = fma(float2(q2), fx2, fma(float2(q3), fx3, q_dot));
+
+                marlin_unpack_4x_half2(wp_curr.y, q0, q1, q2, q3);
+                q_dot = fma(float2(q0), fx4, fma(float2(q1), fx5, q_dot));
+                q_dot = fma(float2(q2), fx6, fma(float2(q3), fx7, q_dot));
+
+                acc = fma(q_dot, sc, fma(bi, x_sum, acc));
+
+                wp_curr = wp_next;
+                sb_lane = sb_next;
+            }
+
+            half2 sb0 = simd_shuffle(sb_lane, c0);
+            half2 sb1 = simd_shuffle(sb_lane, c1);
+            float2 sc = float2(float(sb0.x), float(sb1.x));
+            float2 bi = float2(float(sb0.y), float(sb1.y));
+
+            device const half *xk = x + (gk << 6) + r;
+            float fx0 = float(xk[0]),  fx1 = float(xk[8]),  fx2 = float(xk[16]), fx3 = float(xk[24]);
+            float fx4 = float(xk[32]), fx5 = float(xk[40]), fx6 = float(xk[48]), fx7 = float(xk[56]);
+            float x_sum = (fx0 + fx1 + fx2 + fx3) + (fx4 + fx5 + fx6 + fx7);
+
+            half2 q0, q1, q2, q3;
+            marlin_unpack_4x_half2(wp_curr.x, q0, q1, q2, q3);
+            float2 q_dot = fma(float2(q0), fx0, float2(q1) * fx1);
+            q_dot = fma(float2(q2), fx2, fma(float2(q3), fx3, q_dot));
+
+            marlin_unpack_4x_half2(wp_curr.y, q0, q1, q2, q3);
+            q_dot = fma(float2(q0), fx4, fma(float2(q1), fx5, q_dot));
+            q_dot = fma(float2(q2), fx6, fma(float2(q3), fx7, q_dot));
+
+            acc = fma(q_dot, sc, fma(bi, x_sum, acc));
+        }
+
+        acc += simd_shuffle_xor(acc, 2u);
+        acc += simd_shuffle_xor(acc, 4u);
+        acc += simd_shuffle_xor(acc, 16u);
+    }
+
+    uint row_base = tile_n << 3;
+    if (split_k == 1u) {
+        if (tile_n < N_tiles && r == 0u) {
+            if (row_base + c0 < N) {
+                float v0 = acc.x + (has_bias ? float(lin_bias[row_base + c0]) : 0.0f);
+                y[row_base + c0] = half(v0);
+            }
+            if (row_base + c1 < N) {
+                float v1 = acc.y + (has_bias ? float(lin_bias[row_base + c1]) : 0.0f);
+                y[row_base + c1] = half(v1);
+            }
+        }
+    } else {
+        threadgroup float sg_red[8][8];
+        if (r == 0u) {
+            sg_red[sg_id][c0] = acc.x;
+            sg_red[sg_id][c1] = acc.y;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tile_n < N_tiles && sk_id == 0u && lane < 8u) {
+            float sum = 0.0f;
+            for (uint s = 0; s < split_k; ++s) {
+                sum += sg_red[local_tile * split_k + s][lane];
+            }
+            if (row_base + lane < N) {
+                if (has_bias) sum += float(lin_bias[row_base + lane]);
+                y[row_base + lane] = half(sum);
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 6F. MARLIN + Ladder Register-Direct Split-K QMM for M in [2, 8]
+// Tile shape: BM = 8, BN = 8 per SIMD-group (1 simdgroup_float8x8 accumulator),
+// P=2 software-pipelined weight prefetching + Split-K for full M3 GPU occupancy.
+// Zero inner-loop shared memory or barriers.
+// ----------------------------------------------------------------------------
+kernel void qmm_q4_marlin_m8_apple_kernel(
+    device const half *x [[buffer(0)]],
+    device const uint2 *w_marlin [[buffer(1)]],
+    device const half2 *sb_marlin [[buffer(2)]],
+    device half *y [[buffer(3)]],
+    constant uint &M [[buffer(4)]],
+    constant uint &K [[buffer(5)]],
+    constant uint &N [[buffer(6)]],
+    constant uint &split_k [[buffer(7)]],
+    device const half *lin_bias [[buffer(8)]],
+    constant uint &has_bias [[buffer(9)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint sg_id [[simdgroup_index_in_threadgroup]],
+    uint2 tg_size [[threads_per_threadgroup]])
+{
+    uint num_sg = tg_size.x >> 5;
+    uint tiles_per_tg = num_sg / split_k;
+    uint local_tile = sg_id / split_k;
+    uint sk_id = sg_id % split_k;
+
+    uint tile_n = tgpig.x * tiles_per_tg + local_tile;
+    uint N_tiles = (N + 7u) >> 3;
+    uint K_groups = K >> 6;
+
+    uint r  = ((lane & 16u) >> 2) | ((lane & 6u) >> 1);
+    uint c0 = ((lane & 8u)  >> 1) | ((lane & 1u) << 1);
+    uint c1 = c0 + 1u;
+
+    bool valid_m = (r < M);
+    device const half *x_row = valid_m ? (x + r * K) : x;
+    simdgroup_float8x8 acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+
+    if (tile_n < N_tiles) {
+        device const uint2 *wt  = w_marlin  + tile_n * (K_groups * 32u);
+        device const half2 *sbt = sb_marlin + tile_n * (K_groups * 8u);
+
+        uint gk = sk_id;
+        if (gk < K_groups) {
+            uint2 wp_curr = wt[gk * 32u + lane];
+            half2 sb_curr = (lane < 8u) ? sbt[gk * 8u + lane] : half2(0.0h);
+
+            for (; gk + split_k < K_groups; gk += split_k) {
+                uint next_gk = gk + split_k;
+                uint2 wp_next = wt[next_gk * 32u + lane];
+                half2 sb_next = (lane < 8u) ? sbt[next_gk * 8u + lane] : half2(0.0h);
+
+                half2 s0 = simd_shuffle(sb_curr, c0), s1 = simd_shuffle(sb_curr, c1);
+                half2 sc = half2(s0.x, s1.x), bi = half2(s0.y, s1.y);
+                uint k_base = gk << 6;
+                half2 q[4];
+
+                marlin_unpack_4x_half2(wp_curr.x, q[0], q[1], q[2], q[3]);
+                #pragma unroll
+                for (uint s = 0; s < 4; ++s) {
+                    half2 a = valid_m ? *(device const half2 *)(x_row + k_base + (s << 3) + c0) : half2(0.0h);
+                    half2 w = fma(q[s], sc, bi);
+                    simdgroup_half8x8 A, B;
+                    A.thread_elements()[0] = a.x; A.thread_elements()[1] = a.y;
+                    B.thread_elements()[0] = w.x; B.thread_elements()[1] = w.y;
+                    simdgroup_multiply_accumulate(acc, A, B, acc);
+                }
+
+                marlin_unpack_4x_half2(wp_curr.y, q[0], q[1], q[2], q[3]);
+                #pragma unroll
+                for (uint s = 0; s < 4; ++s) {
+                    half2 a = valid_m ? *(device const half2 *)(x_row + k_base + 32u + (s << 3) + c0) : half2(0.0h);
+                    half2 w = fma(q[s], sc, bi);
+                    simdgroup_half8x8 A, B;
+                    A.thread_elements()[0] = a.x; A.thread_elements()[1] = a.y;
+                    B.thread_elements()[0] = w.x; B.thread_elements()[1] = w.y;
+                    simdgroup_multiply_accumulate(acc, A, B, acc);
+                }
+
+                wp_curr = wp_next;
+                sb_curr = sb_next;
+            }
+
+            half2 s0 = simd_shuffle(sb_curr, c0), s1 = simd_shuffle(sb_curr, c1);
+            half2 sc = half2(s0.x, s1.x), bi = half2(s0.y, s1.y);
+            uint k_base = gk << 6;
+            half2 q[4];
+
+            marlin_unpack_4x_half2(wp_curr.x, q[0], q[1], q[2], q[3]);
+            #pragma unroll
+            for (uint s = 0; s < 4; ++s) {
+                half2 a = valid_m ? *(device const half2 *)(x_row + k_base + (s << 3) + c0) : half2(0.0h);
+                half2 w = fma(q[s], sc, bi);
+                simdgroup_half8x8 A, B;
+                A.thread_elements()[0] = a.x; A.thread_elements()[1] = a.y;
+                B.thread_elements()[0] = w.x; B.thread_elements()[1] = w.y;
+                simdgroup_multiply_accumulate(acc, A, B, acc);
+            }
+
+            marlin_unpack_4x_half2(wp_curr.y, q[0], q[1], q[2], q[3]);
+            #pragma unroll
+            for (uint s = 0; s < 4; ++s) {
+                half2 a = valid_m ? *(device const half2 *)(x_row + k_base + 32u + (s << 3) + c0) : half2(0.0h);
+                half2 w = fma(q[s], sc, bi);
+                simdgroup_half8x8 A, B;
+                A.thread_elements()[0] = a.x; A.thread_elements()[1] = a.y;
+                B.thread_elements()[0] = w.x; B.thread_elements()[1] = w.y;
+                simdgroup_multiply_accumulate(acc, A, B, acc);
+            }
+        }
+    }
+
+    auto e = acc.thread_elements();
+    uint col0 = (tile_n << 3) + c0;
+    if (split_k == 1u) {
+        if (tile_n < N_tiles && valid_m) {
+            if (col0 < N)      y[r * N + col0]      = half(e[0] + (has_bias ? float(lin_bias[col0]) : 0.0f));
+            if (col0 + 1u < N) y[r * N + col0 + 1u] = half(e[1] + (has_bias ? float(lin_bias[col0 + 1u]) : 0.0f));
+        }
+    } else {
+        threadgroup float2 sg_red[4][32];
+        sg_red[sg_id][lane] = float2(e[0], e[1]);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tile_n < N_tiles && sk_id == 0u && valid_m) {
+            float2 sum = float2(0.0f);
+            for (uint s = 0; s < split_k; ++s) {
+                sum += sg_red[local_tile * split_k + s][lane];
+            }
+            if (col0 < N)      y[r * N + col0]      = half(sum.x + (has_bias ? float(lin_bias[col0]) : 0.0f));
+            if (col0 + 1u < N) y[r * N + col0 + 1u] = half(sum.y + (has_bias ? float(lin_bias[col0 + 1u]) : 0.0f));
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 6G. MARLIN + Ladder Register-Direct Split-K QMM for M > 8 (M = 9..2048+)
+// Tile shape: BM = 32, BN = 16 per SIMD-group (4x2 simdgroup_float8x8 accumulators)
+// Uniformly gates M-subtiles (m0..m3) with zero SIMD divergence so M=16 executes
+// 2x2 and M>=32 executes full 4x2 (reusing each unpacked weight across 32 tokens!),
+// paired with P=2 software prefetching and Split-K for full M3 GPU occupancy.
+// ----------------------------------------------------------------------------
+kernel void qmm_q4_marlin_apple_kernel(
+    device const half *x [[buffer(0)]],
+    device const uint2 *w_marlin [[buffer(1)]],
+    device const half2 *sb_marlin [[buffer(2)]],
+    device half *y [[buffer(3)]],
+    constant uint &M [[buffer(4)]],
+    constant uint &K [[buffer(5)]],
+    constant uint &N [[buffer(6)]],
+    constant uint &split_k [[buffer(7)]],
+    device const half *lin_bias [[buffer(8)]],
+    constant uint &has_bias [[buffer(9)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint sg_id [[simdgroup_index_in_threadgroup]],
+    uint2 tg_size [[threads_per_threadgroup]])
+{
+    uint num_sg = tg_size.x >> 5;
+    uint pairs_per_tg = num_sg / split_k;
+    uint local_pair = sg_id / split_k;
+    uint sk_id = sg_id % split_k;
+
+    uint tile_n0 = (tgpig.x * pairs_per_tg + local_pair) * 2u;
+    uint tile_m0 = tgpig.y * 32u;
+    uint N_tiles = (N + 7u) >> 3;
+    if (tile_m0 >= M) return;
+
+    bool v0 = (tile_n0 < N_tiles);
+    bool v1 = (tile_n0 + 1u < N_tiles);
+    uint K_groups = K >> 6;
+    uint r  = ((lane & 16u) >> 2) | ((lane & 6u) >> 1);
+    uint c0 = ((lane & 8u)  >> 1) | ((lane & 1u) << 1);
+    uint c1 = c0 + 1u;
+
+    bool has_m1 = (tile_m0 + 8u  < M);
+    bool has_m2 = (tile_m0 + 16u < M);
+    bool has_m3 = (tile_m0 + 24u < M);
+
+    bool vm0 = (tile_m0 + r < M);
+    bool vm1 = (tile_m0 + 8u  + r < M);
+    bool vm2 = (tile_m0 + 16u + r < M);
+    bool vm3 = (tile_m0 + 24u + r < M);
+
+    device const half *xr0 = vm0 ? (x + (tile_m0 + r) * K) : x;
+    device const half *xr1 = vm1 ? (x + (tile_m0 + 8u  + r) * K) : x;
+    device const half *xr2 = vm2 ? (x + (tile_m0 + 16u + r) * K) : x;
+    device const half *xr3 = vm3 ? (x + (tile_m0 + 24u + r) * K) : x;
+
+    simdgroup_float8x8 acc00 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    simdgroup_float8x8 acc01 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    simdgroup_float8x8 acc10 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    simdgroup_float8x8 acc11 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    simdgroup_float8x8 acc20 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    simdgroup_float8x8 acc21 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    simdgroup_float8x8 acc30 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    simdgroup_float8x8 acc31 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+
+    if (v0) {
+        uint stride_w  = K_groups * 32u;
+        uint stride_sb = K_groups * 8u;
+        device const uint2 *wt0 = w_marlin + tile_n0 * stride_w;
+        device const uint2 *wt1 = v1 ? (wt0 + stride_w) : wt0;
+        device const half2 *sbt0 = sb_marlin + tile_n0 * stride_sb;
+        device const half2 *sbt1 = v1 ? (sbt0 + stride_sb) : sbt0;
+
+        uint gk = sk_id;
+        if (gk < K_groups) {
+            uint2 wp0_c = wt0[gk * 32u + lane];
+            uint2 wp1_c = v1 ? wt1[gk * 32u + lane] : uint2(0u);
+            half2 sb_c  = (lane < 8u) ? sbt0[gk * 8u + lane] : ((v1 && lane < 16u) ? sbt1[gk * 8u + (lane - 8u)] : half2(0.0h));
+
+            for (; gk < K_groups; gk += split_k) {
+                uint next_gk = gk + split_k;
+                uint2 wp0_n = uint2(0u), wp1_n = uint2(0u);
+                half2 sb_n = half2(0.0h);
+                if (next_gk < K_groups) {
+                    uint noff = next_gk * 32u + lane;
+                    wp0_n = wt0[noff];
+                    if (v1) wp1_n = wt1[noff];
+                    if (lane < 8u) sb_n = sbt0[next_gk * 8u + lane];
+                    else if (v1 && lane < 16u) sb_n = sbt1[next_gk * 8u + (lane - 8u)];
+                }
+
+                half2 s00 = simd_shuffle(sb_c, c0), s01 = simd_shuffle(sb_c, c1);
+                half2 sc0 = half2(s00.x, s01.x), bi0 = half2(s00.y, s01.y);
+                half2 s10 = simd_shuffle(sb_c, 8u + c0), s11 = simd_shuffle(sb_c, 8u + c1);
+                half2 sc1 = half2(s10.x, s11.x), bi1 = half2(s10.y, s11.y);
+
+                uint k_base = gk << 6;
+                half2 q0[4], q1[4];
+
+                marlin_unpack_4x_half2(wp0_c.x, q0[0], q0[1], q0[2], q0[3]);
+                if (v1) marlin_unpack_4x_half2(wp1_c.x, q1[0], q1[1], q1[2], q1[3]);
+                #pragma unroll
+                for (uint s = 0; s < 4; ++s) {
+                    uint kc = k_base + (s << 3) + c0;
+                    simdgroup_half8x8 B0, B1, A0, A1, A2, A3;
+                    half2 w0 = fma(q0[s], sc0, bi0);
+                    B0.thread_elements()[0] = w0.x; B0.thread_elements()[1] = w0.y;
+                    if (v1) { half2 w1 = fma(q1[s], sc1, bi1); B1.thread_elements()[0] = w1.x; B1.thread_elements()[1] = w1.y; }
+
+                    half2 a0 = vm0 ? *(device const half2 *)(xr0 + kc) : half2(0.0h);
+                    A0.thread_elements()[0] = a0.x; A0.thread_elements()[1] = a0.y;
+                    simdgroup_multiply_accumulate(acc00, A0, B0, acc00);
+                    if (v1) simdgroup_multiply_accumulate(acc01, A0, B1, acc01);
+
+                    if (has_m1) {
+                        half2 a1 = vm1 ? *(device const half2 *)(xr1 + kc) : half2(0.0h);
+                        A1.thread_elements()[0] = a1.x; A1.thread_elements()[1] = a1.y;
+                        simdgroup_multiply_accumulate(acc10, A1, B0, acc10);
+                        if (v1) simdgroup_multiply_accumulate(acc11, A1, B1, acc11);
+                    }
+                    if (has_m2) {
+                        half2 a2 = vm2 ? *(device const half2 *)(xr2 + kc) : half2(0.0h);
+                        A2.thread_elements()[0] = a2.x; A2.thread_elements()[1] = a2.y;
+                        simdgroup_multiply_accumulate(acc20, A2, B0, acc20);
+                        if (v1) simdgroup_multiply_accumulate(acc21, A2, B1, acc21);
+                    }
+                    if (has_m3) {
+                        half2 a3 = vm3 ? *(device const half2 *)(xr3 + kc) : half2(0.0h);
+                        A3.thread_elements()[0] = a3.x; A3.thread_elements()[1] = a3.y;
+                        simdgroup_multiply_accumulate(acc30, A3, B0, acc30);
+                        if (v1) simdgroup_multiply_accumulate(acc31, A3, B1, acc31);
+                    }
+                }
+
+                marlin_unpack_4x_half2(wp0_c.y, q0[0], q0[1], q0[2], q0[3]);
+                if (v1) marlin_unpack_4x_half2(wp1_c.y, q1[0], q1[1], q1[2], q1[3]);
+                #pragma unroll
+                for (uint s = 0; s < 4; ++s) {
+                    uint kc = k_base + 32u + (s << 3) + c0;
+                    simdgroup_half8x8 B0, B1, A0, A1, A2, A3;
+                    half2 w0 = fma(q0[s], sc0, bi0);
+                    B0.thread_elements()[0] = w0.x; B0.thread_elements()[1] = w0.y;
+                    if (v1) { half2 w1 = fma(q1[s], sc1, bi1); B1.thread_elements()[0] = w1.x; B1.thread_elements()[1] = w1.y; }
+
+                    half2 a0 = vm0 ? *(device const half2 *)(xr0 + kc) : half2(0.0h);
+                    A0.thread_elements()[0] = a0.x; A0.thread_elements()[1] = a0.y;
+                    simdgroup_multiply_accumulate(acc00, A0, B0, acc00);
+                    if (v1) simdgroup_multiply_accumulate(acc01, A0, B1, acc01);
+
+                    if (has_m1) {
+                        half2 a1 = vm1 ? *(device const half2 *)(xr1 + kc) : half2(0.0h);
+                        A1.thread_elements()[0] = a1.x; A1.thread_elements()[1] = a1.y;
+                        simdgroup_multiply_accumulate(acc10, A1, B0, acc10);
+                        if (v1) simdgroup_multiply_accumulate(acc11, A1, B1, acc11);
+                    }
+                    if (has_m2) {
+                        half2 a2 = vm2 ? *(device const half2 *)(xr2 + kc) : half2(0.0h);
+                        A2.thread_elements()[0] = a2.x; A2.thread_elements()[1] = a2.y;
+                        simdgroup_multiply_accumulate(acc20, A2, B0, acc20);
+                        if (v1) simdgroup_multiply_accumulate(acc21, A2, B1, acc21);
+                    }
+                    if (has_m3) {
+                        half2 a3 = vm3 ? *(device const half2 *)(xr3 + kc) : half2(0.0h);
+                        A3.thread_elements()[0] = a3.x; A3.thread_elements()[1] = a3.y;
+                        simdgroup_multiply_accumulate(acc30, A3, B0, acc30);
+                        if (v1) simdgroup_multiply_accumulate(acc31, A3, B1, acc31);
+                    }
+                }
+
+                wp0_c = wp0_n; wp1_c = wp1_n; sb_c = sb_n;
+            }
+        }
+    }
+
+    uint col0 = (tile_n0 << 3) + c0;
+    float b00 = has_bias && (col0 + 0u < N) ? float(lin_bias[col0 + 0u]) : 0.0f;
+    float b01 = has_bias && (col0 + 1u < N) ? float(lin_bias[col0 + 1u]) : 0.0f;
+    float b10 = has_bias && (col0 + 8u < N) ? float(lin_bias[col0 + 8u]) : 0.0f;
+    float b11 = has_bias && (col0 + 9u < N) ? float(lin_bias[col0 + 9u]) : 0.0f;
+
+    auto e00 = acc00.thread_elements(), e01 = acc01.thread_elements();
+    auto e10 = acc10.thread_elements(), e11 = acc11.thread_elements();
+    auto e20 = acc20.thread_elements(), e21 = acc21.thread_elements();
+    auto e30 = acc30.thread_elements(), e31 = acc31.thread_elements();
+
+    if (split_k == 1u) {
+        if (v0) {
+            if (vm0) {
+                uint gm = tile_m0 + r;
+                if (col0 + 0u < N) y[gm * N + col0 + 0u] = half(e00[0] + b00);
+                if (col0 + 1u < N) y[gm * N + col0 + 1u] = half(e00[1] + b01);
+                if (v1) {
+                    if (col0 + 8u < N) y[gm * N + col0 + 8u] = half(e01[0] + b10);
+                    if (col0 + 9u < N) y[gm * N + col0 + 9u] = half(e01[1] + b11);
+                }
+            }
+            if (vm1) {
+                uint gm = tile_m0 + 8u + r;
+                if (col0 + 0u < N) y[gm * N + col0 + 0u] = half(e10[0] + b00);
+                if (col0 + 1u < N) y[gm * N + col0 + 1u] = half(e10[1] + b01);
+                if (v1) {
+                    if (col0 + 8u < N) y[gm * N + col0 + 8u] = half(e11[0] + b10);
+                    if (col0 + 9u < N) y[gm * N + col0 + 9u] = half(e11[1] + b11);
+                }
+            }
+            if (vm2) {
+                uint gm = tile_m0 + 16u + r;
+                if (col0 + 0u < N) y[gm * N + col0 + 0u] = half(e20[0] + b00);
+                if (col0 + 1u < N) y[gm * N + col0 + 1u] = half(e20[1] + b01);
+                if (v1) {
+                    if (col0 + 8u < N) y[gm * N + col0 + 8u] = half(e21[0] + b10);
+                    if (col0 + 9u < N) y[gm * N + col0 + 9u] = half(e21[1] + b11);
+                }
+            }
+            if (vm3) {
+                uint gm = tile_m0 + 24u + r;
+                if (col0 + 0u < N) y[gm * N + col0 + 0u] = half(e30[0] + b00);
+                if (col0 + 1u < N) y[gm * N + col0 + 1u] = half(e30[1] + b01);
+                if (v1) {
+                    if (col0 + 8u < N) y[gm * N + col0 + 8u] = half(e31[0] + b10);
+                    if (col0 + 9u < N) y[gm * N + col0 + 9u] = half(e31[1] + b11);
+                }
+            }
+        }
+    } else {
+        threadgroup float4 sg_red[4][32];
+        // Pass 1: reduce m0 and m1 for tile_n0 and tile_n0 + 1
+        sg_red[sg_id][lane] = float4(e00[0], e00[1], e01[0], e01[1]);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (v0 && sk_id == 0u && vm0) {
+            float4 sum = float4(0.0f);
+            for (uint s = 0; s < split_k; ++s) sum += sg_red[local_pair * split_k + s][lane];
+            uint gm = tile_m0 + r;
+            if (col0 + 0u < N) y[gm * N + col0 + 0u] = half(sum.x + b00);
+            if (col0 + 1u < N) y[gm * N + col0 + 1u] = half(sum.y + b01);
+            if (v1) {
+                if (col0 + 8u < N) y[gm * N + col0 + 8u] = half(sum.z + b10);
+                if (col0 + 9u < N) y[gm * N + col0 + 9u] = half(sum.w + b11);
+            }
+        }
+        if (has_m1) {
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            sg_red[sg_id][lane] = float4(e10[0], e10[1], e11[0], e11[1]);
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            if (v0 && sk_id == 0u && vm1) {
+                float4 sum = float4(0.0f);
+                for (uint s = 0; s < split_k; ++s) sum += sg_red[local_pair * split_k + s][lane];
+                uint gm = tile_m0 + 8u + r;
+                if (col0 + 0u < N) y[gm * N + col0 + 0u] = half(sum.x + b00);
+                if (col0 + 1u < N) y[gm * N + col0 + 1u] = half(sum.y + b01);
+                if (v1) {
+                    if (col0 + 8u < N) y[gm * N + col0 + 8u] = half(sum.z + b10);
+                    if (col0 + 9u < N) y[gm * N + col0 + 9u] = half(sum.w + b11);
+                }
+            }
+        }
+        if (has_m2) {
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            sg_red[sg_id][lane] = float4(e20[0], e20[1], e21[0], e21[1]);
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            if (v0 && sk_id == 0u && vm2) {
+                float4 sum = float4(0.0f);
+                for (uint s = 0; s < split_k; ++s) sum += sg_red[local_pair * split_k + s][lane];
+                uint gm = tile_m0 + 16u + r;
+                if (col0 + 0u < N) y[gm * N + col0 + 0u] = half(sum.x + b00);
+                if (col0 + 1u < N) y[gm * N + col0 + 1u] = half(sum.y + b01);
+                if (v1) {
+                    if (col0 + 8u < N) y[gm * N + col0 + 8u] = half(sum.z + b10);
+                    if (col0 + 9u < N) y[gm * N + col0 + 9u] = half(sum.w + b11);
+                }
+            }
+        }
+        if (has_m3) {
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            sg_red[sg_id][lane] = float4(e30[0], e30[1], e31[0], e31[1]);
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            if (v0 && sk_id == 0u && vm3) {
+                float4 sum = float4(0.0f);
+                for (uint s = 0; s < split_k; ++s) sum += sg_red[local_pair * split_k + s][lane];
+                uint gm = tile_m0 + 24u + r;
+                if (col0 + 0u < N) y[gm * N + col0 + 0u] = half(sum.x + b00);
+                if (col0 + 1u < N) y[gm * N + col0 + 1u] = half(sum.y + b01);
+                if (v1) {
+                    if (col0 + 8u < N) y[gm * N + col0 + 8u] = half(sum.z + b10);
+                    if (col0 + 9u < N) y[gm * N + col0 + 9u] = half(sum.w + b11);
+                }
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 7A. Generalized GQA Vector Flash-Decode Split-KV Kernel (T_q = 1, FP16)
+// Supports arbitrary (n_head, n_kv_head) GQA ratios (1:1 MHA, 3:1 SmolLM2,
+// 4:1 Llama-3.2, 7:1 Qwen2.5, 8:1+) and arbitrary even head_dim <= 128.
+// Evaluates up to 8 Query heads per 1 KV head in registers per SIMD-group.
 // ----------------------------------------------------------------------------
 kernel void gqa_flash_decode_split_kv_half_kernel(
     device const half *q [[buffer(0)]],
@@ -1566,165 +2207,108 @@ kernel void gqa_flash_decode_split_kv_half_kernel(
     constant uint &active_len [[buffer(8)]],
     constant uint &num_splits [[buffer(9)]],
     constant float &scale [[buffer(10)]],
-    uint2 tgpig [[threadgroup_position_in_grid]],
+    constant uint &n_head [[buffer(11)]],
+    constant uint &n_kv_head [[buffer(12)]],
+    constant uint &head_dim [[buffer(13)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
     uint simd_lane_id [[thread_index_in_simdgroup]])
 {
-    uint kv_h = tgpig.x;       // [0 .. 3]
-    uint split_id = tgpig.y;   // [0 .. num_splits - 1]
-    uint lane_id = simd_lane_id; // [0 .. 31]
+    uint kv_h = tgpig.x;
+    uint split_id = tgpig.y;
+    uint rep_tile = tgpig.z;
+    uint lane_id = simd_lane_id;
 
-    uint qh0 = kv_h * 3 + 0;
-    uint qh1 = kv_h * 3 + 1;
-    uint qh2 = kv_h * 3 + 2;
+    uint n_rep = n_head / n_kv_head;
+    uint q_sub_base = rep_tile * 8u;
+    if (kv_h >= n_kv_head || q_sub_base >= n_rep) return;
+    uint q_cnt = min(n_rep - q_sub_base, 8u);
+    uint half_hd = head_dim >> 1;
 
-    half2 q0 = *(device const half2 *)(q + qh0 * 64 + lane_id * 2);
-    half2 q1 = *(device const half2 *)(q + qh1 * 64 + lane_id * 2);
-    half2 q2 = *(device const half2 *)(q + qh2 * 64 + lane_id * 2);
+    bool has_lo = (lane_id < half_hd);
+    bool has_hi = ((lane_id + 32u) < half_hd);
 
-    uint tokens_per_split = (active_len + num_splits - 1) / num_splits;
+    half2 q_lo[8];
+    half2 q_hi[8];
+    float m_arr[8];
+    float l_arr[8];
+    float2 o_lo[8];
+    float2 o_hi[8];
+
+    #pragma unroll
+    for (uint r = 0; r < 8; ++r) {
+        m_arr[r] = -1e38f;
+        l_arr[r] = 0.0f;
+        o_lo[r] = float2(0.0f);
+        o_hi[r] = float2(0.0f);
+        if (r < q_cnt) {
+            uint qh = kv_h * n_rep + q_sub_base + r;
+            device const half2 *q_ptr = (device const half2 *)(q + qh * head_dim);
+            q_lo[r] = has_lo ? q_ptr[lane_id] : half2(0.0h);
+            q_hi[r] = has_hi ? q_ptr[lane_id + 32u] : half2(0.0h);
+        } else {
+            q_lo[r] = half2(0.0h);
+            q_hi[r] = half2(0.0h);
+        }
+    }
+
+    uint tokens_per_split = (active_len + num_splits - 1u) / num_splits;
     uint t_start = min(split_id * tokens_per_split, active_len);
     uint t_end = min(t_start + tokens_per_split, active_len);
 
-    float m0 = -1e38f, m1 = -1e38f, m2 = -1e38f;
-    float l0 = 0.0f, l1 = 0.0f, l2 = 0.0f;
-    float2 o0 = float2(0.0f), o1 = float2(0.0f), o2 = float2(0.0f);
+    device const half *k_base = k_cache + kv_h * max_seq_len * head_dim;
+    device const half *v_base = v_cache + kv_h * max_seq_len * head_dim;
 
-    device const half *k_base = k_cache + kv_h * max_seq_len * 64;
-    device const half *v_base = v_cache + kv_h * max_seq_len * 64;
+    for (uint t = t_start; t < t_end; ++t) {
+        device const half2 *k_ptr = (device const half2 *)(k_base + t * head_dim);
+        device const half2 *v_ptr = (device const half2 *)(v_base + t * head_dim);
+        float2 k_lo = has_lo ? float2(k_ptr[lane_id]) : float2(0.0f);
+        float2 k_hi = has_hi ? float2(k_ptr[lane_id + 32u]) : float2(0.0f);
+        float2 v_lo = has_lo ? float2(v_ptr[lane_id]) : float2(0.0f);
+        float2 v_hi = has_hi ? float2(v_ptr[lane_id + 32u]) : float2(0.0f);
 
-    uint t = t_start;
-    for (; t + 16 <= t_end; t += 16) {
-        float score0[16];
-        float score1[16];
-        float score2[16];
-
-        #pragma unroll
-        for (uint j = 0; j < 16; ++j) {
-            half2 k_val = *(device const half2 *)(k_base + (t + j) * 64 + lane_id * 2);
-
-            float p0 = fma(float(q0.x), float(k_val.x), float(q0.y) * float(k_val.y));
-            float p1 = fma(float(q1.x), float(k_val.x), float(q1.y) * float(k_val.y));
-            float p2 = fma(float(q2.x), float(k_val.x), float(q2.y) * float(k_val.y));
-
-            score0[j] = simd_sum(p0) * scale;
-            score1[j] = simd_sum(p1) * scale;
-            score2[j] = simd_sum(p2) * scale;
+        for (uint r = 0; r < q_cnt; ++r) {
+            float p = fma(float(q_lo[r].x), k_lo.x, float(q_lo[r].y) * k_lo.y);
+            if (has_hi) {
+                p += fma(float(q_hi[r].x), k_hi.x, float(q_hi[r].y) * k_hi.y);
+            }
+            float score = simd_sum(p) * scale;
+            float m_new = max(m_arr[r], score);
+            float a = fast::exp(m_arr[r] - m_new);
+            float b = fast::exp(score - m_new);
+            l_arr[r] = fma(l_arr[r], a, b);
+            m_arr[r] = m_new;
+            o_lo[r] = o_lo[r] * a + v_lo * b;
+            if (has_hi) {
+                o_hi[r] = o_hi[r] * a + v_hi * b;
+            }
         }
-
-        float tile_m0 = score0[0], tile_m1 = score1[0], tile_m2 = score2[0];
-        #pragma unroll
-        for (uint j = 1; j < 16; ++j) {
-            tile_m0 = max(tile_m0, score0[j]);
-            tile_m1 = max(tile_m1, score1[j]);
-            tile_m2 = max(tile_m2, score2[j]);
-        }
-
-        float m0_new = max(m0, tile_m0);
-        float m1_new = max(m1, tile_m1);
-        float m2_new = max(m2, tile_m2);
-
-        float a0 = fast::exp(m0 - m0_new);
-        float a1 = fast::exp(m1 - m1_new);
-        float a2 = fast::exp(m2 - m2_new);
-
-        o0 *= a0;
-        l0 *= a0;
-        o1 *= a1;
-        l1 *= a1;
-        o2 *= a2;
-        l2 *= a2;
-
-        #pragma unroll
-        for (uint j = 0; j < 16; ++j) {
-            float w0 = fast::exp(score0[j] - m0_new);
-            float w1 = fast::exp(score1[j] - m1_new);
-            float w2 = fast::exp(score2[j] - m2_new);
-
-            l0 += w0;
-            l1 += w1;
-            l2 += w2;
-
-            half2 v_val = *(device const half2 *)(v_base + (t + j) * 64 + lane_id * 2);
-            float2 v_f = float2(v_val);
-            o0 += v_f * w0;
-            o1 += v_f * w1;
-            o2 += v_f * w2;
-        }
-
-        m0 = m0_new;
-        m1 = m1_new;
-        m2 = m2_new;
     }
 
-    // Remainder loop for leftover tokens
-    for (; t < t_end; ++t) {
-        half2 k_val = *(device const half2 *)(k_base + t * 64 + lane_id * 2);
-
-        float p0 = fma(float(q0.x), float(k_val.x), float(q0.y) * float(k_val.y));
-        float p1 = fma(float(q1.x), float(k_val.x), float(q1.y) * float(k_val.y));
-        float p2 = fma(float(q2.x), float(k_val.x), float(q2.y) * float(k_val.y));
-
-        float score0 = simd_sum(p0) * scale;
-        float score1 = simd_sum(p1) * scale;
-        float score2 = simd_sum(p2) * scale;
-
-        float m0_new = max(m0, score0);
-        float a0 = fast::exp(m0 - m0_new);
-        float b0 = fast::exp(score0 - m0_new);
-        l0 = fma(l0, a0, b0);
-        m0 = m0_new;
-
-        float m1_new = max(m1, score1);
-        float a1 = fast::exp(m1 - m1_new);
-        float b1 = fast::exp(score1 - m1_new);
-        l1 = fma(l1, a1, b1);
-        m1 = m1_new;
-
-        float m2_new = max(m2, score2);
-        float a2 = fast::exp(m2 - m2_new);
-        float b2 = fast::exp(score2 - m2_new);
-        l2 = fma(l2, a2, b2);
-        m2 = m2_new;
-
-        half2 v_val = *(device const half2 *)(v_base + t * 64 + lane_id * 2);
-        float2 v_f = float2(v_val);
-        o0 = o0 * a0 + v_f * b0;
-        o1 = o1 * a1 + v_f * b1;
-        o2 = o2 * a2 + v_f * b2;
-    }
-
-    if (num_splits == 1) {
-        device half2 *out0 = (device half2 *)(out + qh0 * 64);
-        device half2 *out1 = (device half2 *)(out + qh1 * 64);
-        device half2 *out2 = (device half2 *)(out + qh2 * 64);
-
-        float inv_l0 = (l0 > 0.0f) ? (1.0f / l0) : 0.0f;
-        float inv_l1 = (l1 > 0.0f) ? (1.0f / l1) : 0.0f;
-        float inv_l2 = (l2 > 0.0f) ? (1.0f / l2) : 0.0f;
-
-        out0[lane_id] = half2(o0 * inv_l0);
-        out1[lane_id] = half2(o1 * inv_l1);
-        out2[lane_id] = half2(o2 * inv_l2);
+    if (num_splits == 1u) {
+        for (uint r = 0; r < q_cnt; ++r) {
+            uint qh = kv_h * n_rep + q_sub_base + r;
+            device half2 *out_ptr = (device half2 *)(out + qh * head_dim);
+            float inv_l = (l_arr[r] > 0.0f) ? (1.0f / l_arr[r]) : 0.0f;
+            if (has_lo) out_ptr[lane_id] = half2(o_lo[r] * inv_l);
+            if (has_hi) out_ptr[lane_id + 32u] = half2(o_hi[r] * inv_l);
+        }
     } else {
-        uint p_offset = qh0 * (num_splits * 32) + split_id * 32 + lane_id;
-        partial_O[p_offset] = half2(o0);
-        partial_O[p_offset + (num_splits * 32)] = half2(o1);
-        partial_O[p_offset + 2 * (num_splits * 32)] = half2(o2);
-
-        if (lane_id == 0) {
-            uint ml_offset = qh0 * num_splits + split_id;
-            partial_m[ml_offset] = m0;
-            partial_l[ml_offset] = l0;
-            partial_m[ml_offset + num_splits] = m1;
-            partial_l[ml_offset + num_splits] = l1;
-            partial_m[ml_offset + 2 * num_splits] = m2;
-            partial_l[ml_offset + 2 * num_splits] = l2;
+        for (uint r = 0; r < q_cnt; ++r) {
+            uint qh = kv_h * n_rep + q_sub_base + r;
+            uint p_base = qh * (num_splits * half_hd) + split_id * half_hd;
+            if (has_lo) partial_O[p_base + lane_id] = half2(o_lo[r]);
+            if (has_hi) partial_O[p_base + lane_id + 32u] = half2(o_hi[r]);
+            if (lane_id == 0u) {
+                uint ml_idx = qh * num_splits + split_id;
+                partial_m[ml_idx] = m_arr[r];
+                partial_l[ml_idx] = l_arr[r];
+            }
         }
     }
 }
 
 // ----------------------------------------------------------------------------
-// 7B. GQA Split-KV Reduction Kernel (FP16)
+// 7B. Generalized GQA Split-KV Reduction Kernel (FP16)
 // ----------------------------------------------------------------------------
 kernel void gqa_flash_decode_reduce_half_kernel(
     device const half2 *partial_O [[buffer(0)]],
@@ -1732,15 +2316,17 @@ kernel void gqa_flash_decode_reduce_half_kernel(
     device const float *partial_l [[buffer(2)]],
     device half *out [[buffer(3)]],
     constant uint &num_splits [[buffer(4)]],
+    constant uint &head_dim [[buffer(5)]],
     uint2 tgpig [[threadgroup_position_in_grid]],
     uint simd_lane_id [[thread_index_in_simdgroup]])
 {
-    uint qh = tgpig.x;           // [0 .. 11]
-    uint lane_id = simd_lane_id; // [0 .. 31]
+    uint qh = tgpig.x;
+    uint lane_id = simd_lane_id;
+    uint half_hd = head_dim >> 1;
 
     threadgroup float shared_buf[2];
 
-    if (lane_id == 0) {
+    if (lane_id == 0u) {
         float local_max = -1e38f;
         for (uint s = 0; s < num_splits; ++s) {
             float m_val = partial_m[qh * num_splits + s];
@@ -1759,15 +2345,341 @@ kernel void gqa_flash_decode_reduce_half_kernel(
 
     float global_m = shared_buf[0];
     float inv_l = shared_buf[1];
+    device half2 *out_head = (device half2 *)(out + qh * head_dim);
 
-    float2 o_acc = float2(0.0f);
-    for (uint s = 0; s < num_splits; ++s) {
-        float m_val = partial_m[qh * num_splits + s];
-        float weight = fast::exp(m_val - global_m);
-        half2 o_part = partial_O[qh * (num_splits * 32) + s * 32 + lane_id];
-        o_acc += float2(o_part) * weight;
+    for (uint c = lane_id; c < half_hd; c += 32u) {
+        float2 o_acc = float2(0.0f);
+        for (uint s = 0; s < num_splits; ++s) {
+            float m_val = partial_m[qh * num_splits + s];
+            float weight = fast::exp(m_val - global_m);
+            half2 o_part = partial_O[qh * (num_splits * half_hd) + s * half_hd + c];
+            o_acc += float2(o_part) * weight;
+        }
+        out_head[c] = half2(o_acc * inv_l);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 7C. Topology-Aware Batched Tree RoPE + KV Cache Write Kernel (T <= 32, FP16)
+// Rotates Q and K for each candidate tree node u in [0, T) using its exact
+// topological tree depth (start_pos + tree_depths[u]), fuses optional QKV bias,
+// and writes K, V into KV cache slot (write_pos + u) % max_seq_len.
+// ----------------------------------------------------------------------------
+kernel void rope_tree_kv_cache_write_half_kernel(
+    device half2 *qkv [[buffer(0)]],
+    device const float2 *freqs_cis [[buffer(1)]],
+    device half2 *k_cache [[buffer(2)]],
+    device half2 *v_cache [[buffer(3)]],
+    constant const int *tree_depths [[buffer(4)]],
+    constant uint &q_pairs [[buffer(5)]],
+    constant uint &kv_pairs [[buffer(6)]],
+    constant uint &half_head_dim [[buffer(7)]],
+    constant uint &max_seq_len [[buffer(8)]],
+    constant uint &max_rope_len [[buffer(9)]],
+    constant uint &start_pos [[buffer(10)]],
+    constant uint &write_pos [[buffer(11)]],
+    constant uint &T [[buffer(12)]],
+    device const half2 *qkv_bias [[buffer(13)]],
+    constant uint &has_bias [[buffer(14)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint tid = gid.x;
+    uint node_idx = gid.y;
+    uint total_pairs = q_pairs + (kv_pairs << 1);
+    if (tid >= total_pairs || node_idx >= T) return;
+
+    device half2 *qkv_node = qkv + node_idx * total_pairs;
+    half2 raw_val = qkv_node[tid];
+    if (has_bias != 0u) {
+        raw_val += qkv_bias[tid];
     }
 
-    device half2 *out_head = (device half2 *)(out + qh * 64);
-    out_head[lane_id] = half2(o_acc * inv_l);
+    uint rope_pos = (start_pos + uint(tree_depths[node_idx])) % max_rope_len;
+    uint slot = (write_pos + node_idx) % max_seq_len;
+    uint hd_idx = tid % half_head_dim;
+
+    if (tid < q_pairs) {
+        float2 x_val = float2(raw_val);
+        float2 f_val = freqs_cis[rope_pos * half_head_dim + hd_idx];
+        float2 res;
+        res.x = fma(x_val.x, f_val.x, -x_val.y * f_val.y);
+        res.y = fma(x_val.x, f_val.y, x_val.y * f_val.x);
+        qkv_node[tid] = half2(res);
+    } else if (tid < q_pairs + kv_pairs) {
+        uint k_tid = tid - q_pairs;
+        uint kv_head = k_tid / half_head_dim;
+        float2 x_val = float2(raw_val);
+        float2 f_val = freqs_cis[rope_pos * half_head_dim + hd_idx];
+        float2 res;
+        res.x = fma(x_val.x, f_val.x, -x_val.y * f_val.y);
+        res.y = fma(x_val.x, f_val.y, x_val.y * f_val.x);
+        uint dst_idx = (kv_head * max_seq_len + slot) * half_head_dim + hd_idx;
+        k_cache[dst_idx] = half2(res);
+    } else {
+        uint v_tid = tid - (q_pairs + kv_pairs);
+        uint kv_head = v_tid / half_head_dim;
+        uint dst_idx = (kv_head * max_seq_len + slot) * half_head_dim + hd_idx;
+        v_cache[dst_idx] = raw_val;
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 7D. SpecInfer Topology-Aware Tree Attention Split-KV Kernel (T <= 32, FP16)
+// Evaluates 4 tree nodes simultaneously per SIMD-group, sharing prefix KV loads
+// 4x across registers and enforcing exact branching topology via 32-bit
+// ancestor bitmasks (tree_mask[u] bit j == 1 iff node u attends to tree node j).
+// ----------------------------------------------------------------------------
+kernel void gqa_tree_verify_split_kv_half_kernel(
+    device const half *q [[buffer(0)]],
+    device const half *k_cache [[buffer(1)]],
+    device const half *v_cache [[buffer(2)]],
+    device half *out [[buffer(3)]],
+    device half2 *partial_O [[buffer(4)]],
+    device float *partial_m [[buffer(5)]],
+    device float *partial_l [[buffer(6)]],
+    constant const uint *tree_mask [[buffer(7)]],
+    constant uint &max_seq_len [[buffer(8)]],
+    constant uint &prefix_len [[buffer(9)]],
+    constant uint &write_pos [[buffer(10)]],
+    constant uint &T [[buffer(11)]],
+    constant uint &num_splits [[buffer(12)]],
+    constant float &scale [[buffer(13)]],
+    constant uint &n_head [[buffer(14)]],
+    constant uint &n_kv_head [[buffer(15)]],
+    constant uint &head_dim [[buffer(16)]],
+    constant uint &q_stride [[buffer(17)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]])
+{
+    uint qh = tgpig.x;
+    uint node_base = tgpig.y * 4u;
+    uint split_id = tgpig.z;
+    uint lane_id = simd_lane_id;
+
+    if (qh >= n_head || node_base >= T) return;
+    uint u_cnt = min(T - node_base, 4u);
+    uint n_rep = n_head / n_kv_head;
+    uint kv_h = qh / n_rep;
+    uint half_hd = head_dim >> 1;
+
+    bool has_lo = (lane_id < half_hd);
+    bool has_hi = ((lane_id + 32u) < half_hd);
+
+    half2 q_lo[4];
+    half2 q_hi[4];
+    float m_arr[4];
+    float l_arr[4];
+    float2 o_lo[4];
+    float2 o_hi[4];
+
+    #pragma unroll
+    for (uint u = 0; u < 4; ++u) {
+        m_arr[u] = -1e38f;
+        l_arr[u] = 0.0f;
+        o_lo[u] = float2(0.0f);
+        o_hi[u] = float2(0.0f);
+        if (u < u_cnt) {
+            device const half2 *q_ptr = (device const half2 *)(q + (node_base + u) * q_stride + qh * head_dim);
+            q_lo[u] = has_lo ? q_ptr[lane_id] : half2(0.0h);
+            q_hi[u] = has_hi ? q_ptr[lane_id + 32u] : half2(0.0h);
+        } else {
+            q_lo[u] = half2(0.0h);
+            q_hi[u] = half2(0.0h);
+        }
+    }
+
+    device const half *k_base = k_cache + kv_h * max_seq_len * head_dim;
+    device const half *v_base = v_cache + kv_h * max_seq_len * head_dim;
+
+    // 1. Committed prefix tokens [t_start, t_end): shared across all 4 tree nodes!
+    uint tokens_per_split = (prefix_len > 0u) ? ((prefix_len + num_splits - 1u) / num_splits) : 0u;
+    uint t_start = min(split_id * tokens_per_split, prefix_len);
+    uint t_end = min(t_start + tokens_per_split, prefix_len);
+
+    for (uint t = t_start; t < t_end; ++t) {
+        device const half2 *k_ptr = (device const half2 *)(k_base + t * head_dim);
+        device const half2 *v_ptr = (device const half2 *)(v_base + t * head_dim);
+        float2 k_lo = has_lo ? float2(k_ptr[lane_id]) : float2(0.0f);
+        float2 k_hi = has_hi ? float2(k_ptr[lane_id + 32u]) : float2(0.0f);
+        float2 v_lo = has_lo ? float2(v_ptr[lane_id]) : float2(0.0f);
+        float2 v_hi = has_hi ? float2(v_ptr[lane_id + 32u]) : float2(0.0f);
+
+        for (uint u = 0; u < u_cnt; ++u) {
+            float p = fma(float(q_lo[u].x), k_lo.x, float(q_lo[u].y) * k_lo.y);
+            if (has_hi) {
+                p += fma(float(q_hi[u].x), k_hi.x, float(q_hi[u].y) * k_hi.y);
+            }
+            float score = simd_sum(p) * scale;
+            float m_new = max(m_arr[u], score);
+            float a = fast::exp(m_arr[u] - m_new);
+            float b = fast::exp(score - m_new);
+            l_arr[u] = fma(l_arr[u], a, b);
+            m_arr[u] = m_new;
+            o_lo[u] = o_lo[u] * a + v_lo * b;
+            if (has_hi) {
+                o_hi[u] = o_hi[u] * a + v_hi * b;
+            }
+        }
+    }
+
+    // 2. Speculative tree tokens [0, T): evaluated once on split_id == 0 via bitmask!
+    if (split_id == 0u) {
+        uint masks[4];
+        #pragma unroll
+        for (uint u = 0; u < 4; ++u) {
+            masks[u] = (u < u_cnt) ? tree_mask[node_base + u] : 0u;
+        }
+        uint union_mask = masks[0] | masks[1] | masks[2] | masks[3];
+
+        for (uint j = 0; j < T; ++j) {
+            uint bit = 1u << j;
+            if ((union_mask & bit) == 0u) continue;
+
+            uint slot = (write_pos + j) % max_seq_len;
+            device const half2 *k_ptr = (device const half2 *)(k_base + slot * head_dim);
+            device const half2 *v_ptr = (device const half2 *)(v_base + slot * head_dim);
+            float2 k_lo = has_lo ? float2(k_ptr[lane_id]) : float2(0.0f);
+            float2 k_hi = has_hi ? float2(k_ptr[lane_id + 32u]) : float2(0.0f);
+            float2 v_lo = has_lo ? float2(v_ptr[lane_id]) : float2(0.0f);
+            float2 v_hi = has_hi ? float2(v_ptr[lane_id + 32u]) : float2(0.0f);
+
+            for (uint u = 0; u < u_cnt; ++u) {
+                if ((masks[u] & bit) != 0u) {
+                    float p = fma(float(q_lo[u].x), k_lo.x, float(q_lo[u].y) * k_lo.y);
+                    if (has_hi) {
+                        p += fma(float(q_hi[u].x), k_hi.x, float(q_hi[u].y) * k_hi.y);
+                    }
+                    float score = simd_sum(p) * scale;
+                    float m_new = max(m_arr[u], score);
+                    float a = fast::exp(m_arr[u] - m_new);
+                    float b = fast::exp(score - m_new);
+                    l_arr[u] = fma(l_arr[u], a, b);
+                    m_arr[u] = m_new;
+                    o_lo[u] = o_lo[u] * a + v_lo * b;
+                    if (has_hi) {
+                        o_hi[u] = o_hi[u] * a + v_hi * b;
+                    }
+                }
+            }
+        }
+    }
+
+    uint out_stride = n_head * head_dim;
+    if (num_splits == 1u) {
+        for (uint u = 0; u < u_cnt; ++u) {
+            device half2 *out_ptr = (device half2 *)(out + (node_base + u) * out_stride + qh * head_dim);
+            float inv_l = (l_arr[u] > 0.0f) ? (1.0f / l_arr[u]) : 0.0f;
+            if (has_lo) out_ptr[lane_id] = half2(o_lo[u] * inv_l);
+            if (has_hi) out_ptr[lane_id + 32u] = half2(o_hi[u] * inv_l);
+        }
+    } else {
+        for (uint u = 0; u < u_cnt; ++u) {
+            uint row_id = (node_base + u) * n_head + qh;
+            uint p_base = row_id * (num_splits * half_hd) + split_id * half_hd;
+            if (has_lo) partial_O[p_base + lane_id] = half2(o_lo[u]);
+            if (has_hi) partial_O[p_base + lane_id + 32u] = half2(o_hi[u]);
+            if (lane_id == 0u) {
+                uint ml_idx = row_id * num_splits + split_id;
+                partial_m[ml_idx] = m_arr[u];
+                partial_l[ml_idx] = l_arr[u];
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 7E. SpecInfer Tree Attention Split-KV Reduction Kernel (FP16)
+// ----------------------------------------------------------------------------
+kernel void gqa_tree_verify_reduce_half_kernel(
+    device const half2 *partial_O [[buffer(0)]],
+    device const float *partial_m [[buffer(1)]],
+    device const float *partial_l [[buffer(2)]],
+    device half *out [[buffer(3)]],
+    constant uint &num_splits [[buffer(4)]],
+    constant uint &n_head [[buffer(5)]],
+    constant uint &head_dim [[buffer(6)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]])
+{
+    uint qh = tgpig.x;
+    uint node_idx = tgpig.y;
+    uint lane_id = simd_lane_id;
+    uint half_hd = head_dim >> 1;
+    uint row_id = node_idx * n_head + qh;
+
+    threadgroup float shared_buf[2];
+
+    if (lane_id == 0u) {
+        float local_max = -1e38f;
+        for (uint s = 0; s < num_splits; ++s) {
+            float m_val = partial_m[row_id * num_splits + s];
+            if (m_val > local_max) local_max = m_val;
+        }
+        float global_l = 0.0f;
+        for (uint s = 0; s < num_splits; ++s) {
+            float m_val = partial_m[row_id * num_splits + s];
+            float l_val = partial_l[row_id * num_splits + s];
+            global_l += l_val * fast::exp(m_val - local_max);
+        }
+        shared_buf[0] = local_max;
+        shared_buf[1] = (global_l > 0.0f) ? (1.0f / global_l) : 0.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float global_m = shared_buf[0];
+    float inv_l = shared_buf[1];
+    device half2 *out_head = (device half2 *)(out + (node_idx * n_head + qh) * head_dim);
+
+    for (uint c = lane_id; c < half_hd; c += 32u) {
+        float2 o_acc = float2(0.0f);
+        for (uint s = 0; s < num_splits; ++s) {
+            float m_val = partial_m[row_id * num_splits + s];
+            float weight = fast::exp(m_val - global_m);
+            half2 o_part = partial_O[row_id * (num_splits * half_hd) + s * half_hd + c];
+            o_acc += float2(o_part) * weight;
+        }
+        out_head[c] = half2(o_acc * inv_l);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 7F. In-Place DFS / Topological KV-Cache Compaction Kernel (FP16)
+// Compacts accepted tree node KV slots (write_pos + accepted_indices[m]) into
+// contiguous prefix positions (write_pos + m) across ALL layers in 1 dispatch!
+// Race-free via private thread register staging (num_accepted <= 32).
+// ----------------------------------------------------------------------------
+kernel void compact_tree_kv_half_kernel(
+    device half2 *cache_ptr [[buffer(0)]],
+    constant const int *accepted_indices [[buffer(1)]],
+    constant uint &n_layer [[buffer(2)]],
+    constant uint &max_batch_size [[buffer(3)]],
+    constant uint &n_kv_head [[buffer(4)]],
+    constant uint &max_seq_len [[buffer(5)]],
+    constant uint &half_head_dim [[buffer(6)]],
+    constant uint &write_pos [[buffer(7)]],
+    constant uint &num_accepted [[buffer(8)]],
+    uint tid [[thread_position_in_grid]])
+{
+    uint total_streams = n_layer * 2u * n_kv_head * half_head_dim;
+    if (tid >= total_streams || num_accepted == 0u) return;
+
+    uint d_pair = tid % half_head_dim;
+    uint rem = tid / half_head_dim;
+    uint kv_h = rem % n_kv_head;
+    rem /= n_kv_head;
+    uint kv_type = rem & 1u;
+    uint layer = rem >> 1;
+
+    uint base_idx = (((layer * 2u + kv_type) * max_batch_size) * n_kv_head + kv_h) * max_seq_len * half_head_dim;
+
+    half2 vals[32];
+    uint cnt = min(num_accepted, 32u);
+    for (uint m = 0; m < cnt; ++m) {
+        uint src_slot = (write_pos + uint(accepted_indices[m])) % max_seq_len;
+        vals[m] = cache_ptr[base_idx + src_slot * half_head_dim + d_pair];
+    }
+    for (uint m = 0; m < cnt; ++m) {
+        uint dst_slot = (write_pos + m) % max_seq_len;
+        cache_ptr[base_idx + dst_slot * half_head_dim + d_pair] = vals[m];
+    }
 }

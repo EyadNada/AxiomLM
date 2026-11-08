@@ -295,8 +295,12 @@ class FusedSwiGLUMLP(nn.Module):
 
     def __init__(self, config: Any):
         super().__init__()
-        hidden_dim = int(2 * (4 * config.n_embd) / 3)
-        hidden_dim = 64 * ((hidden_dim + 64 - 1) // 64)
+        intermediate_size = getattr(config, "intermediate_size", None)
+        if intermediate_size is not None:
+            hidden_dim = int(intermediate_size)
+        else:
+            hidden_dim = int(2 * (4 * config.n_embd) / 3)
+            hidden_dim = 64 * ((hidden_dim + 64 - 1) // 64)
         self.hidden_dim = hidden_dim
         bias = getattr(config, "bias", False)
         self.w_gate = nn.Linear(config.n_embd, hidden_dim, bias=bias)
@@ -568,12 +572,14 @@ def gqa_flash_decode_mps(
         )
     # PyTorch fallback for CPU or non-FP16 testing
     orig_shape = q.shape
-    if q.dim() == 3 or q.dim() == 2 or q.dim() == 1:
-        q_4d = q.view(1, 12, 1, 64)
-    else:
-        q_4d = q
     k_in = k_cache if k_cache.dim() == 4 else k_cache.unsqueeze(0)
     v_in = v_cache if v_cache.dim() == 4 else v_cache.unsqueeze(0)
+    head_dim = k_in.size(-1)
+    if q.dim() < 4:
+        n_head = q.numel() // head_dim
+        q_4d = q.view(1, n_head, 1, head_dim)
+    else:
+        q_4d = q
     k_active = k_in[:, :, :active_len, :]
     v_active = v_in[:, :, :active_len, :]
     if q_4d.size(1) != k_active.size(1):

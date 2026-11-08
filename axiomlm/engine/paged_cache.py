@@ -220,3 +220,53 @@ class StaticKVCache:
             if B == self.max_batch_size:
                 return k_buf[:, :, :active_len, :], v_buf[:, :, :active_len, :]
             return k_buf[:B, :, :active_len, :], v_buf[:B, :, :active_len, :]
+
+    def compact_tree_path(
+        self,
+        write_pos: int,
+        accepted_indices: list[int],
+        new_total_seen: int | None = None,
+    ) -> None:
+        """
+        In-place topological KV-cache compaction after SpecInfer / Medusa tree verification.
+        Moves KV vectors of accepted tree nodes `(write_pos + accepted_indices[m]) % max_seq_len`
+        into contiguous slots `(write_pos + m) % max_seq_len` across all layers in a single
+        race-free pass, then updates `total_seen_tokens` and `layer_seq_lens`.
+        """
+        num_accepted = len(accepted_indices)
+        if num_accepted > 0:
+            already_compact = all(accepted_indices[m] == m for m in range(num_accepted))
+            if not already_compact:
+                from axiomlm.kernels.ops import _METAL_MOD
+
+                if (
+                    self.cache.device.type == "mps"
+                    and self.cache.dtype == torch.float16
+                    and self.cache.is_contiguous()
+                    and _METAL_MOD is not None
+                    and hasattr(_METAL_MOD, "compact_tree_kv_mps")
+                ):
+                    _METAL_MOD.compact_tree_kv_mps(
+                        self.cache, int(write_pos), [int(x) for x in accepted_indices]
+                    )
+                else:
+                    src_slots = [
+                        (write_pos + int(idx)) % self.max_seq_len
+                        for idx in accepted_indices
+                    ]
+                    dst_slots = [
+                        (write_pos + m) % self.max_seq_len for m in range(num_accepted)
+                    ]
+                    src_t = torch.tensor(
+                        src_slots, dtype=torch.long, device=self.cache.device
+                    )
+                    dst_t = torch.tensor(
+                        dst_slots, dtype=torch.long, device=self.cache.device
+                    )
+                    staged = self.cache.index_select(4, src_t).clone()
+                    self.cache.index_copy_(4, dst_t, staged)
+
+        if new_total_seen is not None:
+            active = min(new_total_seen, self.max_seq_len)
+            self.total_seen_tokens[:] = [new_total_seen] * self.n_layer
+            self.layer_seq_lens[:] = [active] * self.n_layer

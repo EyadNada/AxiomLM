@@ -55,14 +55,18 @@ class CausalSelfAttention(nn.Module):
         )
 
         # Projections
+        qkv_bias = bool(
+            getattr(config, "bias", False) or getattr(config, "qkv_bias", False)
+        )
+        proj_bias = bool(getattr(config, "bias", False))
         if not self.separate_qkv:
-            self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
+            self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=qkv_bias)
         else:
             q_dim = self.n_head * self.head_dim
             kv_dim = self.n_kv_head * self.head_dim
-            self.c_attn = nn.Linear(config.n_embd, q_dim + 2 * kv_dim, bias=config.bias)
+            self.c_attn = nn.Linear(config.n_embd, q_dim + 2 * kv_dim, bias=qkv_bias)
 
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=proj_bias)
         self.c_proj.NANOGPT_SCALE_INIT = 1  # type: ignore
 
     def forward(

@@ -2,6 +2,7 @@
 AxiomLM Architectural Primitives & Modern Transformer Components.
 """
 
+import math
 from typing import Any
 
 import torch
@@ -43,18 +44,50 @@ class RMSNorm(nn.Module):
 
 
 def precompute_rope_frequencies(
-    head_dim: int, max_seq_len: int = 2048, theta: float = 10000.0
+    head_dim: int,
+    max_seq_len: int = 2048,
+    theta: float = 10000.0,
+    rope_scaling: dict[str, Any] | None = None,
 ) -> torch.Tensor:
     """
     Precomputes complex rotary frequency tensors for Rotary Position Embeddings (RoPE).
+    Supports standard RoPE, linear scaling, and Llama-3 smooth wavelength scaling.
     Returns complex64 tensor of shape (max_seq_len, head_dim // 2).
     """
     assert head_dim % 2 == 0, f"head_dim ({head_dim}) must be even for complex RoPE"
-    freqs = 1.0 / (
-        theta ** (torch.arange(0, head_dim, 2)[: (head_dim // 2)].float() / head_dim)
+    inv_freq = 1.0 / (
+        theta ** (torch.arange(0, head_dim, 2, dtype=torch.int64).float() / head_dim)
     )
+    if rope_scaling is not None:
+        rope_type = rope_scaling.get("rope_type", rope_scaling.get("type", "default"))
+        if rope_type == "llama3":
+            factor = float(rope_scaling["factor"])
+            low_freq_factor = float(rope_scaling.get("low_freq_factor", 1.0))
+            high_freq_factor = float(rope_scaling.get("high_freq_factor", 4.0))
+            old_context_len = float(
+                rope_scaling.get("original_max_position_embeddings", 8192)
+            )
+            low_freq_wavelen = old_context_len / low_freq_factor
+            high_freq_wavelen = old_context_len / high_freq_factor
+            wavelen = 2.0 * math.pi / inv_freq
+            inv_freq_llama = torch.where(
+                wavelen > low_freq_wavelen, inv_freq / factor, inv_freq
+            )
+            smooth_factor = (old_context_len / wavelen - low_freq_factor) / (
+                high_freq_factor - low_freq_factor
+            )
+            smoothed_inv_freq = (
+                1.0 - smooth_factor
+            ) * inv_freq_llama / factor + smooth_factor * inv_freq_llama
+            is_medium_freq = ~(wavelen < high_freq_wavelen) & ~(
+                wavelen > low_freq_wavelen
+            )
+            inv_freq = torch.where(is_medium_freq, smoothed_inv_freq, inv_freq_llama)
+        elif rope_type == "linear" and "factor" in rope_scaling:
+            inv_freq = inv_freq / float(rope_scaling["factor"])
+
     t = torch.arange(max_seq_len, dtype=torch.float32)
-    freqs = torch.outer(t, freqs)
+    freqs = torch.outer(t, inv_freq)
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
     return freqs_cis
 
@@ -111,6 +144,8 @@ class SwiGLUMLP(nn.Module):
         if hasattr(config, "n_embd"):
             n_embd = config.n_embd
             bias = getattr(config, "bias", False)
+            if hidden_dim is None:
+                hidden_dim = getattr(config, "intermediate_size", None)
         else:
             n_embd = int(config)
         if hidden_dim is None:

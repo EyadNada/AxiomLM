@@ -17,22 +17,116 @@ from ..models.transformer import Transformer
 from .paged_cache import StaticKVCache
 
 
+DEFAULT_MEDUSA_TREE_CHOICES: list[tuple[int, ...]] = [
+    (0,),
+    (1,),
+    (2,),
+    (3,),
+    (0, 0),
+    (0, 1),
+    (0, 2),
+    (1, 0),
+    (1, 1),
+    (2, 0),
+    (0, 0, 0),
+    (0, 0, 1),
+    (0, 1, 0),
+    (0, 1, 1),
+    (1, 0, 0),
+    (0, 0, 0, 0),
+]
+
+
+def compile_medusa_tree(
+    tree_choices: list[tuple[int, ...]],
+    num_heads: int,
+) -> dict[str, Any]:
+    """
+    Compiles a list of top-k Medusa draft rank tuples into SpecInfer / Medusa
+    topology metadata for single-pass tree verification (T <= 32):
+      - tree_depths: list[int] of length T (relative RoPE offset per node)
+      - tree_mask:   list[int] of length T (32-bit ancestor bitmask per node)
+      - parent:      list[int] of length T (-1 for root 0)
+      - children:    list[list[int]] adjacency list for greedy verification walk
+      - head_idx:    list[int] (-1 for root 0, depth - 1 for candidate nodes)
+      - topk_rank:   list[int] (-1 for root 0, rank index within head top-k)
+      - max_topk_per_head: list[int] of length num_heads
+      - max_depth:   int
+    """
+    prefix_closed: set[tuple[int, ...]] = set()
+    for choice in tree_choices:
+        t_choice = tuple(int(r) for r in choice)
+        if len(t_choice) == 0 or len(t_choice) > num_heads:
+            continue
+        for prefix_len in range(1, len(t_choice) + 1):
+            prefix_closed.add(t_choice[:prefix_len])
+
+    sorted_paths = sorted(prefix_closed, key=lambda p: (len(p), p))
+    if len(sorted_paths) > 31:
+        sorted_paths = sorted_paths[:31]
+
+    T = 1 + len(sorted_paths)
+    node_id_map: dict[tuple[int, ...], int] = {(): 0}
+    tree_depths = [0] * T
+    tree_mask = [0] * T
+    parent = [-1] * T
+    children: list[list[int]] = [[] for _ in range(T)]
+    head_idx = [-1] * T
+    topk_rank = [-1] * T
+    max_topk_per_head = [1] * num_heads
+
+    tree_mask[0] = 1  # Root attends to itself (and full KV prefix)
+    max_depth = 0
+
+    for idx_in_list, path in enumerate(sorted_paths):
+        u = idx_in_list + 1
+        node_id_map[path] = u
+        d = len(path)
+        max_depth = max(max_depth, d)
+        par_u = node_id_map[path[:-1]]
+        h = d - 1
+        rk = path[-1]
+
+        tree_depths[u] = d
+        parent[u] = par_u
+        children[par_u].append(u)
+        head_idx[u] = h
+        topk_rank[u] = rk
+        tree_mask[u] = tree_mask[par_u] | (1 << u)
+        if rk + 1 > max_topk_per_head[h]:
+            max_topk_per_head[h] = rk + 1
+
+    return {
+        "num_nodes": T,
+        "tree_depths": tree_depths,
+        "tree_mask": tree_mask,
+        "parent": parent,
+        "children": children,
+        "head_idx": head_idx,
+        "topk_rank": topk_rank,
+        "max_topk_per_head": max_topk_per_head,
+        "max_depth": max_depth,
+    }
+
+
 class MedusaSpeculativeDecoder:
     """
     Neural Medusa Speculative Decoder for AxiomLM Transformers.
 
-    Utilizes K auxiliary linear heads attached to the final hidden state
-    to self-draft K candidate tokens in parallel, then verifies them in a single
-    batched verification pass (qmm_q4_g64 / verify_step).
+    Supports both linear chain verification and SpecInfer topology-aware candidate
+    tree verification (up to T=32 nodes per pass with 32-bit ancestor bitmasks and
+    in-place KV-cache compaction).
     """
 
     def __init__(
         self,
         num_heads: int = 3,
         temperature: float = 0.0,
+        tree_choices: list[tuple[int, ...]] | None = None,
     ):
         self.num_heads = num_heads
         self.temperature = temperature
+        self.tree_choices = tree_choices
 
     def generate(
         self,
@@ -41,9 +135,10 @@ class MedusaSpeculativeDecoder:
         max_new_tokens: int = 64,
         cache: StaticKVCache | None = None,
         device: torch.device | None = None,
+        tree_choices: list[tuple[int, ...]] | None = None,
     ) -> tuple[list[int], dict[str, Any]]:
         """
-        Executes Medusa neural speculative decoding.
+        Executes Medusa neural speculative decoding (linear or tree-structured).
 
         Args:
             model: AxiomLM Transformer model with medusa_heads attached.
@@ -51,6 +146,7 @@ class MedusaSpeculativeDecoder:
             max_new_tokens: Maximum number of tokens to generate.
             cache: Pre-allocated StaticKVCache (created if None).
             device: Target torch device (defaults to model device).
+            tree_choices: Optional candidate tree topology overriding self.tree_choices.
 
         Returns:
             Tuple of (generated_tokens, stats_dict).
@@ -66,7 +162,7 @@ class MedusaSpeculativeDecoder:
         config = model.config
         head_dim = config.n_embd // config.n_head
         n_kv_head = config.n_kv_head if config.n_kv_head is not None else config.n_head
-        max_cache_len = max(config.block_size, len(prompt_tokens) + max_new_tokens + 16)
+        max_cache_len = max(config.block_size, len(prompt_tokens) + max_new_tokens + 32)
 
         if cache is None:
             cache = StaticKVCache(
@@ -82,6 +178,13 @@ class MedusaSpeculativeDecoder:
         n_L = config.n_layer
         kv_caches = [cache] * n_L
         k_heads = len(model.medusa_heads)
+        active_choices = tree_choices if tree_choices is not None else self.tree_choices
+        compiled_tree = (
+            compile_medusa_tree(active_choices, k_heads)
+            if active_choices is not None
+            else None
+        )
+        use_tree = compiled_tree is not None and compiled_tree["num_nodes"] > 1
 
         # 1. Prefill stage: Process initial prompt and generate first draft
         prompt_tensor = torch.tensor([prompt_tokens], device=device, dtype=torch.long)
@@ -95,10 +198,24 @@ class MedusaSpeculativeDecoder:
         generated = list(prompt_tokens) + [next_tok]
         target_total = len(prompt_tokens) + max_new_tokens
 
+        def _extract_tree_topk(
+            med_list: list[torch.Tensor], pos_idx: int
+        ) -> list[list[int]]:
+            assert compiled_tree is not None
+            res: list[list[int]] = []
+            for h in range(k_heads):
+                req_k = min(compiled_tree["max_topk_per_head"][h], med_list[h].size(-1))
+                vals = torch.topk(
+                    med_list[h][0, pos_idx], k=req_k, dim=-1
+                ).indices.tolist()
+                res.append(vals)
+            return res
+
         # Initial Medusa draft candidates from the prompt's final hidden state
         draft_candidates = [
             medusa_logits[k][:, -1, :].argmax(dim=-1).item() for k in range(k_heads)
         ]
+        tree_topk = _extract_tree_topk(medusa_logits, -1) if use_tree else []
 
         total_drafted = 0
         total_accepted = 0
@@ -111,7 +228,76 @@ class MedusaSpeculativeDecoder:
         # 2. Medusa Speculative Generation Loop
         with torch.no_grad():
             while len(generated) < target_total:
-                # Number of candidates to verify in this step
+                checkpoint_seen = cache.total_seen_tokens[0]
+
+                if (
+                    use_tree
+                    and compiled_tree is not None
+                    and checkpoint_seen + compiled_tree["num_nodes"]
+                    <= cache.max_seq_len
+                ):
+                    T_tree = compiled_tree["num_nodes"]
+                    verif_seq = [0] * T_tree
+                    verif_seq[0] = generated[-1]
+                    h_indices = compiled_tree["head_idx"]
+                    r_indices = compiled_tree["topk_rank"]
+                    for u in range(1, T_tree):
+                        h_u = h_indices[u]
+                        r_u = r_indices[u]
+                        verif_seq[u] = tree_topk[h_u][min(r_u, len(tree_topk[h_u]) - 1)]
+
+                    verif_tensor = torch.tensor(
+                        [verif_seq], device=device, dtype=torch.long
+                    )
+                    logits, _, _ = model.forward_tree_verify(
+                        verif_tensor,
+                        kv_caches=kv_caches,
+                        tree_depths=compiled_tree["tree_depths"],
+                        tree_mask=compiled_tree["tree_mask"],
+                        return_medusa=False,
+                    )
+                    model_forward_calls += 1
+                    step_max_draft = min(
+                        compiled_tree["max_depth"], target_total - len(generated)
+                    )
+                    total_drafted += step_max_draft
+
+                    preds = logits[0].argmax(dim=-1).tolist()
+                    children = compiled_tree["children"]
+                    curr_u = 0
+                    accepted_nodes = [0]
+
+                    while len(generated) < target_total:
+                        pred_tok = preds[curr_u]
+                        matched_child = None
+                        for child_u in children[curr_u]:
+                            if verif_seq[child_u] == pred_tok:
+                                matched_child = child_u
+                                break
+                        generated.append(pred_tok)
+                        if matched_child is None or len(generated) >= target_total:
+                            break
+                        curr_u = matched_child
+                        accepted_nodes.append(curr_u)
+
+                    accepted_count = len(accepted_nodes)
+                    total_accepted += max(0, accepted_count - 1)
+                    cache.compact_tree_path(
+                        write_pos=checkpoint_seen,
+                        accepted_indices=accepted_nodes,
+                        new_total_seen=checkpoint_seen + accepted_count,
+                    )
+
+                    if len(generated) >= target_total:
+                        break
+
+                    # Lazy terminal-leaf drafting: evaluate Medusa heads ONLY on accepted leaf `curr_u` (M=1)
+                    leaf_norm = model._last_verify_norm[:, curr_u : curr_u + 1, :]
+                    med_logits_leaf = model.eval_medusa_heads(leaf_norm)
+                    tree_topk = _extract_tree_topk(med_logits_leaf, 0)
+                    continue
+
+                # Linear chain verification path
                 k_cand = min(len(draft_candidates), target_total - len(generated))
                 if k_cand <= 0:
                     break
@@ -123,11 +309,13 @@ class MedusaSpeculativeDecoder:
                 verif_tensor = torch.tensor(
                     [verif_seq], device=device, dtype=torch.long
                 )
-                checkpoint_seen = cache.total_seen_tokens[0]
 
-                # Single-pass batched forward verification (computes all blocks, LN, lm_head & medusa_heads)
-                logits, med_logits_all, _ = model.forward_with_medusa(
-                    verif_tensor, kv_caches=kv_caches, return_all_logits=True
+                # Single-pass batched forward verification; defer Medusa heads to terminal accepted position
+                logits, _, _ = model.forward_with_medusa(
+                    verif_tensor,
+                    kv_caches=kv_caches,
+                    return_all_logits=True,
+                    return_medusa=False,
                 )
                 model_forward_calls += 1
                 total_drafted += k_cand
@@ -161,7 +349,7 @@ class MedusaSpeculativeDecoder:
                     bonus_tok = preds[k_cand]
                     generated.append(bonus_tok)
                     accepted += 1
-                    last_accepted_idx = k_cand - 1
+                    last_accepted_idx = k_cand
 
                 # Credit accepted draft tokens (excluding the 1 base guaranteed token)
                 total_accepted += max(0, accepted - 1)
@@ -174,11 +362,14 @@ class MedusaSpeculativeDecoder:
                 if len(generated) >= target_total:
                     break
 
-                # Extract new Medusa draft candidates from the last accepted position's hidden state
-                # med_logits_all[k] has shape (1, T_verif, vocab_size)
-                if med_logits_all and last_accepted_idx < med_logits_all[0].size(1):
+                # Lazy terminal-leaf drafting: evaluate Medusa heads ONLY at `last_accepted_idx` (M=1)
+                last_norm = getattr(model, "_last_verify_norm", None)
+                if last_norm is not None and last_accepted_idx < last_norm.size(1):
+                    med_logits_leaf = model.eval_medusa_heads(
+                        last_norm[:, last_accepted_idx : last_accepted_idx + 1, :]
+                    )
                     draft_candidates = [
-                        med_logits_all[k][0, last_accepted_idx].argmax(dim=-1).item()
+                        med_logits_leaf[k][0, 0].argmax(dim=-1).item()
                         for k in range(k_heads)
                     ]
                 else:
@@ -219,6 +410,16 @@ class MedusaSpeculativeDecoder:
                 new_tokens_count / model_forward_calls
                 if model_forward_calls > 0
                 else 0.0
+            ),
+            "mean_accepted_length": (
+                new_tokens_count / model_forward_calls
+                if model_forward_calls > 0
+                else 0.0
+            ),
+            "tree_nodes_per_step": (
+                compiled_tree["num_nodes"]
+                if use_tree and compiled_tree is not None
+                else (1 + k_heads)
             ),
             "drafted_tokens": total_drafted,
             "accepted_draft_tokens": total_accepted,
@@ -283,5 +484,6 @@ def train_medusa_heads(
         losses.append(loss.item())
 
     model.medusa_heads.to(dtype=orig_dtype)
+    model._quant_weights_cache = None
     model.eval()
     return losses
