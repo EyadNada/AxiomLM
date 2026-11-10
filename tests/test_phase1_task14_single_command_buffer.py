@@ -30,6 +30,7 @@ class TestPhase1Task14SingleCommandBuffer(unittest.TestCase):
 
     def setUp(self):
         torch.manual_seed(2026)
+        self._prev_grad_state = torch.is_grad_enabled()
         torch.set_grad_enabled(False)
         self.device = torch.device("mps")
         self.config = ModelConfig(
@@ -61,6 +62,9 @@ class TestPhase1Task14SingleCommandBuffer(unittest.TestCase):
             dtype=torch.float16,
         )
         self.runner = self.model.get_decode_runner(self.cache)
+
+    def tearDown(self):
+        torch.set_grad_enabled(self._prev_grad_state)
 
     def test_01_runner_instantiation_and_single_encoder_dispatch(self):
         """

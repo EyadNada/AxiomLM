@@ -1,0 +1,402 @@
+{
+  "metadata": {
+    "task": "Phase 2 Task 2.1: Empirical Hardware Verification Latency Curve t(N)",
+    "timestamp": "2026-11-10T20:57:34Z",
+    "hardware": {
+      "platform": "macOS-26.6.2-arm64-arm-64bit",
+      "processor": "arm",
+      "soc": "Apple M3 Pro",
+      "torch_version": "2.13.0",
+      "mps_available": true
+    },
+    "benchmark_params": {
+      "prefix_len": 128,
+      "warmup_iters": 5,
+      "timed_iters": 20
+    }
+  },
+  "profiles": {
+    "SmolLM2-360M_tree_q4": {
+      "1": {
+        "N": 1,
+        "mean_latency_ms": 3.105,
+        "std_latency_ms": 0.113,
+        "p50_latency_ms": 3.096,
+        "p95_latency_ms": 3.52,
+        "p99_latency_ms": 3.52,
+        "normalized_cost_t_N": 1.0,
+        "verification_rate_cand_per_s": 322.1,
+        "ideal_speedup_ceiling": 1.0,
+        "incremental_cost_ms_per_cand": 0.0
+      },
+      "2": {
+        "N": 2,
+        "mean_latency_ms": 3.973,
+        "std_latency_ms": 0.23,
+        "p50_latency_ms": 3.953,
+        "p95_latency_ms": 4.678,
+        "p99_latency_ms": 4.678,
+        "normalized_cost_t_N": 1.2796,
+        "verification_rate_cand_per_s": 503.4,
+        "ideal_speedup_ceiling": 1.563,
+        "incremental_cost_ms_per_cand": 0.8682
+      },
+      "4": {
+        "N": 4,
+        "mean_latency_ms": 4.3,
+        "std_latency_ms": 0.207,
+        "p50_latency_ms": 4.285,
+        "p95_latency_ms": 4.798,
+        "p99_latency_ms": 4.798,
+        "normalized_cost_t_N": 1.3851,
+        "verification_rate_cand_per_s": 930.2,
+        "ideal_speedup_ceiling": 2.888,
+        "incremental_cost_ms_per_cand": 0.3986
+      },
+      "8": {
+        "N": 8,
+        "mean_latency_ms": 4.619,
+        "std_latency_ms": 0.117,
+        "p50_latency_ms": 4.625,
+        "p95_latency_ms": 5.031,
+        "p99_latency_ms": 5.031,
+        "normalized_cost_t_N": 1.4879,
+        "verification_rate_cand_per_s": 1731.9,
+        "ideal_speedup_ceiling": 5.377,
+        "incremental_cost_ms_per_cand": 0.2164
+      },
+      "16": {
+        "N": 16,
+        "mean_latency_ms": 7.186,
+        "std_latency_ms": 0.281,
+        "p50_latency_ms": 7.148,
+        "p95_latency_ms": 7.843,
+        "p99_latency_ms": 7.843,
+        "normalized_cost_t_N": 2.3146,
+        "verification_rate_cand_per_s": 2226.6,
+        "ideal_speedup_ceiling": 6.913,
+        "incremental_cost_ms_per_cand": 0.2721
+      },
+      "32": {
+        "N": 32,
+        "mean_latency_ms": 12.19,
+        "std_latency_ms": 0.296,
+        "p50_latency_ms": 12.051,
+        "p95_latency_ms": 12.769,
+        "p99_latency_ms": 12.769,
+        "normalized_cost_t_N": 3.9265,
+        "verification_rate_cand_per_s": 2625.1,
+        "ideal_speedup_ceiling": 8.15,
+        "incremental_cost_ms_per_cand": 0.2931
+      }
+    },
+    "SmolLM2-360M_tree_fp16": {
+      "1": {
+        "N": 1,
+        "mean_latency_ms": 6.288,
+        "std_latency_ms": 0.044,
+        "p50_latency_ms": 6.281,
+        "p95_latency_ms": 6.36,
+        "p99_latency_ms": 6.36,
+        "normalized_cost_t_N": 1.0,
+        "verification_rate_cand_per_s": 159.0,
+        "ideal_speedup_ceiling": 1.0,
+        "incremental_cost_ms_per_cand": 0.0
+      },
+      "2": {
+        "N": 2,
+        "mean_latency_ms": 6.322,
+        "std_latency_ms": 0.227,
+        "p50_latency_ms": 6.266,
+        "p95_latency_ms": 6.973,
+        "p99_latency_ms": 6.973,
+        "normalized_cost_t_N": 1.0055,
+        "verification_rate_cand_per_s": 316.3,
+        "ideal_speedup_ceiling": 1.989,
+        "incremental_cost_ms_per_cand": 0.0343
+      },
+      "4": {
+        "N": 4,
+        "mean_latency_ms": 6.366,
+        "std_latency_ms": 0.038,
+        "p50_latency_ms": 6.362,
+        "p95_latency_ms": 6.47,
+        "p99_latency_ms": 6.47,
+        "normalized_cost_t_N": 1.0124,
+        "verification_rate_cand_per_s": 628.3,
+        "ideal_speedup_ceiling": 3.951,
+        "incremental_cost_ms_per_cand": 0.026
+      },
+      "8": {
+        "N": 8,
+        "mean_latency_ms": 6.086,
+        "std_latency_ms": 0.078,
+        "p50_latency_ms": 6.085,
+        "p95_latency_ms": 6.265,
+        "p99_latency_ms": 6.265,
+        "normalized_cost_t_N": 0.9679,
+        "verification_rate_cand_per_s": 1314.4,
+        "ideal_speedup_ceiling": 8.265,
+        "incremental_cost_ms_per_cand": -0.0288
+      },
+      "16": {
+        "N": 16,
+        "mean_latency_ms": 9.152,
+        "std_latency_ms": 0.065,
+        "p50_latency_ms": 9.162,
+        "p95_latency_ms": 9.271,
+        "p99_latency_ms": 9.271,
+        "normalized_cost_t_N": 1.4554,
+        "verification_rate_cand_per_s": 1748.3,
+        "ideal_speedup_ceiling": 10.994,
+        "incremental_cost_ms_per_cand": 0.1909
+      },
+      "32": {
+        "N": 32,
+        "mean_latency_ms": 11.429,
+        "std_latency_ms": 0.049,
+        "p50_latency_ms": 11.437,
+        "p95_latency_ms": 11.538,
+        "p99_latency_ms": 11.538,
+        "normalized_cost_t_N": 1.8176,
+        "verification_rate_cand_per_s": 2799.8,
+        "ideal_speedup_ceiling": 17.606,
+        "incremental_cost_ms_per_cand": 0.1658
+      }
+    },
+    "Qwen2.5-0.5B_tree_q4": {
+      "1": {
+        "N": 1,
+        "mean_latency_ms": 4.3,
+        "std_latency_ms": 0.072,
+        "p50_latency_ms": 4.308,
+        "p95_latency_ms": 4.463,
+        "p99_latency_ms": 4.463,
+        "normalized_cost_t_N": 1.0,
+        "verification_rate_cand_per_s": 232.6,
+        "ideal_speedup_ceiling": 1.0,
+        "incremental_cost_ms_per_cand": 0.0
+      },
+      "2": {
+        "N": 2,
+        "mean_latency_ms": 5.754,
+        "std_latency_ms": 0.206,
+        "p50_latency_ms": 5.721,
+        "p95_latency_ms": 6.608,
+        "p99_latency_ms": 6.608,
+        "normalized_cost_t_N": 1.3382,
+        "verification_rate_cand_per_s": 347.6,
+        "ideal_speedup_ceiling": 1.495,
+        "incremental_cost_ms_per_cand": 1.4543
+      },
+      "4": {
+        "N": 4,
+        "mean_latency_ms": 6.329,
+        "std_latency_ms": 0.035,
+        "p50_latency_ms": 6.331,
+        "p95_latency_ms": 6.377,
+        "p99_latency_ms": 6.377,
+        "normalized_cost_t_N": 1.4719,
+        "verification_rate_cand_per_s": 632.0,
+        "ideal_speedup_ceiling": 2.718,
+        "incremental_cost_ms_per_cand": 0.6763
+      },
+      "8": {
+        "N": 8,
+        "mean_latency_ms": 7.402,
+        "std_latency_ms": 0.203,
+        "p50_latency_ms": 7.394,
+        "p95_latency_ms": 8.199,
+        "p99_latency_ms": 8.199,
+        "normalized_cost_t_N": 1.7215,
+        "verification_rate_cand_per_s": 1080.7,
+        "ideal_speedup_ceiling": 4.647,
+        "incremental_cost_ms_per_cand": 0.4432
+      },
+      "16": {
+        "N": 16,
+        "mean_latency_ms": 12.211,
+        "std_latency_ms": 0.041,
+        "p50_latency_ms": 12.225,
+        "p95_latency_ms": 12.29,
+        "p99_latency_ms": 12.29,
+        "normalized_cost_t_N": 2.8398,
+        "verification_rate_cand_per_s": 1310.3,
+        "ideal_speedup_ceiling": 5.634,
+        "incremental_cost_ms_per_cand": 0.5274
+      },
+      "32": {
+        "N": 32,
+        "mean_latency_ms": 21.537,
+        "std_latency_ms": 0.067,
+        "p50_latency_ms": 21.546,
+        "p95_latency_ms": 21.656,
+        "p99_latency_ms": 21.656,
+        "normalized_cost_t_N": 5.0085,
+        "verification_rate_cand_per_s": 1485.8,
+        "ideal_speedup_ceiling": 6.389,
+        "incremental_cost_ms_per_cand": 0.556
+      }
+    },
+    "Llama-3.2-1B_tree_q4": {
+      "1": {
+        "N": 1,
+        "mean_latency_ms": 7.275,
+        "std_latency_ms": 0.046,
+        "p50_latency_ms": 7.272,
+        "p95_latency_ms": 7.373,
+        "p99_latency_ms": 7.373,
+        "normalized_cost_t_N": 1.0,
+        "verification_rate_cand_per_s": 137.5,
+        "ideal_speedup_ceiling": 1.0,
+        "incremental_cost_ms_per_cand": 0.0
+      },
+      "2": {
+        "N": 2,
+        "mean_latency_ms": 10.34,
+        "std_latency_ms": 0.03,
+        "p50_latency_ms": 10.341,
+        "p95_latency_ms": 10.389,
+        "p99_latency_ms": 10.389,
+        "normalized_cost_t_N": 1.4212,
+        "verification_rate_cand_per_s": 193.4,
+        "ideal_speedup_ceiling": 1.407,
+        "incremental_cost_ms_per_cand": 3.0644
+      },
+      "4": {
+        "N": 4,
+        "mean_latency_ms": 11.357,
+        "std_latency_ms": 0.14,
+        "p50_latency_ms": 11.319,
+        "p95_latency_ms": 11.927,
+        "p99_latency_ms": 11.927,
+        "normalized_cost_t_N": 1.5611,
+        "verification_rate_cand_per_s": 352.2,
+        "ideal_speedup_ceiling": 2.562,
+        "incremental_cost_ms_per_cand": 1.3607
+      },
+      "8": {
+        "N": 8,
+        "mean_latency_ms": 13.332,
+        "std_latency_ms": 0.04,
+        "p50_latency_ms": 13.34,
+        "p95_latency_ms": 13.389,
+        "p99_latency_ms": 13.389,
+        "normalized_cost_t_N": 1.8325,
+        "verification_rate_cand_per_s": 600.1,
+        "ideal_speedup_ceiling": 4.366,
+        "incremental_cost_ms_per_cand": 0.8652
+      },
+      "16": {
+        "N": 16,
+        "mean_latency_ms": 23.091,
+        "std_latency_ms": 0.041,
+        "p50_latency_ms": 23.078,
+        "p95_latency_ms": 23.168,
+        "p99_latency_ms": 23.168,
+        "normalized_cost_t_N": 3.1739,
+        "verification_rate_cand_per_s": 692.9,
+        "ideal_speedup_ceiling": 5.041,
+        "incremental_cost_ms_per_cand": 1.0544
+      },
+      "32": {
+        "N": 32,
+        "mean_latency_ms": 42.434,
+        "std_latency_ms": 0.32,
+        "p50_latency_ms": 42.371,
+        "p95_latency_ms": 43.781,
+        "p99_latency_ms": 43.781,
+        "normalized_cost_t_N": 5.8327,
+        "verification_rate_cand_per_s": 754.1,
+        "ideal_speedup_ceiling": 5.486,
+        "incremental_cost_ms_per_cand": 1.1341
+      }
+    },
+    "SmolLM2-360M_batched_q4": {
+      "1": {
+        "N": 1,
+        "mean_latency_ms": 3.35,
+        "std_latency_ms": 0.041,
+        "p50_latency_ms": 3.365,
+        "p95_latency_ms": 3.403,
+        "p99_latency_ms": 3.403,
+        "normalized_cost_t_N": 1.0,
+        "verification_rate_cand_per_s": 298.5,
+        "ideal_speedup_ceiling": 1.0,
+        "incremental_cost_ms_per_cand": 0.0
+      },
+      "2": {
+        "N": 2,
+        "mean_latency_ms": 4.099,
+        "std_latency_ms": 0.192,
+        "p50_latency_ms": 4.09,
+        "p95_latency_ms": 4.633,
+        "p99_latency_ms": 4.633,
+        "normalized_cost_t_N": 1.2238,
+        "verification_rate_cand_per_s": 487.9,
+        "ideal_speedup_ceiling": 1.634,
+        "incremental_cost_ms_per_cand": 0.7497
+      },
+      "4": {
+        "N": 4,
+        "mean_latency_ms": 4.459,
+        "std_latency_ms": 0.176,
+        "p50_latency_ms": 4.437,
+        "p95_latency_ms": 4.73,
+        "p99_latency_ms": 4.73,
+        "normalized_cost_t_N": 1.3312,
+        "verification_rate_cand_per_s": 897.0,
+        "ideal_speedup_ceiling": 3.005,
+        "incremental_cost_ms_per_cand": 0.3698
+      },
+      "8": {
+        "N": 8,
+        "mean_latency_ms": 5.561,
+        "std_latency_ms": 0.229,
+        "p50_latency_ms": 5.559,
+        "p95_latency_ms": 6.243,
+        "p99_latency_ms": 6.243,
+        "normalized_cost_t_N": 1.6602,
+        "verification_rate_cand_per_s": 1438.6,
+        "ideal_speedup_ceiling": 4.819,
+        "incremental_cost_ms_per_cand": 0.3159
+      },
+      "16": {
+        "N": 16,
+        "mean_latency_ms": 26.542,
+        "std_latency_ms": 0.107,
+        "p50_latency_ms": 26.583,
+        "p95_latency_ms": 26.641,
+        "p99_latency_ms": 26.641,
+        "normalized_cost_t_N": 7.9236,
+        "verification_rate_cand_per_s": 602.8,
+        "ideal_speedup_ceiling": 2.019,
+        "incremental_cost_ms_per_cand": 1.5461
+      },
+      "32": {
+        "N": 32,
+        "mean_latency_ms": 50.957,
+        "std_latency_ms": 0.34,
+        "p50_latency_ms": 50.919,
+        "p95_latency_ms": 52.21,
+        "p99_latency_ms": 52.21,
+        "normalized_cost_t_N": 15.2122,
+        "verification_rate_cand_per_s": 628.0,
+        "ideal_speedup_ceiling": 2.104,
+        "incremental_cost_ms_per_cand": 1.5357
+      },
+      "64": {
+        "N": 64,
+        "mean_latency_ms": 23.065,
+        "std_latency_ms": 0.152,
+        "p50_latency_ms": 23.031,
+        "p95_latency_ms": 23.47,
+        "p99_latency_ms": 23.47,
+        "normalized_cost_t_N": 6.8855,
+        "verification_rate_cand_per_s": 2774.8,
+        "ideal_speedup_ceiling": 9.295,
+        "incremental_cost_ms_per_cand": 0.3129
+      }
+    }
+  }
+}
