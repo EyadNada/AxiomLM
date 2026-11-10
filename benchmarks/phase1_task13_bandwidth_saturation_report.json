@@ -1,0 +1,335 @@
+{
+  "dimensions": {
+    "N": 4096,
+    "K": 4096
+  },
+  "m_values": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64
+  ],
+  "peak_bandwidth_gbs": 150.0,
+  "hardware_knee_flops_per_byte": 57.3,
+  "curves": {
+    "FP16 (16-bit)": [
+      {
+        "M": 1,
+        "latency_us_mean": 278.93,
+        "latency_us_std": 57.25,
+        "latency_us_min": 262.08,
+        "latency_us_max": 520.47,
+        "sustained_bw_gbs": 120.36,
+        "pct_peak_bw": 80.24,
+        "gflops": 120.3,
+        "arithmetic_intensity_flops_per_byte": 1.0
+      },
+      {
+        "M": 2,
+        "latency_us_mean": 268.0,
+        "latency_us_std": 10.2,
+        "latency_us_min": 261.67,
+        "latency_us_max": 308.48,
+        "sustained_bw_gbs": 125.33,
+        "pct_peak_bw": 83.55,
+        "gflops": 250.41,
+        "arithmetic_intensity_flops_per_byte": 2.0
+      },
+      {
+        "M": 4,
+        "latency_us_mean": 266.33,
+        "latency_us_std": 9.77,
+        "latency_us_min": 259.7,
+        "latency_us_max": 304.15,
+        "sustained_bw_gbs": 126.24,
+        "pct_peak_bw": 84.16,
+        "gflops": 503.96,
+        "arithmetic_intensity_flops_per_byte": 3.99
+      },
+      {
+        "M": 8,
+        "latency_us_mean": 268.84,
+        "latency_us_std": 9.55,
+        "latency_us_min": 262.4,
+        "latency_us_max": 306.42,
+        "sustained_bw_gbs": 125.3,
+        "pct_peak_bw": 83.53,
+        "gflops": 998.51,
+        "arithmetic_intensity_flops_per_byte": 7.97
+      },
+      {
+        "M": 16,
+        "latency_us_mean": 302.48,
+        "latency_us_std": 10.61,
+        "latency_us_min": 293.85,
+        "latency_us_max": 340.98,
+        "sustained_bw_gbs": 111.8,
+        "pct_peak_bw": 74.53,
+        "gflops": 1774.92,
+        "arithmetic_intensity_flops_per_byte": 15.88
+      },
+      {
+        "M": 32,
+        "latency_us_mean": 340.13,
+        "latency_us_std": 8.3,
+        "latency_us_min": 335.73,
+        "latency_us_max": 374.28,
+        "sustained_bw_gbs": 100.19,
+        "pct_peak_bw": 66.8,
+        "gflops": 3156.85,
+        "arithmetic_intensity_flops_per_byte": 31.51
+      },
+      {
+        "M": 64,
+        "latency_us_mean": 528.39,
+        "latency_us_std": 9.48,
+        "latency_us_min": 519.04,
+        "latency_us_max": 556.17,
+        "sustained_bw_gbs": 65.49,
+        "pct_peak_bw": 43.66,
+        "gflops": 4064.22,
+        "arithmetic_intensity_flops_per_byte": 62.06
+      }
+    ],
+    "Q8_G64 (8-bit)": [
+      {
+        "M": 1,
+        "latency_us_mean": 161.23,
+        "latency_us_std": 13.98,
+        "latency_us_min": 151.59,
+        "latency_us_max": 202.44,
+        "sustained_bw_gbs": 110.66,
+        "pct_peak_bw": 73.78,
+        "gflops": 208.12,
+        "arithmetic_intensity_flops_per_byte": 1.88
+      },
+      {
+        "M": 2,
+        "latency_us_mean": 236.3,
+        "latency_us_std": 10.91,
+        "latency_us_min": 230.36,
+        "latency_us_max": 281.53,
+        "sustained_bw_gbs": 75.58,
+        "pct_peak_bw": 50.38,
+        "gflops": 284.0,
+        "arithmetic_intensity_flops_per_byte": 3.76
+      },
+      {
+        "M": 4,
+        "latency_us_mean": 402.95,
+        "latency_us_std": 10.41,
+        "latency_us_min": 396.17,
+        "latency_us_max": 437.04,
+        "sustained_bw_gbs": 44.4,
+        "pct_peak_bw": 29.6,
+        "gflops": 333.09,
+        "arithmetic_intensity_flops_per_byte": 7.5
+      },
+      {
+        "M": 8,
+        "latency_us_mean": 554.71,
+        "latency_us_std": 14.47,
+        "latency_us_min": 544.89,
+        "latency_us_max": 597.91,
+        "sustained_bw_gbs": 32.37,
+        "pct_peak_bw": 21.58,
+        "gflops": 483.92,
+        "arithmetic_intensity_flops_per_byte": 14.95
+      },
+      {
+        "M": 16,
+        "latency_us_mean": 819.8,
+        "latency_us_std": 12.77,
+        "latency_us_min": 809.34,
+        "latency_us_max": 850.98,
+        "sustained_bw_gbs": 22.06,
+        "pct_peak_bw": 14.71,
+        "gflops": 654.88,
+        "arithmetic_intensity_flops_per_byte": 29.68
+      },
+      {
+        "M": 32,
+        "latency_us_mean": 1509.7,
+        "latency_us_std": 19.41,
+        "latency_us_min": 1490.62,
+        "latency_us_max": 1543.17,
+        "sustained_bw_gbs": 12.15,
+        "pct_peak_bw": 8.1,
+        "gflops": 711.23,
+        "arithmetic_intensity_flops_per_byte": 58.51
+      },
+      {
+        "M": 64,
+        "latency_us_mean": 2775.64,
+        "latency_us_std": 35.39,
+        "latency_us_min": 2748.68,
+        "latency_us_max": 2888.22,
+        "sustained_bw_gbs": 6.8,
+        "pct_peak_bw": 4.53,
+        "gflops": 773.69,
+        "arithmetic_intensity_flops_per_byte": 113.78
+      }
+    ],
+    "Naive Q4_G64 (4-bit)": [
+      {
+        "M": 1,
+        "latency_us_mean": 87.75,
+        "latency_us_std": 1.76,
+        "latency_us_min": 84.5,
+        "latency_us_max": 91.03,
+        "sustained_bw_gbs": 107.73,
+        "pct_peak_bw": 71.82,
+        "gflops": 382.39,
+        "arithmetic_intensity_flops_per_byte": 3.55
+      },
+      {
+        "M": 2,
+        "latency_us_mean": 138.36,
+        "latency_us_std": 16.03,
+        "latency_us_min": 129.23,
+        "latency_us_max": 195.45,
+        "sustained_bw_gbs": 68.44,
+        "pct_peak_bw": 45.63,
+        "gflops": 485.02,
+        "arithmetic_intensity_flops_per_byte": 7.09
+      },
+      {
+        "M": 4,
+        "latency_us_mean": 146.83,
+        "latency_us_std": 8.26,
+        "latency_us_min": 140.55,
+        "latency_us_max": 180.51,
+        "sustained_bw_gbs": 64.72,
+        "pct_peak_bw": 43.15,
+        "gflops": 914.08,
+        "arithmetic_intensity_flops_per_byte": 14.12
+      },
+      {
+        "M": 8,
+        "latency_us_mean": 195.86,
+        "latency_us_std": 7.6,
+        "latency_us_min": 190.43,
+        "latency_us_max": 226.06,
+        "sustained_bw_gbs": 48.85,
+        "pct_peak_bw": 32.57,
+        "gflops": 1370.58,
+        "arithmetic_intensity_flops_per_byte": 28.05
+      },
+      {
+        "M": 16,
+        "latency_us_mean": 353.46,
+        "latency_us_std": 15.94,
+        "latency_us_min": 344.33,
+        "latency_us_max": 399.75,
+        "sustained_bw_gbs": 27.44,
+        "pct_peak_bw": 18.29,
+        "gflops": 1518.89,
+        "arithmetic_intensity_flops_per_byte": 55.35
+      },
+      {
+        "M": 32,
+        "latency_us_mean": 659.07,
+        "latency_us_std": 16.58,
+        "latency_us_min": 649.17,
+        "latency_us_max": 707.54,
+        "sustained_bw_gbs": 15.11,
+        "pct_peak_bw": 10.08,
+        "gflops": 1629.18,
+        "arithmetic_intensity_flops_per_byte": 107.79
+      },
+      {
+        "M": 64,
+        "latency_us_mean": 1274.97,
+        "latency_us_std": 16.94,
+        "latency_us_min": 1261.81,
+        "latency_us_max": 1314.97,
+        "sustained_bw_gbs": 8.22,
+        "pct_peak_bw": 5.48,
+        "gflops": 1684.34,
+        "arithmetic_intensity_flops_per_byte": 204.8
+      }
+    ],
+    "AxiomLM MARLIN (4-bit)": [
+      {
+        "M": 1,
+        "latency_us_mean": 94.42,
+        "latency_us_std": 2.84,
+        "latency_us_min": 90.19,
+        "latency_us_max": 104.53,
+        "sustained_bw_gbs": 100.12,
+        "pct_peak_bw": 66.75,
+        "gflops": 355.37,
+        "arithmetic_intensity_flops_per_byte": 3.55
+      },
+      {
+        "M": 2,
+        "latency_us_mean": 122.92,
+        "latency_us_std": 8.19,
+        "latency_us_min": 117.59,
+        "latency_us_max": 156.12,
+        "sustained_bw_gbs": 77.04,
+        "pct_peak_bw": 51.36,
+        "gflops": 545.96,
+        "arithmetic_intensity_flops_per_byte": 7.09
+      },
+      {
+        "M": 4,
+        "latency_us_mean": 122.89,
+        "latency_us_std": 12.82,
+        "latency_us_min": 113.97,
+        "latency_us_max": 176.11,
+        "sustained_bw_gbs": 77.33,
+        "pct_peak_bw": 51.55,
+        "gflops": 1092.2,
+        "arithmetic_intensity_flops_per_byte": 14.12
+      },
+      {
+        "M": 8,
+        "latency_us_mean": 122.75,
+        "latency_us_std": 6.64,
+        "latency_us_min": 118.3,
+        "latency_us_max": 149.23,
+        "sustained_bw_gbs": 77.95,
+        "pct_peak_bw": 51.96,
+        "gflops": 2186.78,
+        "arithmetic_intensity_flops_per_byte": 28.05
+      },
+      {
+        "M": 16,
+        "latency_us_mean": 206.47,
+        "latency_us_std": 9.61,
+        "latency_us_min": 201.38,
+        "latency_us_max": 246.13,
+        "sustained_bw_gbs": 46.98,
+        "pct_peak_bw": 31.32,
+        "gflops": 2600.22,
+        "arithmetic_intensity_flops_per_byte": 55.35
+      },
+      {
+        "M": 32,
+        "latency_us_mean": 356.66,
+        "latency_us_std": 11.05,
+        "latency_us_min": 349.28,
+        "latency_us_max": 393.61,
+        "sustained_bw_gbs": 27.93,
+        "pct_peak_bw": 18.62,
+        "gflops": 3010.51,
+        "arithmetic_intensity_flops_per_byte": 107.79
+      },
+      {
+        "M": 64,
+        "latency_us_mean": 679.73,
+        "latency_us_std": 14.09,
+        "latency_us_min": 666.59,
+        "latency_us_max": 724.78,
+        "sustained_bw_gbs": 15.43,
+        "pct_peak_bw": 10.28,
+        "gflops": 3159.3,
+        "arithmetic_intensity_flops_per_byte": 204.8
+      }
+    ]
+  }
+}

@@ -1,0 +1,131 @@
+{
+  "metadata": {
+    "task": "Phase 1 - Task 1.1: Metal Shader Disassembly & Microarchitectural Proof",
+    "device": "Apple M3 Pro",
+    "architecture": "Apple Silicon Unified Memory Architecture (UMA) AGX G15",
+    "hardware_peak_bandwidth_gbs": 150.0,
+    "hardware_balance_point_flops_per_byte": 57.3
+  },
+  "pipeline_probe_metrics": {
+    "rmsnorm_forward_half_kernel": {
+      "max_total_threads_per_threadgroup": 1024,
+      "thread_execution_width": 32,
+      "static_threadgroup_memory_length": 144,
+      "compiled_binary_size_bytes": 1652
+    },
+    "qmv_q8_g64_half_kernel": {
+      "max_total_threads_per_threadgroup": 1024,
+      "thread_execution_width": 32,
+      "static_threadgroup_memory_length": 0,
+      "compiled_binary_size_bytes": 952
+    },
+    "qmv_q4_g64_half_kernel": {
+      "max_total_threads_per_threadgroup": 1024,
+      "thread_execution_width": 32,
+      "static_threadgroup_memory_length": 0,
+      "compiled_binary_size_bytes": 1702
+    },
+    "qmv_q4_marlin_apple_kernel": {
+      "max_total_threads_per_threadgroup": 1024,
+      "thread_execution_width": 32,
+      "static_threadgroup_memory_length": 256,
+      "compiled_binary_size_bytes": 3588
+    },
+    "qmm_q4_g64_half_kernel": {
+      "max_total_threads_per_threadgroup": 1024,
+      "thread_execution_width": 32,
+      "static_threadgroup_memory_length": 0,
+      "compiled_binary_size_bytes": 3684
+    },
+    "qmm_q4_marlin_apple_kernel": {
+      "max_total_threads_per_threadgroup": 1024,
+      "thread_execution_width": 32,
+      "static_threadgroup_memory_length": 2048,
+      "compiled_binary_size_bytes": 10184
+    },
+    "gqa_flash_decode_split_kv_half_kernel": {
+      "max_total_threads_per_threadgroup": 1024,
+      "thread_execution_width": 32,
+      "static_threadgroup_memory_length": 0,
+      "compiled_binary_size_bytes": 5616
+    },
+    "gqa_tree_verify_split_kv_half_kernel": {
+      "max_total_threads_per_threadgroup": 1024,
+      "thread_execution_width": 32,
+      "static_threadgroup_memory_length": 0,
+      "compiled_binary_size_bytes": 5678
+    }
+  },
+  "microarchitectural_instruction_mix": {
+    "naive_q4": {
+      "bit_shifts_per_8w": 7,
+      "bitwise_masks_per_8w": 8,
+      "bitwise_ors_per_8w": 0,
+      "int_to_float_conversions_per_8w": 8,
+      "fma_flops_per_8w": 8,
+      "total_unpack_alu_instructions_per_8w": 23,
+      "unpack_instructions_per_weight": 2.875,
+      "unpack_alu_to_fma_ratio": 2.875
+    },
+    "marlin_q4": {
+      "bit_shifts_per_8w": 1,
+      "bitwise_masks_per_8w": 4,
+      "bitwise_ors_per_8w": 4,
+      "int_to_float_conversions_per_8w": 0,
+      "half2_subtractions_per_8w": 4,
+      "fma_flops_per_8w": 8,
+      "total_unpack_alu_instructions_per_8w": 9,
+      "unpack_instructions_per_weight": 1.125,
+      "unpack_alu_to_fma_ratio": 1.125
+    },
+    "instruction_reductions": {
+      "integer_alu_instruction_reduction_pct": 60.87,
+      "bit_shift_reduction_pct": 85.71,
+      "conversion_instruction_elimination_pct": 100.0
+    },
+    "tree_arithmetic_intensity_scaling": {
+      "T=1": {
+        "tokens": 1,
+        "arithmetic_intensity_flops_per_byte": 3.56,
+        "amortized_unpack_instructions_per_8w": 9.0,
+        "amortized_unpack_instructions_per_weight": 1.125,
+        "regime": "Memory-Bound (DRAM Latency Dominated)"
+      },
+      "T=2": {
+        "tokens": 2,
+        "arithmetic_intensity_flops_per_byte": 7.11,
+        "amortized_unpack_instructions_per_8w": 4.5,
+        "amortized_unpack_instructions_per_weight": 0.5625,
+        "regime": "Memory-Bound (DRAM Latency Dominated)"
+      },
+      "T=4": {
+        "tokens": 4,
+        "arithmetic_intensity_flops_per_byte": 14.22,
+        "amortized_unpack_instructions_per_8w": 2.25,
+        "amortized_unpack_instructions_per_weight": 0.2812,
+        "regime": "Memory-Bound (DRAM Latency Dominated)"
+      },
+      "T=8": {
+        "tokens": 8,
+        "arithmetic_intensity_flops_per_byte": 28.44,
+        "amortized_unpack_instructions_per_8w": 1.125,
+        "amortized_unpack_instructions_per_weight": 0.1406,
+        "regime": "Memory-Bound (DRAM Latency Dominated)"
+      },
+      "T=16": {
+        "tokens": 16,
+        "arithmetic_intensity_flops_per_byte": 56.89,
+        "amortized_unpack_instructions_per_8w": 0.5625,
+        "amortized_unpack_instructions_per_weight": 0.0703,
+        "regime": "Memory-Bound (DRAM Latency Dominated)"
+      },
+      "T=32": {
+        "tokens": 32,
+        "arithmetic_intensity_flops_per_byte": 113.78,
+        "amortized_unpack_instructions_per_8w": 0.2812,
+        "amortized_unpack_instructions_per_weight": 0.0352,
+        "regime": "Compute-Bound (simdgroup_matrix Saturated)"
+      }
+    }
+  }
+}
