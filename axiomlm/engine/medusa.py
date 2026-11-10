@@ -12,10 +12,13 @@ from typing import Any
 
 import torch
 
-from ..models.medusa import compute_medusa_loss
+from ..models.medusa import (
+    compute_medusa_distillation_loss,
+    compute_medusa_loss,
+    evaluate_medusa_acceptance_matrix,
+)
 from ..models.transformer import Transformer
 from .paged_cache import StaticKVCache
-
 
 DEFAULT_MEDUSA_TREE_CHOICES: list[tuple[int, ...]] = [
     (0,),
@@ -93,8 +96,7 @@ def compile_medusa_tree(
         head_idx[u] = h
         topk_rank[u] = rk
         tree_mask[u] = tree_mask[par_u] | (1 << u)
-        if rk + 1 > max_topk_per_head[h]:
-            max_topk_per_head[h] = rk + 1
+        max_topk_per_head[h] = max(max_topk_per_head[h], rk + 1)
 
     return {
         "num_nodes": T,
@@ -437,9 +439,15 @@ def train_medusa_heads(
     lr: float = 1e-3,
     loss_weights: list[float] | None = None,
     freeze_backbone: bool = True,
-) -> list[float]:
+    use_distillation: bool = False,
+    temperature: float = 2.0,
+    distill_weight: float = 0.5,
+    top_k_distill: int | None = None,
+    return_stats: bool = False,
+) -> list[float] | dict[str, Any]:
     """
-    Lightweight training loop for Medusa auxiliary heads while keeping the Transformer backbone frozen.
+    Lightweight training loop for Medusa auxiliary heads with optional KL-divergence
+    self-distillation against the frozen base model logits.
 
     Args:
         model: Transformer model with medusa_heads attached.
@@ -449,9 +457,14 @@ def train_medusa_heads(
         lr: Learning rate for Medusa heads.
         loss_weights: Decay factors for head losses (default: 0.8^k).
         freeze_backbone: If True, freezes all backbone weights and only updates Medusa heads.
+        use_distillation: If True, computes Medusa-2 KL-divergence self-distillation against base logits.
+        temperature: Distillation temperature tau.
+        distill_weight: Weight lambda for KL divergence (0.0 = pure CE, 1.0 = pure KL).
+        top_k_distill: If specified, restricts KL to top-M base logits for large vocabularies.
+        return_stats: If True, returns dict with loss histories and empirical acceptance matrix.
 
     Returns:
-        List of loss values per epoch/step.
+        List of loss values per epoch (or detailed stats dict if return_stats=True).
     """
     if model.medusa_heads is None:
         raise ValueError("Model does not have Medusa heads attached.")
@@ -472,13 +485,40 @@ def train_medusa_heads(
     model.medusa_heads.to(dtype=torch.float32)
 
     optimizer = torch.optim.AdamW(model.medusa_heads.parameters(), lr=lr)
-    losses = []
+    losses: list[float] = []
+    ce_history: list[float] = []
+    kl_history: list[float] = []
 
     model.train()
+    last_base_logits = None
+    last_med_logits = None
+
     for ep in range(epochs):
         optimizer.zero_grad(set_to_none=True)
-        _, medusa_logits, _ = model.forward_with_medusa(input_ids)
-        loss, _ = compute_medusa_loss(medusa_logits, targets, loss_weights=loss_weights)
+        base_logits, medusa_logits, _ = model.forward_with_medusa(input_ids)
+        last_base_logits = base_logits
+        last_med_logits = medusa_logits
+
+        if use_distillation:
+            loss, per_ce, per_kl = compute_medusa_distillation_loss(
+                medusa_logits=medusa_logits,
+                base_logits=base_logits,
+                targets=targets,
+                loss_weights=loss_weights,
+                temperature=temperature,
+                distill_weight=distill_weight,
+                top_k_distill=top_k_distill,
+            )
+            ce_history.append(sum(c.item() for c in per_ce))
+            kl_history.append(sum(k.item() for k in per_kl))
+        else:
+            loss, per_ce = compute_medusa_loss(
+                medusa_logits=medusa_logits,
+                targets=targets,
+                loss_weights=loss_weights,
+            )
+            ce_history.append(sum(c.item() for c in per_ce))
+
         loss.backward()
         optimizer.step()
         losses.append(loss.item())
@@ -486,4 +526,20 @@ def train_medusa_heads(
     model.medusa_heads.to(dtype=orig_dtype)
     model._quant_weights_cache = None
     model.eval()
+
+    if return_stats:
+        acc_stats = (
+            evaluate_medusa_acceptance_matrix(
+                last_med_logits, last_base_logits, max_topk=4
+            )
+            if (last_base_logits is not None and last_med_logits is not None)
+            else {}
+        )
+        return {
+            "losses": losses,
+            "ce_history": ce_history,
+            "kl_history": kl_history,
+            "acceptance_stats": acc_stats,
+        }
+
     return losses
