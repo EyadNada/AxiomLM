@@ -1,0 +1,273 @@
+{
+  "timestamp": "2026-11-10T21:50:30Z",
+  "hardware_telemetry": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "processor": "arm",
+    "python_version": "3.12.14",
+    "torch_version": "2.13.0",
+    "mps_available": true,
+    "metal_module_loaded": true,
+    "chip": "Apple M3 Pro"
+  },
+  "benchmark_config": {
+    "num_trials": 5,
+    "max_new_tokens": 48,
+    "temperatures": [
+      0.0,
+      0.2,
+      0.6,
+      1.0
+    ],
+    "vocab_size": 512,
+    "model_config": {
+      "block_size": 512,
+      "vocab_size": 512,
+      "n_layer": 4,
+      "n_head": 8,
+      "n_embd": 256,
+      "n_kv_head": null,
+      "norm_type": "rmsnorm",
+      "pos_emb": "rope",
+      "mlp_type": "swiglu",
+      "bias": false,
+      "rope_theta": 10000.0,
+      "sliding_window": null,
+      "use_fused_kernels": false,
+      "grad_checkpoint": false,
+      "arch": null,
+      "quant_mode": null,
+      "num_medusa_heads": 3,
+      "intermediate_size": null,
+      "rms_norm_eps": 1e-06,
+      "tie_word_embeddings": true,
+      "qkv_bias": false,
+      "rope_scaling": null
+    }
+  },
+  "results_by_temperature": {
+    "0.0": {
+      "temperature": 0.0,
+      "throughput_tok_per_sec": {
+        "mean": 754.199445529368,
+        "std": 133.61182995634604
+      },
+      "latency_ms_per_tok": {
+        "mean": 1.3805722208341344,
+        "std": 0.3105085762762599
+      },
+      "acceptance_rate_pct": {
+        "mean": 96.875,
+        "std": 0.0
+      },
+      "mean_accepted_length": {
+        "mean": 2.823529411764706,
+        "std": 0.0
+      },
+      "shannon_entropy_bits": {
+        "mean": 1.2910164458258657,
+        "std": 0.0
+      },
+      "rejection_rates_per_rank": [],
+      "power_law_fit": {
+        "exponent_b": 0.0,
+        "scale_a": 1.0,
+        "r_squared": 0.0,
+        "valid": false
+      },
+      "raw_trials": {
+        "throughput": [
+          504.5804287106369,
+          724.3506309784145,
+          844.5407259892307,
+          846.1144055649818,
+          851.4110364035762
+        ],
+        "latency_ms": [
+          1.9818446041502589,
+          1.38054687499789,
+          1.1840755208443927,
+          1.181873270828267,
+          1.1745208333498642
+        ],
+        "acceptance_pct": [
+          96.875,
+          96.875,
+          96.875,
+          96.875,
+          96.875
+        ]
+      }
+    },
+    "0.2": {
+      "temperature": 0.2,
+      "throughput_tok_per_sec": {
+        "mean": 203.5744852897566,
+        "std": 60.075815441787036
+      },
+      "latency_ms_per_tok": {
+        "mean": 5.530673958340533,
+        "std": 2.148151800978942
+      },
+      "acceptance_rate_pct": {
+        "mean": 16.773034077180426,
+        "std": 13.04213899515995
+      },
+      "mean_accepted_length": {
+        "mean": 1.3196047430830042,
+        "std": 0.24809916179238137
+      },
+      "shannon_entropy_bits": {
+        "mean": 3.2149910904741787,
+        "std": 0.34195871575809783
+      },
+      "rejection_rates_per_rank": [
+        0.8446761061673463,
+        0.9838709677419356,
+        1.0
+      ],
+      "power_law_fit": {
+        "exponent_b": -0.22007088079248877,
+        "scale_a": 0.8446761061673463,
+        "r_squared": 1.0,
+        "valid": true
+      },
+      "raw_trials": {
+        "throughput": [
+          105.32611866093399,
+          245.1004909719412,
+          163.32294134347117,
+          265.2184017986319,
+          238.90447367380483
+        ],
+        "latency_ms": [
+          9.494321187503374,
+          4.079959187492932,
+          6.122838541690119,
+          3.770477437531857,
+          4.185773437484386
+        ],
+        "acceptance_pct": [
+          0.0,
+          26.229508196721312,
+          2.247191011235955,
+          31.57894736842105,
+          23.809523809523807
+        ]
+      }
+    },
+    "0.6": {
+      "temperature": 0.6,
+      "throughput_tok_per_sec": {
+        "mean": 163.9785257310854,
+        "std": 2.602300348599707
+      },
+      "latency_ms_per_tok": {
+        "mean": 6.099901037494722,
+        "std": 0.09714889622428725
+      },
+      "acceptance_rate_pct": {
+        "mean": 1.3235653235653235,
+        "std": 0.44932844932844934
+      },
+      "mean_accepted_length": {
+        "mean": 1.0257169287696575,
+        "std": 0.008880666049953767
+      },
+      "shannon_entropy_bits": {
+        "mean": 5.262528842449264,
+        "std": 0.15974609560470346
+      },
+      "rejection_rates_per_rank": [
+        0.9868599033816425,
+        1.0,
+        1.0
+      ],
+      "power_law_fit": {
+        "exponent_b": 0.0,
+        "scale_a": 1.0,
+        "r_squared": 0.0,
+        "valid": false
+      },
+      "raw_trials": {
+        "throughput": [
+          162.81192033439336,
+          164.01294126369555,
+          167.62334665279485,
+          165.55560974821697,
+          159.88881065632626
+        ],
+        "latency_ms": [
+          6.142056416668614,
+          6.097079854157528,
+          5.965756083317804,
+          6.040266479165742,
+          6.254346354163924
+        ],
+        "acceptance_pct": [
+          1.098901098901099,
+          1.098901098901099,
+          2.2222222222222223,
+          1.098901098901099,
+          1.098901098901099
+        ]
+      }
+    },
+    "1.0": {
+      "temperature": 1.0,
+      "throughput_tok_per_sec": {
+        "mean": 161.47977152622155,
+        "std": 3.071312918961007
+      },
+      "latency_ms_per_tok": {
+        "mean": 6.194970137509396,
+        "std": 0.1180056702489503
+      },
+      "acceptance_rate_pct": {
+        "mean": 0.8840048840048841,
+        "std": 0.8301946374854412
+      },
+      "mean_accepted_length": {
+        "mean": 1.0172062904717853,
+        "std": 0.01622013601798606
+      },
+      "shannon_entropy_bits": {
+        "mean": 5.462005104869794,
+        "std": 0.07803483474641472
+      },
+      "rejection_rates_per_rank": [
+        0.9912077294685989,
+        1.0,
+        1.0
+      ],
+      "power_law_fit": {
+        "exponent_b": 0.0,
+        "scale_a": 1.0,
+        "r_squared": 0.0,
+        "valid": false
+      },
+      "raw_trials": {
+        "throughput": [
+          162.8175119992983,
+          159.87946846709042,
+          156.81713488482612,
+          166.05723775651975,
+          161.8275045233733
+        ],
+        "latency_ms": [
+          6.141845479154047,
+          6.254711812516689,
+          6.3768541666983465,
+          6.02201995836064,
+          6.179419270817259
+        ],
+        "acceptance_pct": [
+          1.098901098901099,
+          0.0,
+          2.2222222222222223,
+          1.098901098901099,
+          0.0
+        ]
+      }
+    }
+  }
+}

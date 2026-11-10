@@ -21,8 +21,6 @@ from typing import Any
 
 import numpy as np
 
-from ..engine.medusa import compile_medusa_tree
-
 
 @dataclass
 class OptimalTreeResult:
@@ -293,6 +291,8 @@ class SequoiaDPOptimizer:
                 best_N = n
                 best_choices = choices_n
 
+        from ..engine.medusa import compile_medusa_tree
+
         compiled = compile_medusa_tree(best_choices, self.num_heads)
         opt_stats = all_stats[best_N]
 
@@ -315,6 +315,8 @@ class SequoiaDPOptimizer:
         N = min(max(1, N), self.max_budget)
         T, split = self.solve_dp_tables()
         choices = self.extract_tree_for_budget(N, T, split)
+        from ..engine.medusa import compile_medusa_tree
+
         compiled = compile_medusa_tree(choices, self.num_heads)
 
         G_n = float(np.max(T[N, 0, :]))

@@ -18,6 +18,11 @@ from ..models.medusa import (
     evaluate_medusa_acceptance_matrix,
 )
 from ..models.transformer import Transformer
+from ..speculative.sampling import (
+    SequoiaTreeVerifier,
+    fit_power_law_rejection_bound,
+    sample_without_replacement,
+)
 from .paged_cache import StaticKVCache
 
 DEFAULT_MEDUSA_TREE_CHOICES: list[tuple[int, ...]] = [
@@ -138,9 +143,13 @@ class MedusaSpeculativeDecoder:
         cache: StaticKVCache | None = None,
         device: torch.device | None = None,
         tree_choices: list[tuple[int, ...]] | None = None,
+        temperature: float | None = None,
+        generator: torch.Generator | None = None,
     ) -> tuple[list[int], dict[str, Any]]:
         """
         Executes Medusa neural speculative decoding (linear or tree-structured).
+        Supports deterministic greedy verification (T=0.0) as well as
+        Sequoia Algorithm 2 Sampling Without Replacement (T > 0.0).
 
         Args:
             model: AxiomLM Transformer model with medusa_heads attached.
@@ -149,6 +158,8 @@ class MedusaSpeculativeDecoder:
             cache: Pre-allocated StaticKVCache (created if None).
             device: Target torch device (defaults to model device).
             tree_choices: Optional candidate tree topology overriding self.tree_choices.
+            temperature: Sampling temperature T >= 0.0 (overrides self.temperature).
+            generator: Optional torch.Generator for reproducible sampling.
 
         Returns:
             Tuple of (generated_tokens, stats_dict).
@@ -160,6 +171,9 @@ class MedusaSpeculativeDecoder:
 
         if device is None:
             device = next(model.parameters()).device
+
+        eff_temp = float(self.temperature if temperature is None else temperature)
+        verifier = SequoiaTreeVerifier(temperature=eff_temp, generator=generator)
 
         config = model.config
         head_dim = config.n_embd // config.n_head
@@ -196,7 +210,22 @@ class MedusaSpeculativeDecoder:
             )
 
         # Base model's genuine next token
-        next_tok = base_logits[:, -1, :].argmax(dim=-1).item()
+        if eff_temp <= 1e-6:
+            next_tok = base_logits[:, -1, :].argmax(dim=-1).item()
+        else:
+            probs_cpu = torch.softmax(
+                base_logits[:, -1, :].to(torch.float32) / eff_temp, dim=-1
+            ).cpu()
+            if generator is not None:
+                try:
+                    next_tok = torch.multinomial(
+                        probs_cpu, num_samples=1, generator=generator
+                    ).item()
+                except RuntimeError:
+                    next_tok = torch.multinomial(probs_cpu, num_samples=1).item()
+            else:
+                next_tok = torch.multinomial(probs_cpu, num_samples=1).item()
+
         generated = list(prompt_tokens) + [next_tok]
         target_total = len(prompt_tokens) + max_new_tokens
 
@@ -207,21 +236,38 @@ class MedusaSpeculativeDecoder:
             res: list[list[int]] = []
             for h in range(k_heads):
                 req_k = min(compiled_tree["max_topk_per_head"][h], med_list[h].size(-1))
-                vals = torch.topk(
-                    med_list[h][0, pos_idx], k=req_k, dim=-1
-                ).indices.tolist()
-                res.append(vals)
+                sampled_indices = sample_without_replacement(
+                    med_list[h][0, pos_idx, :],
+                    num_samples=req_k,
+                    temperature=eff_temp,
+                    generator=generator,
+                )
+                res.append(sampled_indices.tolist())
             return res
 
-        # Initial Medusa draft candidates from the prompt's final hidden state
-        draft_candidates = [
-            medusa_logits[k][:, -1, :].argmax(dim=-1).item() for k in range(k_heads)
-        ]
+        # Initial Medusa draft candidates from prompt's final hidden state
+        if eff_temp <= 1e-6:
+            draft_candidates = [
+                medusa_logits[k][:, -1, :].argmax(dim=-1).item() for k in range(k_heads)
+            ]
+        else:
+            draft_candidates = [
+                sample_without_replacement(
+                    medusa_logits[k][:, -1, :],
+                    num_samples=1,
+                    temperature=eff_temp,
+                    generator=generator,
+                )
+                .squeeze(-1)
+                .item()
+                for k in range(k_heads)
+            ]
         tree_topk = _extract_tree_topk(medusa_logits, -1) if use_tree else []
 
         total_drafted = 0
         total_accepted = 0
         model_forward_calls = 1
+        all_rank_rejections: list[list[float]] = []
 
         if device.type == "mps":
             torch.mps.synchronize()
@@ -264,23 +310,40 @@ class MedusaSpeculativeDecoder:
                     )
                     total_drafted += step_max_draft
 
-                    preds = logits[0].argmax(dim=-1).tolist()
-                    children = compiled_tree["children"]
-                    curr_u = 0
-                    accepted_nodes = [0]
+                    if eff_temp <= 1e-6:
+                        preds = logits[0].argmax(dim=-1).tolist()
+                        children = compiled_tree["children"]
+                        curr_u = 0
+                        accepted_nodes = [0]
 
-                    while len(generated) < target_total:
-                        pred_tok = preds[curr_u]
-                        matched_child = None
-                        for child_u in children[curr_u]:
-                            if verif_seq[child_u] == pred_tok:
-                                matched_child = child_u
+                        while len(generated) < target_total:
+                            pred_tok = preds[curr_u]
+                            matched_child = None
+                            for child_u in children[curr_u]:
+                                if verif_seq[child_u] == pred_tok:
+                                    matched_child = child_u
+                                    break
+                            generated.append(pred_tok)
+                            if matched_child is None or len(generated) >= target_total:
                                 break
-                        generated.append(pred_tok)
-                        if matched_child is None or len(generated) >= target_total:
-                            break
-                        curr_u = matched_child
-                        accepted_nodes.append(curr_u)
+                            curr_u = matched_child
+                            accepted_nodes.append(curr_u)
+                    else:
+                        accepted_nodes, emitted, step_stats = verifier.verify_tree_step(
+                            tree_logits=logits[0],
+                            compiled_tree=compiled_tree,
+                            verif_seq=verif_seq,
+                            temperature=eff_temp,
+                            max_accept=target_total - len(generated),
+                        )
+                        generated.extend(emitted)
+                        curr_u = accepted_nodes[-1]
+                        for r_idx, r_rate in enumerate(
+                            step_stats["rejection_rates_per_rank"]
+                        ):
+                            while len(all_rank_rejections) <= r_idx:
+                                all_rank_rejections.append([])
+                            all_rank_rejections[r_idx].append(r_rate)
 
                     accepted_count = len(accepted_nodes)
                     total_accepted += max(0, accepted_count - 1)
@@ -293,7 +356,7 @@ class MedusaSpeculativeDecoder:
                     if len(generated) >= target_total:
                         break
 
-                    # Lazy terminal-leaf drafting: evaluate Medusa heads ONLY on accepted leaf `curr_u` (M=1)
+                    # Lazy terminal-leaf drafting
                     leaf_norm = model._last_verify_norm[:, curr_u : curr_u + 1, :]
                     med_logits_leaf = model.eval_medusa_heads(leaf_norm)
                     tree_topk = _extract_tree_topk(med_logits_leaf, 0)
@@ -305,14 +368,13 @@ class MedusaSpeculativeDecoder:
                     break
 
                 curr_cand = draft_candidates[:k_cand]
-                # Candidate verification sequence: current committed token + candidate draft tokens
                 verif_seq = [generated[-1]] + curr_cand
 
                 verif_tensor = torch.tensor(
                     [verif_seq], device=device, dtype=torch.long
                 )
 
-                # Single-pass batched forward verification; defer Medusa heads to terminal accepted position
+                # Single-pass batched forward verification
                 logits, _, _ = model.forward_with_medusa(
                     verif_tensor,
                     kv_caches=kv_caches,
@@ -322,38 +384,49 @@ class MedusaSpeculativeDecoder:
                 model_forward_calls += 1
                 total_drafted += k_cand
 
-                # Model's genuine greedy predictions at each position in verif_seq
-                preds = logits[0].argmax(dim=-1).tolist()
-                accepted = 0
-                all_matched = True
-                last_accepted_idx = 0
+                if eff_temp <= 1e-6:
+                    preds = logits[0].argmax(dim=-1).tolist()
+                    accepted = 0
+                    all_matched = True
+                    last_accepted_idx = 0
 
-                for j in range(k_cand):
-                    pred_tok = preds[j]
-                    if pred_tok == curr_cand[j]:
-                        # Candidate matched!
-                        generated.append(pred_tok)
-                        accepted += 1
-                        last_accepted_idx = j
-                        if len(generated) >= target_total:
+                    for j in range(k_cand):
+                        pred_tok = preds[j]
+                        if pred_tok == curr_cand[j]:
+                            generated.append(pred_tok)
+                            accepted += 1
+                            last_accepted_idx = j
+                            if len(generated) >= target_total:
+                                all_matched = False
+                                break
+                        else:
+                            generated.append(pred_tok)
+                            accepted += 1
+                            last_accepted_idx = j
                             all_matched = False
                             break
-                    else:
-                        # Mismatch: accept model's genuine prediction and reject remaining candidates
-                        generated.append(pred_tok)
+
+                    if all_matched and len(generated) < target_total:
+                        bonus_tok = preds[k_cand]
+                        generated.append(bonus_tok)
+                        accepted += 1
+                        last_accepted_idx = k_cand
+                else:
+                    accepted = 0
+                    last_accepted_idx = 0
+                    for j in range(k_cand):
+                        step_res = verifier.verify_candidates(
+                            target_logits=logits[0, j],
+                            candidates=[curr_cand[j]],
+                            draft_logits=None,
+                            temperature=eff_temp,
+                        )
+                        generated.append(step_res.accepted_token)
                         accepted += 1
                         last_accepted_idx = j
-                        all_matched = False
-                        break
+                        if not step_res.accepted or len(generated) >= target_total:
+                            break
 
-                if all_matched and len(generated) < target_total:
-                    # All K candidates matched perfectly! Accept bonus token from last verified position
-                    bonus_tok = preds[k_cand]
-                    generated.append(bonus_tok)
-                    accepted += 1
-                    last_accepted_idx = k_cand
-
-                # Credit accepted draft tokens (excluding the 1 base guaranteed token)
                 total_accepted += max(0, accepted - 1)
 
                 # O(1) KV-Cache rollback: advance only the accepted token count
@@ -364,18 +437,28 @@ class MedusaSpeculativeDecoder:
                 if len(generated) >= target_total:
                     break
 
-                # Lazy terminal-leaf drafting: evaluate Medusa heads ONLY at `last_accepted_idx` (M=1)
+                # Lazy terminal-leaf drafting
                 last_norm = getattr(model, "_last_verify_norm", None)
                 if last_norm is not None and last_accepted_idx < last_norm.size(1):
                     med_logits_leaf = model.eval_medusa_heads(
                         last_norm[:, last_accepted_idx : last_accepted_idx + 1, :]
                     )
-                    draft_candidates = [
-                        med_logits_leaf[k][0, 0].argmax(dim=-1).item()
-                        for k in range(k_heads)
-                    ]
+                    if eff_temp <= 1e-6:
+                        draft_candidates = [
+                            med_logits_leaf[k][0, 0].argmax(dim=-1).item()
+                            for k in range(k_heads)
+                        ]
+                    else:
+                        draft_candidates = [
+                            sample_without_replacement(
+                                med_logits_leaf[k][0, 0],
+                                num_samples=1,
+                                temperature=eff_temp,
+                                generator=generator,
+                            ).item()
+                            for k in range(k_heads)
+                        ]
                 else:
-                    # Fallback single step if index boundary exceeded
                     curr_single = torch.tensor(
                         [[generated[-1]]], device=device, dtype=torch.long
                     )
@@ -383,10 +466,23 @@ class MedusaSpeculativeDecoder:
                         curr_single, kv_caches=kv_caches, return_all_logits=False
                     )
                     model_forward_calls += 1
-                    draft_candidates = [
-                        fallback_med_logits[k][:, -1, :].argmax(dim=-1).item()
-                        for k in range(k_heads)
-                    ]
+                    if eff_temp <= 1e-6:
+                        draft_candidates = [
+                            fallback_med_logits[k][:, -1, :].argmax(dim=-1).item()
+                            for k in range(k_heads)
+                        ]
+                    else:
+                        draft_candidates = [
+                            sample_without_replacement(
+                                fallback_med_logits[k][:, -1, :],
+                                num_samples=1,
+                                temperature=eff_temp,
+                                generator=generator,
+                            )
+                            .squeeze(-1)
+                            .item()
+                            for k in range(k_heads)
+                        ]
 
         if device.type == "mps":
             torch.mps.synchronize()
@@ -397,6 +493,13 @@ class MedusaSpeculativeDecoder:
         acc_rate = (
             (total_accepted / total_drafted * 100.0) if total_drafted > 0 else 0.0
         )
+
+        avg_rejection_by_rank = [
+            float(sum(vals) / len(vals))
+            for vals in all_rank_rejections
+            if len(vals) > 0
+        ]
+        power_law_fit = fit_power_law_rejection_bound(avg_rejection_by_rank)
 
         stats = {
             "new_tokens": new_tokens_count,
@@ -426,6 +529,9 @@ class MedusaSpeculativeDecoder:
             "drafted_tokens": total_drafted,
             "accepted_draft_tokens": total_accepted,
             "acceptance_rate_pct": acc_rate,
+            "temperature": eff_temp,
+            "rejection_rates_per_rank": avg_rejection_by_rank,
+            "power_law_fit": power_law_fit,
         }
 
         return generated, stats
