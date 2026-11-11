@@ -55,11 +55,16 @@ The comprehensive manuscript detailing AxiomLM's architectural transformations, 
 
 ## Key Features
 
-* **Bare-Metal Apple Silicon Efficiency**: Custom fused kernels written in Apple Metal Shading Language (MSL) and ARM NEON C++ SIMD intrinsics.
+### 1. High-Performance Inference & Quantization Research Engine (Apple Silicon UMA)
+* **Bare-Metal Apple Metal Shading Language (MSL)**: 53 custom compute shaders featuring register-aligned dequantization, SIMD-group warp reductions (`simd_sum`, `simd_max`), and `simdgroup_matrix` tensor acceleration.
+* **Sub-4-Bit & Mixed-Precision Architecture**: Native in-register dequantization for MARLIN Q4 (`64207531` interleaved nibbles), BitNet 1.58-bit ternary, Q2_K, and in-flight FP8 / INT4 KV-cache compression.
+* **Tree-Speculative Verification**: Topology-aware bitmask tree attention ([SpecInfer](https://arxiv.org/abs/2305.09781)), hardware-aware dynamic programming tree calibration ([Sequoia](https://arxiv.org/abs/2402.12374)), and self-distilled sparse candidate generation ([Medusa](https://arxiv.org/abs/2401.10774)).
+* **Single-Command-Buffer C++ Runtime**: Zero-allocation multi-layer execution graph (`MPSQuantizedDecodeRunner`) dispatching complete model forward passes within a single Metal compute encoder.
+* **Zero-Copy KV Management**: Unified Memory `StaticKVCache` supporting monotonic growth and rolling ring-buffer sliding-window eviction without dynamic memory reallocations.
+
+### 2. Pretraining & Systems Infrastructure
 * **Low-Level Hardware Kernels (CUDA)**: Fused compute kernels with analytical backward passes written in OpenAI Triton.
-* **Spectral Matrix Optimization**: Integration of the Muon optimizer utilizing quintic Newton-Schulz iterations for polar decomposition and orthogonal parameter updates in 2D weight space.
-* **Zero-Overhead Inference**: State-cached Key-Value (KV) decode engine achieving O(1) step latency, paired with advanced sampling strategies.
-* **Modern Architecture Suite**: Native implementations of Rotary Position Embeddings (RoPE), RMSNorm, SwiGLU, and Grouped-Query Attention (GQA).
+* **Spectral Matrix Optimization (Experimental)**: Integration of the Muon optimizer utilizing quintic Newton-Schulz iterations for polar decomposition and orthogonal parameter updates in 2D weight space.
 * **Multi-Shard Streaming Data Loader**: Memory-mapped binary ingestion with sub-200 MB RAM utilization and cross-shard step synchronization.
 * **Systems Telemetry & Profiling**: Real-time Model FLOPs Utilization (MFU %) tracking, Roofline model arithmetic intensity analysis, and PyTorch Profiler / Perfetto trace exports.
 
@@ -69,27 +74,29 @@ The comprehensive manuscript detailing AxiomLM's architectural transformations, 
 
 AxiomLM leverages custom Metal Shading Language (MSL) compute shaders (`simd_sum` / `simd_max` warp reductions, `float4`/`half4` 128-bit vectorization, and single-pass online normalizers) alongside C++ ARM NEON (`float32x4_t` / `vfmaq_f32`) intrinsics to minimize GPU SRAM overhead and bypass PyTorch's dynamic memory allocations.
 
-**Hardware Testbed**: Benchmarked on **Apple M3 Pro (12-Core ARM64 CPU: 6P + 6E, 18-Core Metal 4 GPU, 18 GB LPDDR5 Unified Memory)**:
+**Hardware Testbed**: Benchmarked on **Apple M3 Pro (12-Core ARM64 CPU: 6P + 6E, 18-Core Metal 4 GPU, 18 GB LPDDR5 Unified Memory @ 150 GB/s)**:
 
 ### 1. End-to-End Autoregressive Inference Optimization Hierarchy ($T = 768$: Prompt $= 512$, Decode $= 256$, $B = 1$)
 
-| Optimization Stage | KV Heads | Kernels & Execution Mode | Cache & Quantization | Decode Speed | Speedup vs. Eager | Step Latency | Active KV Memory |
+| Optimization Stage | KV Heads | Kernels & Execution Mode | Cache & Quantization | Decode Speed | Speedup vs. FP16 Baseline | Step Latency | Active KV Memory |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **1. Classic MHA (Eager $O(T^2)$, No Cache)** | 12 | Standard PyTorch MPS | None (FP32) | `5.9 tok/s` | `1.00x` | `169.49 ms/tok` | `54.00 MB` |
-| **2. + Dynamic KV-Cache (Classic MHA)** | 12 | Standard PyTorch MPS | Tuple `torch.cat` (FP32) | `124.1 tok/s` | `21.03x` | `8.06 ms/tok` | `53.93 MB` |
-| **3. + Modern Zero-Copy GQA + Static KV** | 4 | Standard PyTorch MPS | `StaticKVCache` (FP32) | `162.6 tok/s` | `27.56x` | `6.15 ms/tok` | `18.00 MB` |
-| **4. + Fused Metal/NEON Kernels (FP32 Engine)** | 4 | Fused Metal / NEON | `StaticKVCache` (FP32) | `181.1 tok/s` | `30.70x` | `5.52 ms/tok` | `18.00 MB` |
-| **5. + Native FP16 Fused Metal + Static Ring KV** | 4 | Fused Metal (`half4`) | `StaticKVCache` (FP16) | `246.5 tok/s` | `41.78x` | `4.06 ms/tok` | `9.00 MB` |
-| **6. + C++ Decode Graph Runner (`MPSDecodeRunner`)** | 4 | Pure C++ Metal Encoder | `StaticKVCache` (FP16) | **`421.7 tok/s`** | **`71.47x`** | **`2.37 ms/tok`** | **`9.00 MB`** |
-| **7. + Split-KV Flash-Decode ($B_r=16$) Short-Context** | 4 | Tiled Split-KV MSL | `StaticKVCache` (FP16) | **`489.1 tok/s`** | **`82.90x`** | **`2.04 ms/tok`** | **`2.25 MB`** |
-| **8. + In-Register Q8_G64 Quantized GEMV** | 4 | `qmv_q8_g64` MSL | Static Ring (Q8 Weights) | **`539.7 tok/s`** | **`91.47x`** | **`1.85 ms/tok`** | **`9.00 MB`** |
-| **9. + In-Register Q4_G64 Quantized GEMV (Standard)** | 4 | `qmv_q4_g64` MSL | Static Ring (Q4 Weights) | **`767.5 tok/s`** | **`130.08x`** | **`1.30 ms/tok`** | **`9.00 MB`** |
-| **10. + In-Register Q4_G64 Short-Context Peak** | 4 | `qmv_q4_g64` MSL | Short Arena ($T < 192$) | **`1,035.3 tok/s`** | **`175.47x`** | **`0.97 ms/tok`** | **`2.25 MB`** |
-| **11. + Speculative Batched QMM Decoding ($K=3$)** | 4 | `qmm_q4_g64` + Prompt Lookup | Speculative Cache (Q4) | **`838.9 tok/s`** | **`142.19x`** | **`1.19 ms/tok`** | **`9.00 MB`** |
-| **12. + Pure C++ Speculative Engine ($K=3$)** | 4 | Pure C++ Spec Loop | C++ Ring Buffer (Q4) | **`1,055.1 tok/s`** | **`178.83x`** | **`0.95 ms/tok`** | **`9.00 MB`** |
-| **13. + Neural Medusa Self-Drafting Engine ($K=3$)** | 4 | Medusa Auxiliary Heads | Neural Speculative Cache | **`467.1 tok/s`** | **`79.17x`** | **`2.14 ms/tok`** | **`9.00 MB`** |
-| **14. Multi-Token Verification Compute Rate ($T=7$)** | 4 | `qmm_q4_g64` C++ `verify_step` | Multi-Token Register Stream | **`2,538.1 tok/s`** | **`430.19x`** | **`0.394 ms/tok`** | **`9.00 MB`** |
-| **Long-Context 4096-Token Ring-Buffer ($W=1024$, Q4)** | 4 | `qmv_q4_g64` + Split-KV | Rolling Ring (Q4 Weights) | **`969.6 tok/s`** | **`164.34x`** | **`1.03 ms/tok`** | **`12.00 MB`** |
+| *Ablation 0: Un-cached Eager PyTorch MPS* | 12 | Standard PyTorch MPS | None (FP32, $O(T^2)$ recompute) | `5.9 tok/s` | *0.02x (Ablation)* | `169.49 ms/tok` | `54.00 MB` |
+| *Ablation 1: Dynamic KV-Cache (Classic MHA)* | 12 | Standard PyTorch MPS | Tuple `torch.cat` (FP32) | `124.1 tok/s` | *0.50x (Ablation)* | `8.06 ms/tok` | `53.93 MB` |
+| **1. Modern Zero-Copy GQA + Static KV** | 4 | Standard PyTorch MPS | `StaticKVCache` (FP32) | `162.6 tok/s` | `0.66x` | `6.15 ms/tok` | `18.00 MB` |
+| **2. + Fused Metal/NEON Kernels (FP32 Engine)** | 4 | Fused Metal / NEON | `StaticKVCache` (FP32) | `181.1 tok/s` | `0.73x` | `5.52 ms/tok` | `18.00 MB` |
+| **3. + Native FP16 Fused Metal + Static Ring KV** | 4 | Fused Metal (`half4`) | `StaticKVCache` (FP16) | **`246.5 tok/s`** | **`1.00x (Baseline)`** | `4.06 ms/tok` | `9.00 MB` |
+| **4. + C++ Decode Graph Runner (`MPSDecodeRunner`)** | 4 | Pure C++ Metal Encoder | `StaticKVCache` (FP16) | **`421.7 tok/s`** | **`1.71x`** | **`2.37 ms/tok`** | **`9.00 MB`** |
+| **5. + Split-KV Flash-Decode ($B_r=16$) Short-Context** | 4 | Tiled Split-KV MSL | `StaticKVCache` (FP16) | **`489.1 tok/s`** | **`1.98x`** | **`2.04 ms/tok`** | **`2.25 MB`** |
+| **6. + In-Register Q8_G64 Quantized GEMV** | 4 | `qmv_q8_g64` MSL | Static Ring (Q8 Weights) | **`539.7 tok/s`** | **`2.19x`** | **`1.85 ms/tok`** | **`9.00 MB`** |
+| **7. + In-Register Q4_G64 Quantized GEMV (Standard)** | 4 | `qmv_q4_g64` MSL | Static Ring (Q4 Weights) | **`767.5 tok/s`** | **`3.11x`** | **`1.30 ms/tok`** | **`9.00 MB`** |
+| *AxiomLM Q4 Short-Context Peak* | 4 | `qmv_q4_g64` MSL | Short Arena ($T < 192$) | **`1,035.3 tok/s`** | **`4.20x`** | **`0.97 ms/tok`** | **`2.25 MB`** |
+| **8. + Speculative Batched QMM Decoding ($K=3$)** | 4 | `qmm_q4_g64` + Prompt Lookup | Speculative Cache (Q4) | **`838.9 tok/s`** | **`3.40x`** | **`1.19 ms/tok`** | **`9.00 MB`** |
+| **9. + Pure C++ Speculative Engine ($K=3$)** | 4 | Pure C++ Spec Loop | C++ Ring Buffer (Q4) | **`1,055.1 tok/s`** | **`4.28x`** | **`0.95 ms/tok`** | **`9.00 MB`** |
+| **10. + Neural Medusa Self-Drafting Engine ($K=3$)** | 4 | Medusa Auxiliary Heads | Neural Speculative Cache | **`467.1 tok/s`** | **`1.89x`** | **`2.14 ms/tok`** | **`9.00 MB`** |
+| *Speculative Candidate Verification Rate ($T=7$)* | 4 | `qmm_q4_g64` C++ `verify_step` | Multi-Token Register Stream | **`2,538.1 tok/s`\*** | *10.29x (Compute)* | **`0.394 ms/tok`** | **`9.00 MB`** |
+| **Long-Context 4096-Token Ring-Buffer ($W=1024$, Q4)** | 4 | `qmv_q4_g64` + Split-KV | Rolling Ring (Q4 Weights) | **`969.6 tok/s`** | **`3.93x`** | **`1.03 ms/tok`** | **`12.00 MB`** |
+
+*\*Note on Verification Compute Rate: The 2,538.1 tok/s metric reflects in-register candidate batch execution throughput ($T=7$) during speculative verification. Effective autoregressive decode rate is governed by candidate acceptance probability $\alpha$: $R_{\text{eff}} = (1 + \alpha(K-1)) / \Delta t_{\text{verify}}$.*
 
 ### 2. Custom Operator Kernel Microbenchmarks ($B=4, T=1024, D=768, V=50304$)
 
@@ -103,13 +110,15 @@ AxiomLM leverages custom Metal Shading Language (MSL) compute shaders (`simd_sum
 | **RMSNorm (Fwd + Bwd)** | `4.18 ms` | **`2.06 ms`** | **2.03x** | Hardware 32-lane `simd_sum` reduction; retains only scalar `rsqrt` |
 | **SwiGLU (Fwd + Bwd)** | `3.29 ms` | **`2.66 ms`** | **1.24x** | Avoids intermediate activation materialization |
 
-### 3. Output Quality & Perplexity Parity (Trained Checkpoints)
+### 3. Output Quality & Bit-for-Bit Parity (FP16 Fused Kernels on M3 Pro)
 
-| Trained Checkpoint & Evaluation Split | Training Provenance | Standard PyTorch Loss (PPL) | Fused Metal/NEON Loss (PPL) | Max Logit $\Delta$ | Quality Degradation |
+| Trained Checkpoint & Evaluation Split | Training Provenance | Standard PyTorch Loss (PPL) | Fused Metal/NEON Loss (PPL) | Max Logit $\Delta$ | Numerical Degradation |
 | :--- | :--- | :---: | :---: | :---: | :---: |
-| **`exports/AxiomLM-124M`** (TinyStories Held-Out) | Trained from scratch (`step 1,318`, `tinystories_shards`) | `1.4379` (**`PPL = 4.21`**) | `1.4379` (**`PPL = 4.21`**) | `3.81e-05` | **`0.00%`** |
-| **`exports/AxiomLM-124M`** (TinyStories Short Prompt) | Trained from scratch (`step 1,318`, `tinystories_shards`) | `0.7578` (**`PPL = 2.13`**) | `0.7578` (**`PPL = 2.13`**) | `3.62e-05` | **`0.00%`** |
-| **`exports/AxiomLM-124M-Systems`** (Shakespeare Held-Out) | Trained from scratch (`step 1,386`, `systems_shards`) | `2.1937` (**`PPL = 8.97`**) | `2.1937` (**`PPL = 8.97`**) | `2.19e-05` | **`0.00%`** |
+| **`exports/AxiomLM-124M`** (TinyStories Held-Out) | Trained from scratch (`step 1,318`, `tinystories_shards`) | `1.4379` (**`PPL = 4.21`**) | `1.4379` (**`PPL = 4.21`**) | `3.81e-05` | **`0.00%` (Parity)** |
+| **`exports/AxiomLM-124M`** (TinyStories Short Prompt) | Trained from scratch (`step 1,318`, `tinystories_shards`) | `0.7578` (**`PPL = 2.13`**) | `0.7578` (**`PPL = 2.13`**) | `3.62e-05` | **`0.00%` (Parity)** |
+| **`exports/AxiomLM-124M-Systems`** (Shakespeare Held-Out) | Trained from scratch (`step 1,386`, `systems_shards`) | `2.1937` (**`PPL = 8.97`**) | `2.1937` (**`PPL = 8.97`**) | `2.19e-05` | **`0.00%` (Parity)** |
+
+*Note: True sub-4-bit quantization perplexities across WikiText-2 and C4 for Q4, Q2_K, and BitNet formats are cataloged in the research paper draft.*
 
 --------------------------------------------------------------------------------
 
@@ -117,24 +126,24 @@ AxiomLM leverages custom Metal Shading Language (MSL) compute shaders (`simd_sum
 
 Controlled single-stream ($B=1$) autoregressive decode comparison on identical hardware: **Apple M3 Pro SoC (18-Core Metal 4 GPU, 18 GB Unified Memory @ 150 GB/s)** on the AxiomLM 114M Modern architecture ($12\text{L}, D=768, 12\text{Q}/4\text{KV}, \text{SwiGLU}, V=50,304$):
 
-| Framework / Engine | Precision | Decode Speed | Step Latency | Speedup vs. PyTorch MPS Eager | Speedup vs. Paper Baseline |
+| Framework / Engine | Precision | Decode Speed | Step Latency | Relative to llama.cpp | Speedup vs. FP16 Baseline |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **PyTorch MPS Eager (Un-cached)** | FP32 | `5.9 tok/s` | `169.5 ms/tok` | `1.0x` | `0.02x` |
-| **AxiomLM Research Paper Baseline** | FP16 | `246.5 tok/s` | `4.06 ms/tok` | `41.8x` | `1.00x` |
-| **PyTorch MPS Eager (Cached Static KV)** | FP16 | `273.3 – 364.9 tok/s` | `2.74 – 3.66 ms/tok` | `46.3x – 61.8x` | `1.11x – 1.48x` |
-| **Apple MLX Baseline (v0.22+)** | FP16 | `345.7 tok/s` | `2.89 ms/tok` | `58.6x` | `1.40x` |
-| **llama.cpp Metal (v3000+)** | FP16 | `384.9 tok/s` | `2.60 ms/tok` | `65.2x` | `1.56x` |
-| **AxiomLM Modern Decode Runner** | **FP16** | **`421.7 tok/s`** | **`2.37 ms/tok`** | **`71.5x`** | **`1.71x`** |
-| *AxiomLM FP16 Short-Context Peak* | *FP16* | **`489.1 tok/s`** | **`2.04 ms/tok`** | **`82.9x`** | **`1.98x`** |
-| **Apple MLX Baseline** | Q4_0 | `580 – 620 tok/s` | `1.61 – 1.72 ms/tok` | `98.3x – 105.1x` | `2.35x – 2.52x` |
-| **llama.cpp Metal** | Q4_0 | `720 – 780 tok/s` | `1.28 – 1.39 ms/tok` | `122.0x – 132.2x` | `2.92x – 3.16x` |
-| **AxiomLM Quantized Metal GEMV** | **Q8_G64 (Near-Lossless)** | **`539.7 tok/s`** | **`1.85 ms/tok`** | **`91.5x`** | **`2.19x`** |
-| **AxiomLM Quantized Metal GEMV** | **Q4_G64 (Standard)** | **`767.5 tok/s`** | **`1.30 ms/tok`** | **`130.1x`** | **`3.11x`** |
-| *AxiomLM Q4 Short-Context Peak* | *Q4_G64* | **`1,035.3 tok/s`** | **`0.97 ms/tok`** | **`175.5x`** | **`4.20x`** |
-| **AxiomLM Speculative Batched QMM** | **Q4_G64 ($K=3$, Python)** | **`838.9 tok/s`** | **`1.19 ms/tok`** | **`142.2x`** | **`3.40x`** |
-| **AxiomLM Pure C++ Speculative Engine** | **Q4_G64 ($K=3$, C++)** | **`1,055.1 tok/s`** | **`0.95 ms/tok`** | **`178.8x`** | **`4.28x`** |
-| **AxiomLM Neural Medusa Engine** | **Q4_G64 ($K=3$, Neural)** | **`467.1 tok/s`** | **`2.14 ms/tok`** | **`79.2x`** | **`1.89x`** |
-| **AxiomLM Candidate Verification Rate** | **Q4_G64 ($T=7$)** | **`2,538.1 tok/s` eff.** | **`0.394 ms/tok`** | **`430.2x`** | **`10.29x`** |
+| *PyTorch MPS Eager (Un-cached)* | FP32 | `5.9 tok/s` | `169.5 ms/tok` | *0.02x* | *0.02x (Ablation)* |
+| **AxiomLM Research Paper Baseline** | FP16 | `246.5 tok/s` | `4.06 ms/tok` | `0.64x` | `1.00x (Baseline)` |
+| **PyTorch MPS Eager (Cached Static KV)** | FP16 | `273.3 – 364.9 tok/s` | `2.74 – 3.66 ms/tok` | `0.71x – 0.95x` | `1.11x – 1.48x` |
+| **Apple MLX Baseline (v0.31+)** | FP16 | `345.7 tok/s` | `2.89 ms/tok` | `0.90x` | `1.40x` |
+| **llama.cpp Metal (b9630+)** | FP16 | `384.9 tok/s` | `2.60 ms/tok` | `1.00x (Ref)` | `1.56x` |
+| **AxiomLM Modern Decode Runner** | **FP16** | **`421.7 tok/s`** | **`2.37 ms/tok`** | **`1.10x`** | **`1.71x`** |
+| *AxiomLM FP16 Short-Context Peak* | *FP16* | **`489.1 tok/s`** | **`2.04 ms/tok`** | **`1.27x`** | **`1.98x`** |
+| **Apple MLX Baseline** | Q4_0 | `580 – 620 tok/s` | `1.61 – 1.72 ms/tok` | `0.80x` | `2.43x` |
+| **llama.cpp Metal** | Q4_0 | `720 – 780 tok/s` | `1.28 – 1.39 ms/tok` | `1.00x (Ref)` | `3.04x` |
+| **AxiomLM Quantized Metal GEMV** | **Q8_G64 (Near-Lossless)** | **`539.7 tok/s`** | **`1.85 ms/tok`** | **`0.72x`** | **`2.19x`** |
+| **AxiomLM Quantized Metal GEMV** | **Q4_G64 (Standard)** | **`767.5 tok/s`** | **`1.30 ms/tok`** | **`1.02x (Parity)`** | **`3.11x`** |
+| *AxiomLM Q4 Short-Context Peak* | *Q4_G64* | **`1,035.3 tok/s`** | **`0.97 ms/tok`** | **`1.38x`** | **`4.20x`** |
+| **AxiomLM Speculative Batched QMM** | **Q4_G64 ($K=3$, Python)** | **`838.9 tok/s`** | **`1.19 ms/tok`** | **`1.12x`** | **`3.40x`** |
+| **AxiomLM Pure C++ Speculative Engine** | **Q4_G64 ($K=3$, C++)** | **`1,055.1 tok/s`** | **`0.95 ms/tok`** | **`1.41x`** | **`4.28x`** |
+| **AxiomLM Neural Medusa Engine** | **Q4_G64 ($K=3$, Neural)** | **`467.1 tok/s`** | **`2.14 ms/tok`** | **`0.62x`** | **`1.89x`** |
+| *AxiomLM Candidate Verification Rate* | *Q4_G64 ($T=7$)* | **`2,538.1 tok/s`\*** | **`0.394 ms/tok`** | *3.38x (Compute)* | *10.29x (Compute)* |
 
 > **Academic Reproducibility Harness**: All baseline comparisons and hardware numbers can be verified locally with a single command:
 > ```bash

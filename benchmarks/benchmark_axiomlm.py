@@ -19,9 +19,9 @@ import numpy as np
 import torch
 
 from axiomlm import ModelConfig, Transformer
+from axiomlm.engine.medusa import MedusaSpeculativeDecoder, train_medusa_heads
 from axiomlm.engine.paged_cache import StaticKVCache
 from axiomlm.engine.speculative import SpeculativePromptLookupDecoder
-from axiomlm.engine.medusa import MedusaSpeculativeDecoder, train_medusa_heads
 from axiomlm.kernels import is_mps_available
 
 
@@ -46,7 +46,7 @@ def benchmark_engine_mode(
         torch.mps.synchronize()
         t0_p = time.perf_counter()
         with torch.no_grad():
-            out, _, _ = model(prompt_tensor, kv_caches=[cache] * 12)
+            out, _, _ = model(prompt_tensor, kv_caches=cache)
         torch.mps.synchronize()
         dt_p = time.perf_counter() - t0_p
         prefill_tok_s = prompt_len / dt_p if dt_p > 0 else 0.0
@@ -57,7 +57,7 @@ def benchmark_engine_mode(
         # 2. Warmup
         for _ in range(5):
             with torch.no_grad():
-                out, _, _ = model(next_tok, kv_caches=[cache] * 12)
+                out, _, _ = model(next_tok, kv_caches=cache)
                 next_tok = out[:, -1, :].argmax(dim=-1, keepdim=True)
         torch.mps.synchronize()
 
@@ -65,7 +65,7 @@ def benchmark_engine_mode(
         t0_d = time.perf_counter()
         for _ in range(gen_tokens):
             with torch.no_grad():
-                out, _, _ = model(next_tok, kv_caches=[cache] * 12)
+                out, _, _ = model(next_tok, kv_caches=cache)
                 next_tok = out[:, -1, :].argmax(dim=-1, keepdim=True)
         torch.mps.synchronize()
         dt_d = time.perf_counter() - t0_d

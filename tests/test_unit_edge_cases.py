@@ -67,6 +67,22 @@ class TestKernelEdgeCases(unittest.TestCase):
                 torch.isnan(out).any(), f"fused_sdpa NaNs on extreme logits on {device}"
             )
 
+    def test_gqa_flash_decode_head_dim_bounds_guard(self):
+        """Ensure GQA flash-decode explicitly validates head_dim <= 128 and even dimension."""
+        from axiomlm.kernels.ops import gqa_flash_decode_mps
+
+        q_bad = torch.randn(1, 4, 1, 256, device="cpu")
+        k_bad = torch.randn(1, 1, 16, 256, device="cpu")
+        v_bad = torch.randn(1, 1, 16, 256, device="cpu")
+        with self.assertRaises(ValueError):
+            gqa_flash_decode_mps(q_bad, k_bad, v_bad, active_len=16)
+
+        q_odd = torch.randn(1, 4, 1, 65, device="cpu")
+        k_odd = torch.randn(1, 1, 16, 65, device="cpu")
+        v_odd = torch.randn(1, 1, 16, 65, device="cpu")
+        with self.assertRaises(ValueError):
+            gqa_flash_decode_mps(q_odd, k_odd, v_odd, active_len=16)
+
 
 class TestPagedKVCache(unittest.TestCase):
     def test_paged_cache_allocation_and_reconstruction(self):

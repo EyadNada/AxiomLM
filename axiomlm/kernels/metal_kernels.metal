@@ -423,11 +423,14 @@ kernel void argmax_half_kernel(
 
   threadgroup float shared_val[256];
   threadgroup uint shared_idx[256];
-  shared_val[tid] = best_val;
-  shared_idx[tid] = best_idx;
+  if (tid < 256) {
+    shared_val[tid] = best_val;
+    shared_idx[tid] = best_idx;
+  }
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
-  for (uint stride = block_dim >> 1; stride > 0; stride >>= 1) {
+  uint active_threads = min(block_dim, 256u);
+  for (uint stride = active_threads >> 1; stride > 0; stride >>= 1) {
     if (tid < stride) {
       float other_v = shared_val[tid + stride];
       uint other_i = shared_idx[tid + stride];
@@ -482,11 +485,14 @@ kernel void argmax_multi_half_kernel(
 
   threadgroup float shared_val[256];
   threadgroup uint shared_idx[256];
-  shared_val[tid] = best_val;
-  shared_idx[tid] = best_idx;
+  if (tid < 256) {
+    shared_val[tid] = best_val;
+    shared_idx[tid] = best_idx;
+  }
   threadgroup_barrier(mem_flags::mem_threadgroup);
 
-  for (uint stride = block_dim >> 1; stride > 0; stride >>= 1) {
+  uint active_threads = min(block_dim, 256u);
+  for (uint stride = active_threads >> 1; stride > 0; stride >>= 1) {
     if (tid < stride) {
       float other_v = shared_val[tid + stride];
       uint other_i = shared_idx[tid + stride];

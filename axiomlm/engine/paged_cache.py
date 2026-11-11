@@ -3,8 +3,15 @@ import torch
 
 class PagedKVCache:
     """
+    [DEPRECATED for Production Inference]
     vLLM-style block table memory manager for KV-Cache.
     Eliminates memory fragmentation by storing KV states in non-contiguous memory blocks.
+
+    NOTE (MLSys Architectural Warning):
+    This class is preserved strictly as an unoptimized reference baseline. Reconstructing
+    non-contiguous blocks via `get_reconstructed_cache()` invokes dynamic `torch.cat()`
+    allocations on every decode step, triggering Unified Memory allocator stalls.
+    For zero-allocation, bare-metal Apple Silicon inference, use `StaticKVCache` instead.
     """
 
     def __init__(

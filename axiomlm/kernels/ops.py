@@ -560,6 +560,14 @@ def gqa_flash_decode_mps(
     kv_dtype: str = "fp16",
 ) -> torch.Tensor:
     """Fast Split-KV Flash-Decode for GQA on Apple Silicon MPS with in-register quantization."""
+    head_dim = q.size(-1)
+    if head_dim > 128:
+        raise ValueError(
+            f"gqa_flash_decode_mps requires head_dim <= 128, got {head_dim}"
+        )
+    if head_dim % 2 != 0:
+        raise ValueError(f"gqa_flash_decode_mps requires even head_dim, got {head_dim}")
+
     kv_dt = kv_dtype.lower()
     if _METAL_MOD is not None and q.device.type == "mps" and q.dtype == torch.float16:
         if (
@@ -664,6 +672,15 @@ def gqa_tree_verify_mps(
     Computes topology-aware tree attention directly over prefix + speculative tree tokens
     in a single fused pass. Supports in-register quantized KV-cache (FP8 & INT4).
     """
+    q_dim = (n_head * q.size(-1)) if q.dim() == 4 else q.size(-1)
+    head_dim = q_dim // n_head
+    if head_dim > 128:
+        raise ValueError(
+            f"gqa_tree_verify_mps requires head_dim <= 128, got {head_dim}"
+        )
+    if head_dim % 2 != 0:
+        raise ValueError(f"gqa_tree_verify_mps requires even head_dim, got {head_dim}")
+
     if isinstance(tree_mask, torch.Tensor):
         mask_list = [int(x) for x in tree_mask.cpu().tolist()]
     else:
@@ -740,9 +757,7 @@ def gqa_tree_verify_mps(
         v_in = v_in.unsqueeze(0)
 
     T = len(mask_list)
-    if q.dim() == 2:
-        q_4d = q.view(1, T, n_head, head_dim).transpose(1, 2)
-    elif q.dim() == 3:
+    if q.dim() == 2 or q.dim() == 3:
         q_4d = q.view(1, T, n_head, head_dim).transpose(1, 2)
     else:
         q_4d = q

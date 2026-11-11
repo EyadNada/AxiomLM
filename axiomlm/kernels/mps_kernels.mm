@@ -1636,8 +1636,10 @@ torch::Tensor gqa_flash_decode_mps(
     torch::Tensor v_cache,
     int64_t active_len,
     int64_t num_splits) {
-    auto out = torch::empty_like(q);
     uint32_t head_dim = (uint32_t)k_cache.size(-1);
+    TORCH_CHECK(head_dim <= 128, "gqa_flash_decode_mps requires head_dim <= 128, got ", head_dim);
+    TORCH_CHECK(head_dim % 2 == 0, "gqa_flash_decode_mps requires even head_dim for half2 vectorization, got ", head_dim);
+    auto out = torch::empty_like(q);
     uint32_t n_kv_head = (k_cache.dim() == 4) ? (uint32_t)k_cache.size(1) : (uint32_t)k_cache.size(0);
     uint32_t max_seq_len = (k_cache.dim() == 4) ? (uint32_t)k_cache.size(2) : (uint32_t)k_cache.size(1);
     uint32_t n_head = (uint32_t)(q.numel() / head_dim);
@@ -4019,6 +4021,8 @@ torch::Tensor gqa_tree_verify_mps(
     }
 
     uint32_t T = (uint32_t)q_2d.size(0);
+    TORCH_CHECK(head_dim <= 128, "gqa_tree_verify_mps requires head_dim <= 128, got ", head_dim);
+    TORCH_CHECK(head_dim % 2 == 0, "gqa_tree_verify_mps requires even head_dim for half2 vectorization, got ", head_dim);
     TORCH_CHECK(T >= 1 && T <= 32, "gqa_tree_verify_mps supports T in [1, 32], got ", T);
     TORCH_CHECK(tree_mask.size() == (size_t)T, "tree_mask size must match T");
     uint32_t q_stride = (uint32_t)q_2d.stride(0);

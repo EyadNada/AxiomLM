@@ -447,7 +447,7 @@ class Transformer(nn.Module):
     def forward_with_medusa(
         self,
         idx: torch.Tensor,
-        kv_caches: list[Any] | None = None,
+        kv_caches: Any | None = None,
         return_all_logits: bool = False,
         return_medusa: bool = True,
     ) -> tuple[torch.Tensor, list[torch.Tensor], list[Any] | None]:
@@ -457,6 +457,12 @@ class Transformer(nn.Module):
         Returns:
             Tuple of (base_logits, medusa_logits_list, new_kv_caches)
         """
+        if (
+            kv_caches is not None
+            and not isinstance(kv_caches, (list, tuple))
+            and (hasattr(kv_caches, "n_layer") or hasattr(kv_caches, "k_caches"))
+        ):
+            kv_caches = [kv_caches] * self.config.n_layer
         device = idx.device
         B, T = idx.size()
 
@@ -1410,7 +1416,7 @@ class Transformer(nn.Module):
         self,
         idx: torch.Tensor,
         targets: torch.Tensor | None = None,
-        kv_caches: list[tuple[torch.Tensor, torch.Tensor] | None] | None = None,
+        kv_caches: Any | None = None,
         return_all_logits: bool = False,
     ) -> (
         tuple[torch.Tensor, torch.Tensor | None]
@@ -1418,6 +1424,13 @@ class Transformer(nn.Module):
             torch.Tensor, torch.Tensor | None, list[tuple[torch.Tensor, torch.Tensor]]
         ]
     ):
+        if (
+            kv_caches is not None
+            and not isinstance(kv_caches, (list, tuple))
+            and (hasattr(kv_caches, "n_layer") or hasattr(kv_caches, "k_caches"))
+        ):
+            kv_caches = [kv_caches] * self.config.n_layer
+
         device = idx.device
         B, T = idx.size()
 
