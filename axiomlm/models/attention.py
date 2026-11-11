@@ -11,19 +11,20 @@ from torch.nn import functional as F
 from .modules import apply_rope, repeat_kv
 
 try:
-    from ..kernels import fused_sdpa
+    from ..kernels import fused_sdpa, gqa_flash_decode_mps
     from ..kernels.ops import _METAL_MOD
 
     HAS_CUSTOM_KERNELS = True
 except (ImportError, ValueError):
     try:
-        from kernels import fused_sdpa
+        from kernels import fused_sdpa, gqa_flash_decode_mps
         from kernels.ops import _METAL_MOD
 
         HAS_CUSTOM_KERNELS = True
     except ImportError:
         HAS_CUSTOM_KERNELS = False
         _METAL_MOD = None
+        gqa_flash_decode_mps = None
 
 
 class CausalSelfAttention(nn.Module):
@@ -120,20 +121,77 @@ class CausalSelfAttention(nn.Module):
                 active_len = min(new_seen, max_seq)
                 k_buf = kv_cache.k_caches[layer_idx]
                 v_buf = kv_cache.v_caches[layer_idx]
-                _METAL_MOD.rope_kv_cache_write_mps(
-                    qkv,
-                    freqs_cis,
-                    k_buf,
-                    v_buf,
-                    q_dim,
-                    kv_dim,
-                    self.head_dim,
-                    seen % freqs_cis.size(0),
-                    write_pos,
-                )
+                c_dtype = getattr(kv_cache, "cache_dtype", "fp16")
+
+                if c_dtype == "fp8" and hasattr(
+                    _METAL_MOD, "rope_kv_cache_write_fp8_mps"
+                ):
+                    k_s_buf = kv_cache.k_scales[layer_idx]
+                    v_s_buf = kv_cache.v_scales[layer_idx]
+                    _METAL_MOD.rope_kv_cache_write_fp8_mps(
+                        qkv,
+                        freqs_cis,
+                        k_buf,
+                        v_buf,
+                        k_s_buf,
+                        v_s_buf,
+                        q_dim,
+                        kv_dim,
+                        self.head_dim,
+                        seen % freqs_cis.size(0),
+                        write_pos,
+                    )
+                elif c_dtype == "int4" and hasattr(
+                    _METAL_MOD, "rope_kv_cache_write_int4_mps"
+                ):
+                    k_s_buf = kv_cache.k_scales[layer_idx]
+                    v_s_buf = kv_cache.v_scales[layer_idx]
+                    _METAL_MOD.rope_kv_cache_write_int4_mps(
+                        qkv,
+                        freqs_cis,
+                        k_buf,
+                        v_buf,
+                        k_s_buf,
+                        v_s_buf,
+                        q_dim,
+                        kv_dim,
+                        self.head_dim,
+                        seen % freqs_cis.size(0),
+                        write_pos,
+                    )
+                else:
+                    _METAL_MOD.rope_kv_cache_write_mps(
+                        qkv,
+                        freqs_cis,
+                        k_buf,
+                        v_buf,
+                        q_dim,
+                        kv_dim,
+                        self.head_dim,
+                        seen % freqs_cis.size(0),
+                        write_pos,
+                    )
+
                 kv_cache.total_seen_tokens[layer_idx] = new_seen
                 kv_cache.layer_seq_lens[layer_idx] = active_len
                 q = qkv[:, :, :q_dim].view(1, self.n_head, 1, self.head_dim)
+
+                if c_dtype in ("fp8", "int4"):
+                    k_s_buf = kv_cache.k_scales[layer_idx]
+                    v_s_buf = kv_cache.v_scales[layer_idx]
+                    y = gqa_flash_decode_mps(
+                        q,
+                        k_buf,
+                        v_buf,
+                        active_len,
+                        k_scales=k_s_buf,
+                        v_scales=v_s_buf,
+                        kv_dtype=c_dtype,
+                    )
+                    y = y.view(1, 1, C)
+                    y = self.c_proj(y)
+                    return y, kv_cache
+
                 k = k_buf if active_len == max_seq else k_buf[:, :, :active_len, :]
                 v = v_buf if active_len == max_seq else v_buf[:, :, :active_len, :]
                 new_kv_cache = kv_cache

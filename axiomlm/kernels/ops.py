@@ -555,26 +555,73 @@ def gqa_flash_decode_mps(
     v_cache: torch.Tensor,
     active_len: int,
     num_splits: int = 0,
+    k_scales: torch.Tensor | None = None,
+    v_scales: torch.Tensor | None = None,
+    kv_dtype: str = "fp16",
 ) -> torch.Tensor:
-    """Fast Split-KV Flash-Decode for 3:1 GQA on Apple Silicon MPS (FP16)."""
-    if (
-        _METAL_MOD is not None
-        and hasattr(_METAL_MOD, "gqa_flash_decode_mps")
-        and q.device.type == "mps"
-        and q.dtype == torch.float16
-    ):
-        return _METAL_MOD.gqa_flash_decode_mps(
-            q.contiguous(),
-            k_cache.contiguous(),
-            v_cache.contiguous(),
-            active_len,
-            num_splits,
-        )
+    """Fast Split-KV Flash-Decode for GQA on Apple Silicon MPS with in-register quantization."""
+    kv_dt = kv_dtype.lower()
+    if _METAL_MOD is not None and q.device.type == "mps" and q.dtype == torch.float16:
+        if (
+            kv_dt == "fp8"
+            and hasattr(_METAL_MOD, "gqa_flash_decode_fp8_mps")
+            and k_scales is not None
+            and v_scales is not None
+        ):
+            return _METAL_MOD.gqa_flash_decode_fp8_mps(
+                q.contiguous(),
+                k_cache.contiguous(),
+                v_cache.contiguous(),
+                k_scales.contiguous(),
+                v_scales.contiguous(),
+                active_len,
+                num_splits,
+            )
+        elif (
+            kv_dt == "int4"
+            and hasattr(_METAL_MOD, "gqa_flash_decode_int4_mps")
+            and k_scales is not None
+            and v_scales is not None
+        ):
+            return _METAL_MOD.gqa_flash_decode_int4_mps(
+                q.contiguous(),
+                k_cache.contiguous(),
+                v_cache.contiguous(),
+                k_scales.contiguous(),
+                v_scales.contiguous(),
+                active_len,
+                num_splits,
+            )
+        elif kv_dt == "fp16" and hasattr(_METAL_MOD, "gqa_flash_decode_mps"):
+            return _METAL_MOD.gqa_flash_decode_mps(
+                q.contiguous(),
+                k_cache.contiguous(),
+                v_cache.contiguous(),
+                active_len,
+                num_splits,
+            )
+
     # PyTorch fallback for CPU or non-FP16 testing
+    head_dim = q.size(-1)
+    if kv_dt == "fp8":
+        from .quant import dequantize_kv_fp8
+
+        k_in = dequantize_kv_fp8(k_cache, k_scales, head_dim)
+        v_in = dequantize_kv_fp8(v_cache, v_scales, head_dim)
+    elif kv_dt == "int4":
+        from .quant import dequantize_kv_int4
+
+        k_in = dequantize_kv_int4(k_cache, k_scales, head_dim)
+        v_in = dequantize_kv_int4(v_cache, v_scales, head_dim)
+    else:
+        k_in = k_cache if k_cache.dim() == 4 else k_cache.unsqueeze(0)
+        v_in = v_cache if v_cache.dim() == 4 else v_cache.unsqueeze(0)
+
+    if k_in.dim() == 3:
+        k_in = k_in.unsqueeze(0)
+        v_in = v_in.unsqueeze(0)
+
     orig_shape = q.shape
-    k_in = k_cache if k_cache.dim() == 4 else k_cache.unsqueeze(0)
-    v_in = v_cache if v_cache.dim() == 4 else v_cache.unsqueeze(0)
-    head_dim = k_in.size(-1)
     if q.dim() < 4:
         n_head = q.numel() // head_dim
         q_4d = q.view(1, n_head, 1, head_dim)
@@ -584,19 +631,155 @@ def gqa_flash_decode_mps(
     v_active = v_in[:, :, :active_len, :]
     if q_4d.size(1) != k_active.size(1):
         n_rep = q_4d.size(1) // k_active.size(1)
-        B, n_kv_head, T_k, head_dim = k_active.shape
+        B, n_kv_head, T_k, hd = k_active.shape
         k_active = (
             k_active[:, :, None, :, :]
-            .expand(B, n_kv_head, n_rep, T_k, head_dim)
-            .reshape(B, n_kv_head * n_rep, T_k, head_dim)
+            .expand(B, n_kv_head, n_rep, T_k, hd)
+            .reshape(B, n_kv_head * n_rep, T_k, hd)
         )
         v_active = (
             v_active[:, :, None, :, :]
-            .expand(B, n_kv_head, n_rep, T_k, head_dim)
-            .reshape(B, n_kv_head * n_rep, T_k, head_dim)
+            .expand(B, n_kv_head, n_rep, T_k, hd)
+            .reshape(B, n_kv_head * n_rep, T_k, hd)
         )
     out = _safe_sdpa(q_4d, k_active, v_active, is_causal=False)
     return out.view(orig_shape)
+
+
+def gqa_tree_verify_mps(
+    q: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    tree_mask: list[int] | torch.Tensor,
+    prefix_len: int,
+    write_pos: int,
+    n_head: int,
+    num_splits: int = 0,
+    k_scales: torch.Tensor | None = None,
+    v_scales: torch.Tensor | None = None,
+    kv_dtype: str = "fp16",
+) -> torch.Tensor:
+    """SpecInfer / Medusa Speculative Tree-Verification Attention Kernel.
+
+    Computes topology-aware tree attention directly over prefix + speculative tree tokens
+    in a single fused pass. Supports in-register quantized KV-cache (FP8 & INT4).
+    """
+    if isinstance(tree_mask, torch.Tensor):
+        mask_list = [int(x) for x in tree_mask.cpu().tolist()]
+    else:
+        mask_list = [int(x) for x in tree_mask]
+
+    kv_dt = kv_dtype.lower()
+    if _METAL_MOD is not None and q.device.type == "mps" and q.dtype == torch.float16:
+        if (
+            kv_dt == "fp8"
+            and hasattr(_METAL_MOD, "gqa_tree_verify_fp8_mps")
+            and k_scales is not None
+            and v_scales is not None
+        ):
+            return _METAL_MOD.gqa_tree_verify_fp8_mps(
+                q.contiguous(),
+                k_cache.contiguous(),
+                v_cache.contiguous(),
+                k_scales.contiguous(),
+                v_scales.contiguous(),
+                mask_list,
+                prefix_len,
+                write_pos,
+                n_head,
+                num_splits,
+            )
+        elif (
+            kv_dt == "int4"
+            and hasattr(_METAL_MOD, "gqa_tree_verify_int4_mps")
+            and k_scales is not None
+            and v_scales is not None
+        ):
+            return _METAL_MOD.gqa_tree_verify_int4_mps(
+                q.contiguous(),
+                k_cache.contiguous(),
+                v_cache.contiguous(),
+                k_scales.contiguous(),
+                v_scales.contiguous(),
+                mask_list,
+                prefix_len,
+                write_pos,
+                n_head,
+                num_splits,
+            )
+        elif kv_dt == "fp16" and hasattr(_METAL_MOD, "gqa_tree_verify_mps"):
+            return _METAL_MOD.gqa_tree_verify_mps(
+                q.contiguous(),
+                k_cache.contiguous(),
+                v_cache.contiguous(),
+                mask_list,
+                prefix_len,
+                write_pos,
+                n_head,
+                num_splits,
+            )
+
+    # PyTorch fallback
+    head_dim = q.size(-1)
+    if kv_dt == "fp8":
+        from .quant import dequantize_kv_fp8
+
+        k_in = dequantize_kv_fp8(k_cache, k_scales, head_dim)
+        v_in = dequantize_kv_fp8(v_cache, v_scales, head_dim)
+    elif kv_dt == "int4":
+        from .quant import dequantize_kv_int4
+
+        k_in = dequantize_kv_int4(k_cache, k_scales, head_dim)
+        v_in = dequantize_kv_int4(v_cache, v_scales, head_dim)
+    else:
+        k_in = k_cache
+        v_in = v_cache
+
+    if k_in.dim() == 3:
+        k_in = k_in.unsqueeze(0)
+        v_in = v_in.unsqueeze(0)
+
+    T = len(mask_list)
+    if q.dim() == 2:
+        q_4d = q.view(1, T, n_head, head_dim).transpose(1, 2)
+    elif q.dim() == 3:
+        q_4d = q.view(1, T, n_head, head_dim).transpose(1, 2)
+    else:
+        q_4d = q
+
+    k_prefix = k_in[:, :, :prefix_len, :]
+    v_prefix = v_in[:, :, :prefix_len, :]
+    k_tree = k_in[:, :, write_pos : write_pos + T, :]
+    v_tree = v_in[:, :, write_pos : write_pos + T, :]
+    k_active = torch.cat([k_prefix, k_tree], dim=2)
+    v_active = torch.cat([v_prefix, v_tree], dim=2)
+
+    if q_4d.size(1) != k_active.size(1):
+        n_rep = q_4d.size(1) // k_active.size(1)
+        B_val, n_kv_h, T_tot, hd = k_active.shape
+        k_active = (
+            k_active[:, :, None, :, :]
+            .expand(B_val, n_kv_h, n_rep, T_tot, hd)
+            .reshape(B_val, n_kv_h * n_rep, T_tot, hd)
+        )
+        v_active = (
+            v_active[:, :, None, :, :]
+            .expand(B_val, n_kv_h, n_rep, T_tot, hd)
+            .reshape(B_val, n_kv_h * n_rep, T_tot, hd)
+        )
+
+    total_len = prefix_len + T
+    attn_mask = torch.zeros((1, 1, T, total_len), dtype=torch.bool, device=q.device)
+    attn_mask[:, :, :, :prefix_len] = True
+    for u in range(T):
+        m = mask_list[u]
+        for j in range(T):
+            if (m & (1 << j)) != 0:
+                attn_mask[:, :, u, prefix_len + j] = True
+
+    out = _safe_sdpa(q_4d, k_active, v_active, attn_mask=attn_mask)
+    out_trans = out.transpose(1, 2).reshape(1, T, n_head * head_dim)
+    return out_trans.view(q.shape)
 
 
 class FusedRoPEFunction(torch.autograd.Function):

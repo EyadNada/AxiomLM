@@ -353,6 +353,19 @@ class StaticKVCache:
                 return k_buf[:, :, :active_len, :], v_buf[:, :, :active_len, :]
             return k_buf[:B, :, :active_len, :], v_buf[:B, :, :active_len, :]
 
+    def get_quantized_views(
+        self, layer_idx: int
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        """
+        Returns raw active memory views (k_buf, v_buf, k_scales, v_scales)
+        without allocating or reconstructing dynamic dequantized FP16 tensors.
+        """
+        k_buf = self.k_caches[layer_idx]
+        v_buf = self.v_caches[layer_idx]
+        k_s = self.k_scales[layer_idx] if self.scales is not None else None
+        v_s = self.v_scales[layer_idx] if self.scales is not None else None
+        return k_buf, v_buf, k_s, v_s
+
     def compact_tree_path(
         self,
         write_pos: int,
@@ -373,14 +386,49 @@ class StaticKVCache:
 
                 if (
                     self.cache.device.type == "mps"
-                    and self.cache.dtype == torch.float16
                     and self.cache.is_contiguous()
                     and _METAL_MOD is not None
-                    and hasattr(_METAL_MOD, "compact_tree_kv_mps")
                 ):
-                    _METAL_MOD.compact_tree_kv_mps(
-                        self.cache, int(write_pos), [int(x) for x in accepted_indices]
-                    )
+                    if self.cache_dtype == "fp16" and hasattr(
+                        _METAL_MOD, "compact_tree_kv_mps"
+                    ):
+                        _METAL_MOD.compact_tree_kv_mps(
+                            self.cache,
+                            int(write_pos),
+                            [int(x) for x in accepted_indices],
+                        )
+                    elif (
+                        self.cache_dtype in ("fp8", "int4")
+                        and self.scales is not None
+                        and hasattr(_METAL_MOD, "compact_tree_kv_quant_mps")
+                    ):
+                        _METAL_MOD.compact_tree_kv_quant_mps(
+                            self.cache,
+                            self.scales,
+                            int(write_pos),
+                            [int(x) for x in accepted_indices],
+                            self.cache_dtype,
+                        )
+                    else:
+                        src_slots = [
+                            (write_pos + int(idx)) % self.max_seq_len
+                            for idx in accepted_indices
+                        ]
+                        dst_slots = [
+                            (write_pos + m) % self.max_seq_len
+                            for m in range(num_accepted)
+                        ]
+                        src_t = torch.tensor(
+                            src_slots, dtype=torch.long, device=self.cache.device
+                        )
+                        dst_t = torch.tensor(
+                            dst_slots, dtype=torch.long, device=self.cache.device
+                        )
+                        staged = self.cache.index_select(4, src_t).clone()
+                        self.cache.index_copy_(4, dst_t, staged)
+                        if self.scales is not None:
+                            staged_s = self.scales.index_select(4, src_t).clone()
+                            self.scales.index_copy_(4, dst_t, staged_s)
                 else:
                     src_slots = [
                         (write_pos + int(idx)) % self.max_seq_len

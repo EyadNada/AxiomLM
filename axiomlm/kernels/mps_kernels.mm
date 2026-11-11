@@ -81,6 +81,12 @@ static id<MTLComputePipelineState> rope_tree_kv_write_fp8_pso = nil;
 static id<MTLComputePipelineState> rope_tree_kv_write_int4_pso = nil;
 static id<MTLComputePipelineState> dequantize_kv_fp8_pso = nil;
 static id<MTLComputePipelineState> dequantize_kv_int4_pso = nil;
+static id<MTLComputePipelineState> gqa_split_kv_fp8_pso = nil;
+static id<MTLComputePipelineState> gqa_split_kv_int4_pso = nil;
+static id<MTLComputePipelineState> gqa_tree_verify_split_kv_fp8_pso = nil;
+static id<MTLComputePipelineState> gqa_tree_verify_split_kv_int4_pso = nil;
+static id<MTLComputePipelineState> compact_tree_kv_fp8_pso = nil;
+static id<MTLComputePipelineState> compact_tree_kv_int4_pso = nil;
 static bool is_initialized = false;
 
 void init_mps(std::string metal_path) {
@@ -132,6 +138,12 @@ void init_mps(std::string metal_path) {
             rope_tree_kv_write_int4_pso = get_pipeline(mtl_device, mtl_library, @"rope_tree_kv_cache_write_int4_kernel");
             dequantize_kv_fp8_pso = get_pipeline(mtl_device, mtl_library, @"dequantize_kv_cache_fp8_kernel");
             dequantize_kv_int4_pso = get_pipeline(mtl_device, mtl_library, @"dequantize_kv_cache_int4_kernel");
+            gqa_split_kv_fp8_pso = get_pipeline(mtl_device, mtl_library, @"gqa_flash_decode_split_kv_fp8_kernel");
+            gqa_split_kv_int4_pso = get_pipeline(mtl_device, mtl_library, @"gqa_flash_decode_split_kv_int4_kernel");
+            gqa_tree_verify_split_kv_fp8_pso = get_pipeline(mtl_device, mtl_library, @"gqa_tree_verify_split_kv_fp8_kernel");
+            gqa_tree_verify_split_kv_int4_pso = get_pipeline(mtl_device, mtl_library, @"gqa_tree_verify_split_kv_int4_kernel");
+            compact_tree_kv_fp8_pso = get_pipeline(mtl_device, mtl_library, @"compact_tree_kv_fp8_kernel");
+            compact_tree_kv_int4_pso = get_pipeline(mtl_device, mtl_library, @"compact_tree_kv_int4_kernel");
         }
         is_initialized = true;
     }
@@ -1634,6 +1646,456 @@ torch::Tensor gqa_flash_decode_mps(
         q,
         k_cache,
         v_cache,
+        out,
+        partial_O,
+        partial_m,
+        partial_l,
+        max_seq_len,
+        (uint32_t)active_len,
+        n_splits,
+        n_head,
+        n_kv_head,
+        head_dim);
+    return out;
+}
+
+static inline void dispatch_gqa_flash_decode_fp8_into(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& q,
+    const torch::Tensor& k_cache_fp8,
+    const torch::Tensor& v_cache_fp8,
+    const torch::Tensor& k_scales,
+    const torch::Tensor& v_scales,
+    torch::Tensor& out,
+    torch::Tensor& partial_O,
+    torch::Tensor& partial_m,
+    torch::Tensor& partial_l,
+    uint32_t max_seq_len,
+    uint32_t active_len,
+    uint32_t num_splits,
+    uint32_t n_head,
+    uint32_t n_kv_head,
+    uint32_t head_dim) {
+    float scale = 1.0f / std::sqrt(float(head_dim));
+    uint32_t n_rep = n_head / n_kv_head;
+    uint32_t rep_tiles = (n_rep + 7u) / 8u;
+
+    [encoder setComputePipelineState:gqa_split_kv_fp8_pso];
+    [encoder setBuffer:getMTLBufferStorage(q) offset:q.storage_offset() * q.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(k_cache_fp8) offset:k_cache_fp8.storage_offset() * k_cache_fp8.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(v_cache_fp8) offset:v_cache_fp8.storage_offset() * v_cache_fp8.element_size() atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(out) offset:out.storage_offset() * out.element_size() atIndex:3];
+    [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:4];
+    [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:5];
+    [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:6];
+    [encoder setBuffer:getMTLBufferStorage(k_scales) offset:k_scales.storage_offset() * k_scales.element_size() atIndex:7];
+    [encoder setBuffer:getMTLBufferStorage(v_scales) offset:v_scales.storage_offset() * v_scales.element_size() atIndex:8];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:9];
+    [encoder setBytes:&active_len length:sizeof(uint32_t) atIndex:10];
+    [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:11];
+    [encoder setBytes:&scale length:sizeof(float) atIndex:12];
+    [encoder setBytes:&n_head length:sizeof(uint32_t) atIndex:13];
+    [encoder setBytes:&n_kv_head length:sizeof(uint32_t) atIndex:14];
+    [encoder setBytes:&head_dim length:sizeof(uint32_t) atIndex:15];
+
+    MTLSize gridSize = MTLSizeMake(n_kv_head, num_splits, rep_tiles);
+    MTLSize tgSize = MTLSizeMake(32, 1, 1);
+    [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:tgSize];
+
+    if (num_splits > 1) {
+        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        [encoder setComputePipelineState:gqa_reduce_pso];
+        [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:0];
+        [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:1];
+        [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:2];
+        [encoder setBuffer:getMTLBufferStorage(out) offset:out.storage_offset() * out.element_size() atIndex:3];
+        [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:4];
+        [encoder setBytes:&head_dim length:sizeof(uint32_t) atIndex:5];
+
+        MTLSize reduceGrid = MTLSizeMake(n_head, 1, 1);
+        [encoder dispatchThreadgroups:reduceGrid threadsPerThreadgroup:tgSize];
+    }
+}
+
+static inline void dispatch_gqa_flash_decode_int4_into(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& q,
+    const torch::Tensor& k_cache_int4,
+    const torch::Tensor& v_cache_int4,
+    const torch::Tensor& k_scales,
+    const torch::Tensor& v_scales,
+    torch::Tensor& out,
+    torch::Tensor& partial_O,
+    torch::Tensor& partial_m,
+    torch::Tensor& partial_l,
+    uint32_t max_seq_len,
+    uint32_t active_len,
+    uint32_t num_splits,
+    uint32_t n_head,
+    uint32_t n_kv_head,
+    uint32_t head_dim) {
+    float scale = 1.0f / std::sqrt(float(head_dim));
+    uint32_t n_rep = n_head / n_kv_head;
+    uint32_t rep_tiles = (n_rep + 7u) / 8u;
+
+    [encoder setComputePipelineState:gqa_split_kv_int4_pso];
+    [encoder setBuffer:getMTLBufferStorage(q) offset:q.storage_offset() * q.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(k_cache_int4) offset:k_cache_int4.storage_offset() * k_cache_int4.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(v_cache_int4) offset:v_cache_int4.storage_offset() * v_cache_int4.element_size() atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(out) offset:out.storage_offset() * out.element_size() atIndex:3];
+    [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:4];
+    [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:5];
+    [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:6];
+    [encoder setBuffer:getMTLBufferStorage(k_scales) offset:k_scales.storage_offset() * k_scales.element_size() atIndex:7];
+    [encoder setBuffer:getMTLBufferStorage(v_scales) offset:v_scales.storage_offset() * v_scales.element_size() atIndex:8];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:9];
+    [encoder setBytes:&active_len length:sizeof(uint32_t) atIndex:10];
+    [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:11];
+    [encoder setBytes:&scale length:sizeof(float) atIndex:12];
+    [encoder setBytes:&n_head length:sizeof(uint32_t) atIndex:13];
+    [encoder setBytes:&n_kv_head length:sizeof(uint32_t) atIndex:14];
+    [encoder setBytes:&head_dim length:sizeof(uint32_t) atIndex:15];
+
+    MTLSize gridSize = MTLSizeMake(n_kv_head, num_splits, rep_tiles);
+    MTLSize tgSize = MTLSizeMake(32, 1, 1);
+    [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:tgSize];
+
+    if (num_splits > 1) {
+        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        [encoder setComputePipelineState:gqa_reduce_pso];
+        [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:0];
+        [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:1];
+        [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:2];
+        [encoder setBuffer:getMTLBufferStorage(out) offset:out.storage_offset() * out.element_size() atIndex:3];
+        [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:4];
+        [encoder setBytes:&head_dim length:sizeof(uint32_t) atIndex:5];
+
+        MTLSize reduceGrid = MTLSizeMake(n_head, 1, 1);
+        [encoder dispatchThreadgroups:reduceGrid threadsPerThreadgroup:tgSize];
+    }
+}
+
+static inline void dispatch_gqa_flash_decode_fp8_into_offset(
+    id<MTLComputeCommandEncoder> encoder,
+    id<MTLBuffer> q_buf,
+    NSUInteger q_offset,
+    const torch::Tensor& k_cache_fp8,
+    const torch::Tensor& v_cache_fp8,
+    const torch::Tensor& k_scales,
+    const torch::Tensor& v_scales,
+    id<MTLBuffer> out_buf,
+    NSUInteger out_offset,
+    torch::Tensor& partial_O,
+    torch::Tensor& partial_m,
+    torch::Tensor& partial_l,
+    uint32_t max_seq_len,
+    uint32_t active_len,
+    uint32_t num_splits,
+    uint32_t n_head,
+    uint32_t n_kv_head,
+    uint32_t head_dim) {
+    float scale = 1.0f / std::sqrt(float(head_dim));
+    uint32_t n_rep = n_head / n_kv_head;
+    uint32_t rep_tiles = (n_rep + 7u) / 8u;
+
+    [encoder setComputePipelineState:gqa_split_kv_fp8_pso];
+    [encoder setBuffer:q_buf offset:q_offset atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(k_cache_fp8) offset:k_cache_fp8.storage_offset() * k_cache_fp8.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(v_cache_fp8) offset:v_cache_fp8.storage_offset() * v_cache_fp8.element_size() atIndex:2];
+    [encoder setBuffer:out_buf offset:out_offset atIndex:3];
+    [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:4];
+    [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:5];
+    [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:6];
+    [encoder setBuffer:getMTLBufferStorage(k_scales) offset:k_scales.storage_offset() * k_scales.element_size() atIndex:7];
+    [encoder setBuffer:getMTLBufferStorage(v_scales) offset:v_scales.storage_offset() * v_scales.element_size() atIndex:8];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:9];
+    [encoder setBytes:&active_len length:sizeof(uint32_t) atIndex:10];
+    [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:11];
+    [encoder setBytes:&scale length:sizeof(float) atIndex:12];
+    [encoder setBytes:&n_head length:sizeof(uint32_t) atIndex:13];
+    [encoder setBytes:&n_kv_head length:sizeof(uint32_t) atIndex:14];
+    [encoder setBytes:&head_dim length:sizeof(uint32_t) atIndex:15];
+
+    MTLSize tgSize = MTLSizeMake(32, 1, 1);
+    MTLSize gridSize = MTLSizeMake(n_kv_head, num_splits, rep_tiles);
+    [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:tgSize];
+
+    if (num_splits > 1) {
+        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        [encoder setComputePipelineState:gqa_reduce_pso];
+        [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:0];
+        [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:1];
+        [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:2];
+        [encoder setBuffer:out_buf offset:out_offset atIndex:3];
+        [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:4];
+        [encoder setBytes:&head_dim length:sizeof(uint32_t) atIndex:5];
+
+        MTLSize reduceGrid = MTLSizeMake(n_head, 1, 1);
+        [encoder dispatchThreadgroups:reduceGrid threadsPerThreadgroup:tgSize];
+    }
+}
+
+static inline void dispatch_gqa_flash_decode_int4_into_offset(
+    id<MTLComputeCommandEncoder> encoder,
+    id<MTLBuffer> q_buf,
+    NSUInteger q_offset,
+    const torch::Tensor& k_cache_int4,
+    const torch::Tensor& v_cache_int4,
+    const torch::Tensor& k_scales,
+    const torch::Tensor& v_scales,
+    id<MTLBuffer> out_buf,
+    NSUInteger out_offset,
+    torch::Tensor& partial_O,
+    torch::Tensor& partial_m,
+    torch::Tensor& partial_l,
+    uint32_t max_seq_len,
+    uint32_t active_len,
+    uint32_t num_splits,
+    uint32_t n_head,
+    uint32_t n_kv_head,
+    uint32_t head_dim) {
+    float scale = 1.0f / std::sqrt(float(head_dim));
+    uint32_t n_rep = n_head / n_kv_head;
+    uint32_t rep_tiles = (n_rep + 7u) / 8u;
+
+    [encoder setComputePipelineState:gqa_split_kv_int4_pso];
+    [encoder setBuffer:q_buf offset:q_offset atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(k_cache_int4) offset:k_cache_int4.storage_offset() * k_cache_int4.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(v_cache_int4) offset:v_cache_int4.storage_offset() * v_cache_int4.element_size() atIndex:2];
+    [encoder setBuffer:out_buf offset:out_offset atIndex:3];
+    [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:4];
+    [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:5];
+    [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:6];
+    [encoder setBuffer:getMTLBufferStorage(k_scales) offset:k_scales.storage_offset() * k_scales.element_size() atIndex:7];
+    [encoder setBuffer:getMTLBufferStorage(v_scales) offset:v_scales.storage_offset() * v_scales.element_size() atIndex:8];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:9];
+    [encoder setBytes:&active_len length:sizeof(uint32_t) atIndex:10];
+    [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:11];
+    [encoder setBytes:&scale length:sizeof(float) atIndex:12];
+    [encoder setBytes:&n_head length:sizeof(uint32_t) atIndex:13];
+    [encoder setBytes:&n_kv_head length:sizeof(uint32_t) atIndex:14];
+    [encoder setBytes:&head_dim length:sizeof(uint32_t) atIndex:15];
+
+    MTLSize tgSize = MTLSizeMake(32, 1, 1);
+    MTLSize gridSize = MTLSizeMake(n_kv_head, num_splits, rep_tiles);
+    [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:tgSize];
+
+    if (num_splits > 1) {
+        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        [encoder setComputePipelineState:gqa_reduce_pso];
+        [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:0];
+        [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:1];
+        [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:2];
+        [encoder setBuffer:out_buf offset:out_offset atIndex:3];
+        [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:4];
+        [encoder setBytes:&head_dim length:sizeof(uint32_t) atIndex:5];
+
+        MTLSize reduceGrid = MTLSizeMake(n_head, 1, 1);
+        [encoder dispatchThreadgroups:reduceGrid threadsPerThreadgroup:tgSize];
+    }
+}
+
+static inline void dispatch_gqa_tree_verify_fp8_bytes(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& q,
+    const torch::Tensor& k_cache,
+    const torch::Tensor& v_cache,
+    const torch::Tensor& k_scales,
+    const torch::Tensor& v_scales,
+    torch::Tensor& out,
+    torch::Tensor& partial_O,
+    torch::Tensor& partial_m,
+    torch::Tensor& partial_l,
+    const uint32_t* tree_mask,
+    uint32_t max_seq_len,
+    uint32_t prefix_len,
+    uint32_t write_pos,
+    uint32_t T,
+    uint32_t num_splits,
+    uint32_t n_head,
+    uint32_t n_kv_head,
+    uint32_t head_dim,
+    uint32_t q_stride) {
+    float scale = 1.0f / std::sqrt(float(head_dim));
+    uint32_t node_tiles = (T + 3u) / 4u;
+
+    [encoder setComputePipelineState:gqa_tree_verify_split_kv_fp8_pso];
+    [encoder setBuffer:getMTLBufferStorage(q) offset:q.storage_offset() * q.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(k_cache) offset:k_cache.storage_offset() * k_cache.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(v_cache) offset:v_cache.storage_offset() * v_cache.element_size() atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(out) offset:out.storage_offset() * out.element_size() atIndex:3];
+    [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:4];
+    [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:5];
+    [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:6];
+    [encoder setBuffer:getMTLBufferStorage(k_scales) offset:k_scales.storage_offset() * k_scales.element_size() atIndex:7];
+    [encoder setBuffer:getMTLBufferStorage(v_scales) offset:v_scales.storage_offset() * v_scales.element_size() atIndex:8];
+    [encoder setBytes:tree_mask length:T * sizeof(uint32_t) atIndex:9];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:10];
+    [encoder setBytes:&prefix_len length:sizeof(uint32_t) atIndex:11];
+    [encoder setBytes:&write_pos length:sizeof(uint32_t) atIndex:12];
+    [encoder setBytes:&T length:sizeof(uint32_t) atIndex:13];
+    [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:14];
+    [encoder setBytes:&scale length:sizeof(float) atIndex:15];
+    [encoder setBytes:&n_head length:sizeof(uint32_t) atIndex:16];
+    [encoder setBytes:&n_kv_head length:sizeof(uint32_t) atIndex:17];
+    [encoder setBytes:&head_dim length:sizeof(uint32_t) atIndex:18];
+    [encoder setBytes:&q_stride length:sizeof(uint32_t) atIndex:19];
+
+    MTLSize tgSize = MTLSizeMake(32, 1, 1);
+    MTLSize gridSize = MTLSizeMake(n_head, node_tiles, num_splits);
+    [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:tgSize];
+
+    if (num_splits > 1u) {
+        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        [encoder setComputePipelineState:gqa_tree_verify_reduce_pso];
+        [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:0];
+        [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:1];
+        [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:2];
+        [encoder setBuffer:getMTLBufferStorage(out) offset:out.storage_offset() * out.element_size() atIndex:3];
+        [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:4];
+        [encoder setBytes:&n_head length:sizeof(uint32_t) atIndex:5];
+        [encoder setBytes:&head_dim length:sizeof(uint32_t) atIndex:6];
+
+        MTLSize reduceGrid = MTLSizeMake(n_head, T, 1);
+        [encoder dispatchThreadgroups:reduceGrid threadsPerThreadgroup:tgSize];
+    }
+}
+
+static inline void dispatch_gqa_tree_verify_int4_bytes(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& q,
+    const torch::Tensor& k_cache,
+    const torch::Tensor& v_cache,
+    const torch::Tensor& k_scales,
+    const torch::Tensor& v_scales,
+    torch::Tensor& out,
+    torch::Tensor& partial_O,
+    torch::Tensor& partial_m,
+    torch::Tensor& partial_l,
+    const uint32_t* tree_mask,
+    uint32_t max_seq_len,
+    uint32_t prefix_len,
+    uint32_t write_pos,
+    uint32_t T,
+    uint32_t num_splits,
+    uint32_t n_head,
+    uint32_t n_kv_head,
+    uint32_t head_dim,
+    uint32_t q_stride) {
+    float scale = 1.0f / std::sqrt(float(head_dim));
+    uint32_t node_tiles = (T + 3u) / 4u;
+
+    [encoder setComputePipelineState:gqa_tree_verify_split_kv_int4_pso];
+    [encoder setBuffer:getMTLBufferStorage(q) offset:q.storage_offset() * q.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(k_cache) offset:k_cache.storage_offset() * k_cache.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(v_cache) offset:v_cache.storage_offset() * v_cache.element_size() atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(out) offset:out.storage_offset() * out.element_size() atIndex:3];
+    [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:4];
+    [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:5];
+    [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:6];
+    [encoder setBuffer:getMTLBufferStorage(k_scales) offset:k_scales.storage_offset() * k_scales.element_size() atIndex:7];
+    [encoder setBuffer:getMTLBufferStorage(v_scales) offset:v_scales.storage_offset() * v_scales.element_size() atIndex:8];
+    [encoder setBytes:tree_mask length:T * sizeof(uint32_t) atIndex:9];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:10];
+    [encoder setBytes:&prefix_len length:sizeof(uint32_t) atIndex:11];
+    [encoder setBytes:&write_pos length:sizeof(uint32_t) atIndex:12];
+    [encoder setBytes:&T length:sizeof(uint32_t) atIndex:13];
+    [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:14];
+    [encoder setBytes:&scale length:sizeof(float) atIndex:15];
+    [encoder setBytes:&n_head length:sizeof(uint32_t) atIndex:16];
+    [encoder setBytes:&n_kv_head length:sizeof(uint32_t) atIndex:17];
+    [encoder setBytes:&head_dim length:sizeof(uint32_t) atIndex:18];
+    [encoder setBytes:&q_stride length:sizeof(uint32_t) atIndex:19];
+
+    MTLSize tgSize = MTLSizeMake(32, 1, 1);
+    MTLSize gridSize = MTLSizeMake(n_head, node_tiles, num_splits);
+    [encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:tgSize];
+
+    if (num_splits > 1u) {
+        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        [encoder setComputePipelineState:gqa_tree_verify_reduce_pso];
+        [encoder setBuffer:getMTLBufferStorage(partial_O) offset:partial_O.storage_offset() * partial_O.element_size() atIndex:0];
+        [encoder setBuffer:getMTLBufferStorage(partial_m) offset:partial_m.storage_offset() * partial_m.element_size() atIndex:1];
+        [encoder setBuffer:getMTLBufferStorage(partial_l) offset:partial_l.storage_offset() * partial_l.element_size() atIndex:2];
+        [encoder setBuffer:getMTLBufferStorage(out) offset:out.storage_offset() * out.element_size() atIndex:3];
+        [encoder setBytes:&num_splits length:sizeof(uint32_t) atIndex:4];
+        [encoder setBytes:&n_head length:sizeof(uint32_t) atIndex:5];
+        [encoder setBytes:&head_dim length:sizeof(uint32_t) atIndex:6];
+
+        MTLSize reduceGrid = MTLSizeMake(n_head, T, 1);
+        [encoder dispatchThreadgroups:reduceGrid threadsPerThreadgroup:tgSize];
+    }
+}
+
+torch::Tensor gqa_flash_decode_fp8_mps(
+    torch::Tensor q,
+    torch::Tensor k_cache,
+    torch::Tensor v_cache,
+    torch::Tensor k_scales,
+    torch::Tensor v_scales,
+    int64_t active_len,
+    int64_t num_splits) {
+    auto out = torch::empty_like(q);
+    uint32_t head_dim = (uint32_t)q.size(-1);
+    uint32_t n_kv_head = (k_cache.dim() == 4) ? (uint32_t)k_cache.size(1) : (uint32_t)k_cache.size(0);
+    uint32_t max_seq_len = (k_cache.dim() == 4) ? (uint32_t)k_cache.size(2) : (uint32_t)k_cache.size(1);
+    uint32_t n_head = (uint32_t)(q.numel() / head_dim);
+    uint32_t half_hd = head_dim >> 1;
+    uint32_t n_splits = (num_splits > 0) ? (uint32_t)num_splits : ((active_len <= 64) ? 1 : ((active_len <= 256) ? 4 : 8));
+    auto opts = q.options();
+    auto partial_O = torch::empty({(int64_t)n_head, (int64_t)n_splits, (int64_t)half_hd, 2}, opts);
+    auto partial_m = torch::empty({(int64_t)n_head, (int64_t)n_splits}, opts.dtype(torch::kFloat32));
+    auto partial_l = torch::empty({(int64_t)n_head, (int64_t)n_splits}, opts.dtype(torch::kFloat32));
+
+    auto stream = at::mps::getCurrentMPSStream();
+    dispatch_gqa_flash_decode_fp8_into(
+        stream->commandEncoder(),
+        q,
+        k_cache,
+        v_cache,
+        k_scales,
+        v_scales,
+        out,
+        partial_O,
+        partial_m,
+        partial_l,
+        max_seq_len,
+        (uint32_t)active_len,
+        n_splits,
+        n_head,
+        n_kv_head,
+        head_dim);
+    return out;
+}
+
+torch::Tensor gqa_flash_decode_int4_mps(
+    torch::Tensor q,
+    torch::Tensor k_cache,
+    torch::Tensor v_cache,
+    torch::Tensor k_scales,
+    torch::Tensor v_scales,
+    int64_t active_len,
+    int64_t num_splits) {
+    auto out = torch::empty_like(q);
+    uint32_t head_dim = (uint32_t)q.size(-1);
+    uint32_t n_kv_head = (k_cache.dim() == 4) ? (uint32_t)k_cache.size(1) : (uint32_t)k_cache.size(0);
+    uint32_t max_seq_len = (k_cache.dim() == 4) ? (uint32_t)k_cache.size(2) : (uint32_t)k_cache.size(1);
+    uint32_t n_head = (uint32_t)(q.numel() / head_dim);
+    uint32_t half_hd = head_dim >> 1;
+    uint32_t n_splits = (num_splits > 0) ? (uint32_t)num_splits : ((active_len <= 64) ? 1 : ((active_len <= 256) ? 4 : 8));
+    auto opts = q.options();
+    auto partial_O = torch::empty({(int64_t)n_head, (int64_t)n_splits, (int64_t)half_hd, 2}, opts);
+    auto partial_m = torch::empty({(int64_t)n_head, (int64_t)n_splits}, opts.dtype(torch::kFloat32));
+    auto partial_l = torch::empty({(int64_t)n_head, (int64_t)n_splits}, opts.dtype(torch::kFloat32));
+
+    auto stream = at::mps::getCurrentMPSStream();
+    dispatch_gqa_flash_decode_int4_into(
+        stream->commandEncoder(),
+        q,
+        k_cache,
+        v_cache,
+        k_scales,
+        v_scales,
         out,
         partial_O,
         partial_m,
@@ -3356,13 +3818,15 @@ torch::Tensor gqa_tree_verify_mps(
     int64_t write_pos,
     int64_t n_head,
     int64_t num_splits) {
-    uint32_t head_dim = (uint32_t)k_cache.size(-1);
+    int64_t q_dim = (q.dim() == 4) ? (n_head * q.size(-1)) : q.size(-1);
+    uint32_t head_dim = (uint32_t)(q_dim / n_head);
     uint32_t n_kv_head = (k_cache.dim() == 4) ? (uint32_t)k_cache.size(1) : (uint32_t)k_cache.size(0);
     uint32_t max_seq_len = (k_cache.dim() == 4) ? (uint32_t)k_cache.size(2) : (uint32_t)k_cache.size(1);
-    int64_t q_dim = n_head * (int64_t)head_dim;
 
     torch::Tensor q_2d;
-    if (q.dim() == 3 && q.size(0) == 1 && q.size(2) == q_dim && q.stride(2) == 1) {
+    if (q.dim() == 4) {
+        q_2d = q.transpose(1, 2).reshape({-1, q_dim}).contiguous();
+    } else if (q.dim() == 3 && q.size(0) == 1 && q.size(2) == q_dim && q.stride(2) == 1) {
         q_2d = q.select(0, 0);
     } else if (q.dim() == 2 && q.size(1) == q_dim && q.stride(1) == 1) {
         q_2d = q;
@@ -3405,6 +3869,9 @@ torch::Tensor gqa_tree_verify_mps(
         n_kv_head,
         head_dim,
         q_stride);
+    if (q.dim() == 4) {
+        return out.view({1, (int64_t)T, (int64_t)n_head, (int64_t)head_dim}).transpose(1, 2).contiguous();
+    }
     return out.view(q.sizes());
 }
 
@@ -3447,6 +3914,196 @@ void compact_tree_kv_mps(
     [encoder setBytes:&half_head_dim length:sizeof(uint32_t) atIndex:6];
     [encoder setBytes:&w_pos length:sizeof(uint32_t) atIndex:7];
     [encoder setBytes:&num_accepted length:sizeof(uint32_t) atIndex:8];
+
+    NSUInteger tgSize = 256;
+    [encoder dispatchThreadgroups:MTLSizeMake((total_streams + tgSize - 1) / tgSize, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(tgSize, 1, 1)];
+}
+
+torch::Tensor gqa_tree_verify_fp8_mps(
+    torch::Tensor q,
+    torch::Tensor k_cache,
+    torch::Tensor v_cache,
+    torch::Tensor k_scales,
+    torch::Tensor v_scales,
+    const std::vector<uint32_t>& tree_mask,
+    int64_t prefix_len,
+    int64_t write_pos,
+    int64_t n_head,
+    int64_t num_splits) {
+    int64_t q_dim = (q.dim() == 4) ? (n_head * q.size(-1)) : q.size(-1);
+    uint32_t head_dim = (uint32_t)(q_dim / n_head);
+    uint32_t n_kv_head = (k_cache.dim() == 4) ? (uint32_t)k_cache.size(1) : (uint32_t)k_cache.size(0);
+    uint32_t max_seq_len = (k_cache.dim() == 4) ? (uint32_t)k_cache.size(2) : (uint32_t)k_cache.size(1);
+
+    torch::Tensor q_2d;
+    if (q.dim() == 4) {
+        q_2d = q.transpose(1, 2).reshape({-1, q_dim}).contiguous();
+    } else if (q.dim() == 3 && q.size(0) == 1 && q.size(2) == q_dim && q.stride(2) == 1) {
+        q_2d = q.select(0, 0);
+    } else if (q.dim() == 2 && q.size(1) == q_dim && q.stride(1) == 1) {
+        q_2d = q;
+    } else {
+        q_2d = q.reshape({-1, q_dim}).contiguous();
+    }
+
+    uint32_t T = (uint32_t)q_2d.size(0);
+    TORCH_CHECK(T >= 1 && T <= 32, "gqa_tree_verify_fp8_mps supports T in [1, 32], got ", T);
+    TORCH_CHECK(tree_mask.size() == (size_t)T, "tree_mask size must match T");
+    uint32_t q_stride = (uint32_t)q_2d.stride(0);
+    uint32_t half_hd = head_dim >> 1;
+    uint32_t n_splits = (num_splits > 0)
+        ? (uint32_t)num_splits
+        : ((prefix_len <= 64) ? 1u : ((prefix_len <= 256) ? 4u : 8u));
+
+    auto opts = q.options();
+    auto out = torch::empty({1, (int64_t)T, q_dim}, opts);
+    auto partial_O = torch::empty({(int64_t)(T * n_head), (int64_t)n_splits, (int64_t)half_hd, 2}, opts);
+    auto partial_m = torch::empty({(int64_t)(T * n_head), (int64_t)n_splits}, opts.dtype(torch::kFloat32));
+    auto partial_l = torch::empty({(int64_t)(T * n_head), (int64_t)n_splits}, opts.dtype(torch::kFloat32));
+
+    auto stream = at::mps::getCurrentMPSStream();
+    dispatch_gqa_tree_verify_fp8_bytes(
+        stream->commandEncoder(),
+        q_2d,
+        k_cache,
+        v_cache,
+        k_scales,
+        v_scales,
+        out,
+        partial_O,
+        partial_m,
+        partial_l,
+        tree_mask.data(),
+        max_seq_len,
+        (uint32_t)prefix_len,
+        (uint32_t)write_pos,
+        T,
+        n_splits,
+        (uint32_t)n_head,
+        n_kv_head,
+        head_dim,
+        q_stride);
+    if (q.dim() == 4) {
+        return out.view({1, (int64_t)T, (int64_t)n_head, (int64_t)head_dim}).transpose(1, 2).contiguous();
+    }
+    return out.view(q.sizes());
+}
+
+torch::Tensor gqa_tree_verify_int4_mps(
+    torch::Tensor q,
+    torch::Tensor k_cache,
+    torch::Tensor v_cache,
+    torch::Tensor k_scales,
+    torch::Tensor v_scales,
+    const std::vector<uint32_t>& tree_mask,
+    int64_t prefix_len,
+    int64_t write_pos,
+    int64_t n_head,
+    int64_t num_splits) {
+    int64_t q_dim = (q.dim() == 4) ? (n_head * q.size(-1)) : q.size(-1);
+    uint32_t head_dim = (uint32_t)(q_dim / n_head);
+    uint32_t n_kv_head = (k_cache.dim() == 4) ? (uint32_t)k_cache.size(1) : (uint32_t)k_cache.size(0);
+    uint32_t max_seq_len = (k_cache.dim() == 4) ? (uint32_t)k_cache.size(2) : (uint32_t)k_cache.size(1);
+
+    torch::Tensor q_2d;
+    if (q.dim() == 4) {
+        q_2d = q.transpose(1, 2).reshape({-1, q_dim}).contiguous();
+    } else if (q.dim() == 3 && q.size(0) == 1 && q.size(2) == q_dim && q.stride(2) == 1) {
+        q_2d = q.select(0, 0);
+    } else if (q.dim() == 2 && q.size(1) == q_dim && q.stride(1) == 1) {
+        q_2d = q;
+    } else {
+        q_2d = q.reshape({-1, q_dim}).contiguous();
+    }
+
+    uint32_t T = (uint32_t)q_2d.size(0);
+    TORCH_CHECK(T >= 1 && T <= 32, "gqa_tree_verify_int4_mps supports T in [1, 32], got ", T);
+    TORCH_CHECK(tree_mask.size() == (size_t)T, "tree_mask size must match T");
+    uint32_t q_stride = (uint32_t)q_2d.stride(0);
+    uint32_t half_hd = head_dim >> 1;
+    uint32_t n_splits = (num_splits > 0)
+        ? (uint32_t)num_splits
+        : ((prefix_len <= 64) ? 1u : ((prefix_len <= 256) ? 4u : 8u));
+
+    auto opts = q.options();
+    auto out = torch::empty({1, (int64_t)T, q_dim}, opts);
+    auto partial_O = torch::empty({(int64_t)(T * n_head), (int64_t)n_splits, (int64_t)half_hd, 2}, opts);
+    auto partial_m = torch::empty({(int64_t)(T * n_head), (int64_t)n_splits}, opts.dtype(torch::kFloat32));
+    auto partial_l = torch::empty({(int64_t)(T * n_head), (int64_t)n_splits}, opts.dtype(torch::kFloat32));
+
+    auto stream = at::mps::getCurrentMPSStream();
+    dispatch_gqa_tree_verify_int4_bytes(
+        stream->commandEncoder(),
+        q_2d,
+        k_cache,
+        v_cache,
+        k_scales,
+        v_scales,
+        out,
+        partial_O,
+        partial_m,
+        partial_l,
+        tree_mask.data(),
+        max_seq_len,
+        (uint32_t)prefix_len,
+        (uint32_t)write_pos,
+        T,
+        n_splits,
+        (uint32_t)n_head,
+        n_kv_head,
+        head_dim,
+        q_stride);
+    if (q.dim() == 4) {
+        return out.view({1, (int64_t)T, (int64_t)n_head, (int64_t)head_dim}).transpose(1, 2).contiguous();
+    }
+    return out.view(q.sizes());
+}
+
+void compact_tree_kv_quant_mps(
+    torch::Tensor cache,
+    torch::Tensor scales,
+    int64_t write_pos,
+    const std::vector<int32_t>& accepted_indices,
+    const std::string& cache_dtype) {
+    uint32_t num_accepted = (uint32_t)accepted_indices.size();
+    if (num_accepted == 0u) return;
+    TORCH_CHECK(num_accepted <= 32u, "compact_tree_kv_quant_mps supports up to 32 accepted tokens");
+
+    bool already_compact = true;
+    for (uint32_t m = 0; m < num_accepted; ++m) {
+        if (accepted_indices[m] != (int32_t)m) {
+            already_compact = false;
+            break;
+        }
+    }
+    if (already_compact) return;
+
+    uint32_t n_layer = (uint32_t)cache.size(0);
+    uint32_t max_batch_size = (uint32_t)cache.size(2);
+    uint32_t n_kv_head = (uint32_t)cache.size(3);
+    uint32_t max_seq_len = (uint32_t)cache.size(4);
+    uint32_t half_head_dim = (cache_dtype == "fp8") ? (uint32_t)(cache.size(5) / 2) : (uint32_t)cache.size(5);
+    uint32_t w_pos = (uint32_t)write_pos;
+    uint32_t total_streams = n_layer * 2u * n_kv_head * half_head_dim;
+
+    auto stream = at::mps::getCurrentMPSStream();
+    id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+    if (cache_dtype == "fp8") {
+        [encoder setComputePipelineState:compact_tree_kv_fp8_pso];
+    } else {
+        [encoder setComputePipelineState:compact_tree_kv_int4_pso];
+    }
+    [encoder setBuffer:getMTLBufferStorage(cache) offset:cache.storage_offset() * cache.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(scales) offset:scales.storage_offset() * scales.element_size() atIndex:1];
+    [encoder setBytes:accepted_indices.data() length:num_accepted * sizeof(int32_t) atIndex:2];
+    [encoder setBytes:&n_layer length:sizeof(uint32_t) atIndex:3];
+    [encoder setBytes:&max_batch_size length:sizeof(uint32_t) atIndex:4];
+    [encoder setBytes:&n_kv_head length:sizeof(uint32_t) atIndex:5];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:6];
+    [encoder setBytes:&half_head_dim length:sizeof(uint32_t) atIndex:7];
+    [encoder setBytes:&w_pos length:sizeof(uint32_t) atIndex:8];
+    [encoder setBytes:&num_accepted length:sizeof(uint32_t) atIndex:9];
 
     NSUInteger tgSize = 256;
     [encoder dispatchThreadgroups:MTLSizeMake((total_streams + tgSize - 1) / tgSize, 1, 1)
@@ -3720,4 +4377,53 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         pybind11::arg("write_pos"),
         pybind11::arg("T"),
         pybind11::arg("qkv_bias") = pybind11::none());
+  m.def("gqa_flash_decode_fp8_mps", &gqa_flash_decode_fp8_mps,
+        "MPS Fused In-Register FP8 Split-KV Flash-Decode",
+        pybind11::arg("q"),
+        pybind11::arg("k_cache"),
+        pybind11::arg("v_cache"),
+        pybind11::arg("k_scales"),
+        pybind11::arg("v_scales"),
+        pybind11::arg("active_len"),
+        pybind11::arg("num_splits") = 0);
+  m.def("gqa_flash_decode_int4_mps", &gqa_flash_decode_int4_mps,
+        "MPS Fused In-Register INT4 Split-KV Flash-Decode",
+        pybind11::arg("q"),
+        pybind11::arg("k_cache"),
+        pybind11::arg("v_cache"),
+        pybind11::arg("k_scales"),
+        pybind11::arg("v_scales"),
+        pybind11::arg("active_len"),
+        pybind11::arg("num_splits") = 0);
+  m.def("gqa_tree_verify_fp8_mps", &gqa_tree_verify_fp8_mps,
+        "MPS Fused In-Register FP8 Tree Verification Attention",
+        pybind11::arg("q"),
+        pybind11::arg("k_cache"),
+        pybind11::arg("v_cache"),
+        pybind11::arg("k_scales"),
+        pybind11::arg("v_scales"),
+        pybind11::arg("tree_mask"),
+        pybind11::arg("prefix_len"),
+        pybind11::arg("write_pos"),
+        pybind11::arg("n_head"),
+        pybind11::arg("num_splits") = 0);
+  m.def("gqa_tree_verify_int4_mps", &gqa_tree_verify_int4_mps,
+        "MPS Fused In-Register INT4 Tree Verification Attention",
+        pybind11::arg("q"),
+        pybind11::arg("k_cache"),
+        pybind11::arg("v_cache"),
+        pybind11::arg("k_scales"),
+        pybind11::arg("v_scales"),
+        pybind11::arg("tree_mask"),
+        pybind11::arg("prefix_len"),
+        pybind11::arg("write_pos"),
+        pybind11::arg("n_head"),
+        pybind11::arg("num_splits") = 0);
+  m.def("compact_tree_kv_quant_mps", &compact_tree_kv_quant_mps,
+        "MPS In-Place Quantized KV-Cache Compaction",
+        pybind11::arg("cache"),
+        pybind11::arg("scales"),
+        pybind11::arg("write_pos"),
+        pybind11::arg("accepted_indices"),
+        pybind11::arg("cache_dtype") = "fp8");
 }

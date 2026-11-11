@@ -1071,19 +1071,17 @@ inline uchar float_to_fp8_e4m3fn(float val) {
     return (uchar)(sign | ((uint)exp << 3) | mant);
 }
 
-// Converts 8-bit float (OCP FP8 E4M3FN) to half float
+// Converts 8-bit float (OCP FP8 E4M3FN) to half float via fast bitwise integer manipulation
 inline half decode_fp8_e4m3fn(uchar b) {
-    half sign = (b & 0x80u) ? -1.0h : 1.0h;
+    if ((b & 0x7Fu) == 0x7Fu) return 0.0h;
     uint exp = (b >> 3) & 0x0Fu;
-    uint mant = b & 0x07u;
     if (exp == 0u) {
-        return sign * (half(mant) * (1.0h / 8.0h)) * 0.015625h; // 2^-6
-    } else if (exp == 15u && mant == 7u) {
-        return 0.0h;
-    } else {
-        float fval = (1.0f + float(mant) * 0.125f) * ldexp(1.0f, int(exp) - 7);
-        return sign * half(fval);
+        half sign = (b & 0x80u) ? -1.0h : 1.0h;
+        return sign * (half(b & 0x07u) * 0.001953125h); // 2^-9
     }
+    ushort sign_bit = ushort(b & 0x80u) << 8;
+    ushort half_bits = sign_bit | (ushort((b & 0x78u) + (8u << 3)) << 7) | (ushort(b & 0x07u) << 7);
+    return as_type<half>(half_bits);
 }
 
 // Packs a pair of half values into a single unsigned char with symmetric signed 4-bit [-8, 7]
@@ -3171,5 +3169,804 @@ kernel void compact_tree_kv_half_kernel(
     for (uint m = 0; m < cnt; ++m) {
         uint dst_slot = (write_pos + m) % max_seq_len;
         cache_ptr[base_idx + dst_slot * half_head_dim + d_pair] = vals[m];
+    }
+}
+
+// ============================================================================
+// Phase 3 Task 3.2: In-Register Fused Quantized Flash-Decode Kernels
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// 7A-FP8. Generalized GQA Vector Flash-Decode Split-KV Kernel (T_q = 1, FP8 KV Cache)
+// Fuses in-flight OCP FP8 E4M3FN dequantization directly inside private SIMD registers
+// during the QK^T dot product and V accumulation, completely eliminating O(N^2)
+// DRAM reconstruction buffers during long-context decode up to 32K.
+// ----------------------------------------------------------------------------
+kernel void gqa_flash_decode_split_kv_fp8_kernel(
+    device const half *q [[buffer(0)]],
+    device const uchar2 *k_cache [[buffer(1)]],
+    device const uchar2 *v_cache [[buffer(2)]],
+    device half *out [[buffer(3)]],
+    device half2 *partial_O [[buffer(4)]],
+    device float *partial_m [[buffer(5)]],
+    device float *partial_l [[buffer(6)]],
+    device const half *k_scales [[buffer(7)]],
+    device const half *v_scales [[buffer(8)]],
+    constant uint &max_seq_len [[buffer(9)]],
+    constant uint &active_len [[buffer(10)]],
+    constant uint &num_splits [[buffer(11)]],
+    constant float &scale [[buffer(12)]],
+    constant uint &n_head [[buffer(13)]],
+    constant uint &n_kv_head [[buffer(14)]],
+    constant uint &head_dim [[buffer(15)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]])
+{
+    uint kv_h = tgpig.x;
+    uint split_id = tgpig.y;
+    uint rep_tile = tgpig.z;
+    uint lane_id = simd_lane_id;
+
+    uint n_rep = n_head / n_kv_head;
+    uint q_sub_base = rep_tile * 8u;
+    if (kv_h >= n_kv_head || q_sub_base >= n_rep) return;
+    uint q_cnt = min(n_rep - q_sub_base, 8u);
+    uint half_hd = head_dim >> 1;
+
+    bool has_lo = (lane_id < half_hd);
+    bool has_hi = ((lane_id + 32u) < half_hd);
+
+    half2 q_lo[8];
+    half2 q_hi[8];
+    float m_arr[8];
+    float l_arr[8];
+    float2 o_lo[8];
+    float2 o_hi[8];
+
+    #pragma unroll
+    for (uint r = 0; r < 8; ++r) {
+        m_arr[r] = -1e38f;
+        l_arr[r] = 0.0f;
+        o_lo[r] = float2(0.0f);
+        o_hi[r] = float2(0.0f);
+        if (r < q_cnt) {
+            uint qh = kv_h * n_rep + q_sub_base + r;
+            device const half2 *q_ptr = (device const half2 *)(q + qh * head_dim);
+            q_lo[r] = has_lo ? q_ptr[lane_id] : half2(0.0h);
+            q_hi[r] = has_hi ? q_ptr[lane_id + 32u] : half2(0.0h);
+        } else {
+            q_lo[r] = half2(0.0h);
+            q_hi[r] = half2(0.0h);
+        }
+    }
+
+    uint tokens_per_split = (active_len + num_splits - 1u) / num_splits;
+    uint t_start = min(split_id * tokens_per_split, active_len);
+    uint t_end = min(t_start + tokens_per_split, active_len);
+
+    uint num_groups = max(1u, half_hd / 32u);
+    uint kv_scale_stride = max_seq_len * num_groups;
+    device const half *k_scale_base = k_scales + kv_h * kv_scale_stride;
+    device const half *v_scale_base = v_scales + kv_h * kv_scale_stride;
+    device const uchar2 *k_base = k_cache + kv_h * max_seq_len * half_hd;
+    device const uchar2 *v_base = v_cache + kv_h * max_seq_len * half_hd;
+
+    for (uint t = t_start; t < t_end; ++t) {
+        device const uchar2 *k_ptr = k_base + t * half_hd;
+        device const uchar2 *v_ptr = v_base + t * half_hd;
+        device const half *k_sc = k_scale_base + t * num_groups;
+        device const half *v_sc = v_scale_base + t * num_groups;
+
+        half ks_lo = k_sc[0];
+        half ks_hi = (num_groups > 1u) ? k_sc[1] : ks_lo;
+        half vs_lo = v_sc[0];
+        half vs_hi = (num_groups > 1u) ? v_sc[1] : vs_lo;
+
+        uchar2 raw_k_lo = has_lo ? k_ptr[lane_id] : uchar2(0);
+        uchar2 raw_k_hi = has_hi ? k_ptr[lane_id + 32u] : uchar2(0);
+        uchar2 raw_v_lo = has_lo ? v_ptr[lane_id] : uchar2(0);
+        uchar2 raw_v_hi = has_hi ? v_ptr[lane_id + 32u] : uchar2(0);
+
+        float2 k_lo = has_lo ? float2(
+            decode_fp8_e4m3fn(raw_k_lo.x) * ks_lo,
+            decode_fp8_e4m3fn(raw_k_lo.y) * ks_lo
+        ) : float2(0.0f);
+        float2 k_hi = has_hi ? float2(
+            decode_fp8_e4m3fn(raw_k_hi.x) * ks_hi,
+            decode_fp8_e4m3fn(raw_k_hi.y) * ks_hi
+        ) : float2(0.0f);
+
+        float2 v_lo = has_lo ? float2(
+            decode_fp8_e4m3fn(raw_v_lo.x) * vs_lo,
+            decode_fp8_e4m3fn(raw_v_lo.y) * vs_lo
+        ) : float2(0.0f);
+        float2 v_hi = has_hi ? float2(
+            decode_fp8_e4m3fn(raw_v_hi.x) * vs_hi,
+            decode_fp8_e4m3fn(raw_v_hi.y) * vs_hi
+        ) : float2(0.0f);
+
+        for (uint r = 0; r < q_cnt; ++r) {
+            float p = fma(float(q_lo[r].x), k_lo.x, float(q_lo[r].y) * k_lo.y);
+            if (has_hi) {
+                p += fma(float(q_hi[r].x), k_hi.x, float(q_hi[r].y) * k_hi.y);
+            }
+            float score = simd_sum(p) * scale;
+            float m_new = max(m_arr[r], score);
+            float a = fast::exp(m_arr[r] - m_new);
+            float b = fast::exp(score - m_new);
+            l_arr[r] = fma(l_arr[r], a, b);
+            m_arr[r] = m_new;
+            o_lo[r] = o_lo[r] * a + v_lo * b;
+            if (has_hi) {
+                o_hi[r] = o_hi[r] * a + v_hi * b;
+            }
+        }
+    }
+
+    if (num_splits == 1u) {
+        for (uint r = 0; r < q_cnt; ++r) {
+            uint qh = kv_h * n_rep + q_sub_base + r;
+            device half2 *out_ptr = (device half2 *)(out + qh * head_dim);
+            float inv_l = (l_arr[r] > 0.0f) ? (1.0f / l_arr[r]) : 0.0f;
+            if (has_lo) out_ptr[lane_id] = half2(o_lo[r] * inv_l);
+            if (has_hi) out_ptr[lane_id + 32u] = half2(o_hi[r] * inv_l);
+        }
+    } else {
+        for (uint r = 0; r < q_cnt; ++r) {
+            uint qh = kv_h * n_rep + q_sub_base + r;
+            uint p_base = qh * (num_splits * half_hd) + split_id * half_hd;
+            if (has_lo) partial_O[p_base + lane_id] = half2(o_lo[r]);
+            if (has_hi) partial_O[p_base + lane_id + 32u] = half2(o_hi[r]);
+            if (lane_id == 0u) {
+                uint ml_idx = qh * num_splits + split_id;
+                partial_m[ml_idx] = m_arr[r];
+                partial_l[ml_idx] = l_arr[r];
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 7A-INT4. Generalized GQA Vector Flash-Decode Split-KV Kernel (T_q = 1, INT4 KV Cache)
+// Fuses in-flight symmetric INT4 dequantization directly inside private SIMD registers
+// during the QK^T dot product and V accumulation, reading 0.5 Bytes/dim from DRAM.
+// ----------------------------------------------------------------------------
+kernel void gqa_flash_decode_split_kv_int4_kernel(
+    device const half *q [[buffer(0)]],
+    device const uchar *k_cache [[buffer(1)]],
+    device const uchar *v_cache [[buffer(2)]],
+    device half *out [[buffer(3)]],
+    device half2 *partial_O [[buffer(4)]],
+    device float *partial_m [[buffer(5)]],
+    device float *partial_l [[buffer(6)]],
+    device const half *k_scales [[buffer(7)]],
+    device const half *v_scales [[buffer(8)]],
+    constant uint &max_seq_len [[buffer(9)]],
+    constant uint &active_len [[buffer(10)]],
+    constant uint &num_splits [[buffer(11)]],
+    constant float &scale [[buffer(12)]],
+    constant uint &n_head [[buffer(13)]],
+    constant uint &n_kv_head [[buffer(14)]],
+    constant uint &head_dim [[buffer(15)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]])
+{
+    uint kv_h = tgpig.x;
+    uint split_id = tgpig.y;
+    uint rep_tile = tgpig.z;
+    uint lane_id = simd_lane_id;
+
+    uint n_rep = n_head / n_kv_head;
+    uint q_sub_base = rep_tile * 8u;
+    if (kv_h >= n_kv_head || q_sub_base >= n_rep) return;
+    uint q_cnt = min(n_rep - q_sub_base, 8u);
+    uint half_hd = head_dim >> 1;
+
+    bool has_lo = (lane_id < half_hd);
+    bool has_hi = ((lane_id + 32u) < half_hd);
+
+    half2 q_lo[8];
+    half2 q_hi[8];
+    float m_arr[8];
+    float l_arr[8];
+    float2 o_lo[8];
+    float2 o_hi[8];
+
+    #pragma unroll
+    for (uint r = 0; r < 8; ++r) {
+        m_arr[r] = -1e38f;
+        l_arr[r] = 0.0f;
+        o_lo[r] = float2(0.0f);
+        o_hi[r] = float2(0.0f);
+        if (r < q_cnt) {
+            uint qh = kv_h * n_rep + q_sub_base + r;
+            device const half2 *q_ptr = (device const half2 *)(q + qh * head_dim);
+            q_lo[r] = has_lo ? q_ptr[lane_id] : half2(0.0h);
+            q_hi[r] = has_hi ? q_ptr[lane_id + 32u] : half2(0.0h);
+        } else {
+            q_lo[r] = half2(0.0h);
+            q_hi[r] = half2(0.0h);
+        }
+    }
+
+    uint tokens_per_split = (active_len + num_splits - 1u) / num_splits;
+    uint t_start = min(split_id * tokens_per_split, active_len);
+    uint t_end = min(t_start + tokens_per_split, active_len);
+
+    uint num_groups = max(1u, half_hd / 32u);
+    uint kv_scale_stride = max_seq_len * num_groups;
+    device const half *k_scale_base = k_scales + kv_h * kv_scale_stride;
+    device const half *v_scale_base = v_scales + kv_h * kv_scale_stride;
+    device const uchar *k_base = k_cache + kv_h * max_seq_len * half_hd;
+    device const uchar *v_base = v_cache + kv_h * max_seq_len * half_hd;
+
+    for (uint t = t_start; t < t_end; ++t) {
+        device const uchar *k_ptr = k_base + t * half_hd;
+        device const uchar *v_ptr = v_base + t * half_hd;
+        device const half *k_sc = k_scale_base + t * num_groups;
+        device const half *v_sc = v_scale_base + t * num_groups;
+
+        half ks_lo = k_sc[0];
+        half ks_hi = (num_groups > 1u) ? k_sc[1] : ks_lo;
+        half vs_lo = v_sc[0];
+        half vs_hi = (num_groups > 1u) ? v_sc[1] : vs_lo;
+
+        uchar raw_k_lo = has_lo ? k_ptr[lane_id] : uchar(0);
+        uchar raw_k_hi = has_hi ? k_ptr[lane_id + 32u] : uchar(0);
+        uchar raw_v_lo = has_lo ? v_ptr[lane_id] : uchar(0);
+        uchar raw_v_hi = has_hi ? v_ptr[lane_id + 32u] : uchar(0);
+
+        half2 dec_k_lo = has_lo ? dequant_int4_packed(raw_k_lo, ks_lo) : half2(0.0h);
+        half2 dec_k_hi = has_hi ? dequant_int4_packed(raw_k_hi, ks_hi) : half2(0.0h);
+        half2 dec_v_lo = has_lo ? dequant_int4_packed(raw_v_lo, vs_lo) : half2(0.0h);
+        half2 dec_v_hi = has_hi ? dequant_int4_packed(raw_v_hi, vs_hi) : half2(0.0h);
+
+        float2 k_lo = float2(dec_k_lo);
+        float2 k_hi = float2(dec_k_hi);
+        float2 v_lo = float2(dec_v_lo);
+        float2 v_hi = float2(dec_v_hi);
+
+        for (uint r = 0; r < q_cnt; ++r) {
+            float p = fma(float(q_lo[r].x), k_lo.x, float(q_lo[r].y) * k_lo.y);
+            if (has_hi) {
+                p += fma(float(q_hi[r].x), k_hi.x, float(q_hi[r].y) * k_hi.y);
+            }
+            float score = simd_sum(p) * scale;
+            float m_new = max(m_arr[r], score);
+            float a = fast::exp(m_arr[r] - m_new);
+            float b = fast::exp(score - m_new);
+            l_arr[r] = fma(l_arr[r], a, b);
+            m_arr[r] = m_new;
+            o_lo[r] = o_lo[r] * a + v_lo * b;
+            if (has_hi) {
+                o_hi[r] = o_hi[r] * a + v_hi * b;
+            }
+        }
+    }
+
+    if (num_splits == 1u) {
+        for (uint r = 0; r < q_cnt; ++r) {
+            uint qh = kv_h * n_rep + q_sub_base + r;
+            device half2 *out_ptr = (device half2 *)(out + qh * head_dim);
+            float inv_l = (l_arr[r] > 0.0f) ? (1.0f / l_arr[r]) : 0.0f;
+            if (has_lo) out_ptr[lane_id] = half2(o_lo[r] * inv_l);
+            if (has_hi) out_ptr[lane_id + 32u] = half2(o_hi[r] * inv_l);
+        }
+    } else {
+        for (uint r = 0; r < q_cnt; ++r) {
+            uint qh = kv_h * n_rep + q_sub_base + r;
+            uint p_base = qh * (num_splits * half_hd) + split_id * half_hd;
+            if (has_lo) partial_O[p_base + lane_id] = half2(o_lo[r]);
+            if (has_hi) partial_O[p_base + lane_id + 32u] = half2(o_hi[r]);
+            if (lane_id == 0u) {
+                uint ml_idx = qh * num_splits + split_id;
+                partial_m[ml_idx] = m_arr[r];
+                partial_l[ml_idx] = l_arr[r];
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 7D-FP8. SpecInfer Topology-Aware Tree Attention Split-KV Kernel (T <= 32, FP8 KV Cache)
+// ----------------------------------------------------------------------------
+kernel void gqa_tree_verify_split_kv_fp8_kernel(
+    device const half *q [[buffer(0)]],
+    device const uchar2 *k_cache [[buffer(1)]],
+    device const uchar2 *v_cache [[buffer(2)]],
+    device half *out [[buffer(3)]],
+    device half2 *partial_O [[buffer(4)]],
+    device float *partial_m [[buffer(5)]],
+    device float *partial_l [[buffer(6)]],
+    device const half *k_scales [[buffer(7)]],
+    device const half *v_scales [[buffer(8)]],
+    constant const uint *tree_mask [[buffer(9)]],
+    constant uint &max_seq_len [[buffer(10)]],
+    constant uint &prefix_len [[buffer(11)]],
+    constant uint &write_pos [[buffer(12)]],
+    constant uint &T [[buffer(13)]],
+    constant uint &num_splits [[buffer(14)]],
+    constant float &scale [[buffer(15)]],
+    constant uint &n_head [[buffer(16)]],
+    constant uint &n_kv_head [[buffer(17)]],
+    constant uint &head_dim [[buffer(18)]],
+    constant uint &q_stride [[buffer(19)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]])
+{
+    uint qh = tgpig.x;
+    uint node_base = tgpig.y * 4u;
+    uint split_id = tgpig.z;
+    uint lane_id = simd_lane_id;
+
+    if (qh >= n_head || node_base >= T) return;
+    uint u_cnt = min(T - node_base, 4u);
+    uint n_rep = n_head / n_kv_head;
+    uint kv_h = qh / n_rep;
+    uint half_hd = head_dim >> 1;
+
+    bool has_lo = (lane_id < half_hd);
+    bool has_hi = ((lane_id + 32u) < half_hd);
+
+    half2 q_lo[4];
+    half2 q_hi[4];
+    float m_arr[4];
+    float l_arr[4];
+    float2 o_lo[4];
+    float2 o_hi[4];
+
+    #pragma unroll
+    for (uint u = 0; u < 4; ++u) {
+        m_arr[u] = -1e38f;
+        l_arr[u] = 0.0f;
+        o_lo[u] = float2(0.0f);
+        o_hi[u] = float2(0.0f);
+        if (u < u_cnt) {
+            device const half2 *q_ptr = (device const half2 *)(q + (node_base + u) * q_stride + qh * head_dim);
+            q_lo[u] = has_lo ? q_ptr[lane_id] : half2(0.0h);
+            q_hi[u] = has_hi ? q_ptr[lane_id + 32u] : half2(0.0h);
+        } else {
+            q_lo[u] = half2(0.0h);
+            q_hi[u] = half2(0.0h);
+        }
+    }
+
+    uint num_groups = max(1u, half_hd / 32u);
+    uint kv_scale_stride = max_seq_len * num_groups;
+    device const half *k_scale_base = k_scales + kv_h * kv_scale_stride;
+    device const half *v_scale_base = v_scales + kv_h * kv_scale_stride;
+    device const uchar2 *k_base = k_cache + kv_h * max_seq_len * half_hd;
+    device const uchar2 *v_base = v_cache + kv_h * max_seq_len * half_hd;
+
+    // 1. Committed prefix tokens [t_start, t_end)
+    uint tokens_per_split = (prefix_len > 0u) ? ((prefix_len + num_splits - 1u) / num_splits) : 0u;
+    uint t_start = min(split_id * tokens_per_split, prefix_len);
+    uint t_end = min(t_start + tokens_per_split, prefix_len);
+
+    for (uint t = t_start; t < t_end; ++t) {
+        device const uchar2 *k_ptr = k_base + t * half_hd;
+        device const uchar2 *v_ptr = v_base + t * half_hd;
+        device const half *k_sc = k_scale_base + t * num_groups;
+        device const half *v_sc = v_scale_base + t * num_groups;
+
+        half ks_lo = k_sc[0];
+        half ks_hi = (num_groups > 1u) ? k_sc[1] : ks_lo;
+        half vs_lo = v_sc[0];
+        half vs_hi = (num_groups > 1u) ? v_sc[1] : vs_lo;
+
+        uchar2 raw_k_lo = has_lo ? k_ptr[lane_id] : uchar2(0);
+        uchar2 raw_k_hi = has_hi ? k_ptr[lane_id + 32u] : uchar2(0);
+        uchar2 raw_v_lo = has_lo ? v_ptr[lane_id] : uchar2(0);
+        uchar2 raw_v_hi = has_hi ? v_ptr[lane_id + 32u] : uchar2(0);
+
+        float2 k_lo = has_lo ? float2(decode_fp8_e4m3fn(raw_k_lo.x) * ks_lo, decode_fp8_e4m3fn(raw_k_lo.y) * ks_lo) : float2(0.0f);
+        float2 k_hi = has_hi ? float2(decode_fp8_e4m3fn(raw_k_hi.x) * ks_hi, decode_fp8_e4m3fn(raw_k_hi.y) * ks_hi) : float2(0.0f);
+        float2 v_lo = has_lo ? float2(decode_fp8_e4m3fn(raw_v_lo.x) * vs_lo, decode_fp8_e4m3fn(raw_v_lo.y) * vs_lo) : float2(0.0f);
+        float2 v_hi = has_hi ? float2(decode_fp8_e4m3fn(raw_v_hi.x) * vs_hi, decode_fp8_e4m3fn(raw_v_hi.y) * vs_hi) : float2(0.0f);
+
+        for (uint u = 0; u < u_cnt; ++u) {
+            float p = fma(float(q_lo[u].x), k_lo.x, float(q_lo[u].y) * k_lo.y);
+            if (has_hi) {
+                p += fma(float(q_hi[u].x), k_hi.x, float(q_hi[u].y) * k_hi.y);
+            }
+            float score = simd_sum(p) * scale;
+            float m_new = max(m_arr[u], score);
+            float a = fast::exp(m_arr[u] - m_new);
+            float b = fast::exp(score - m_new);
+            l_arr[u] = fma(l_arr[u], a, b);
+            m_arr[u] = m_new;
+            o_lo[u] = o_lo[u] * a + v_lo * b;
+            if (has_hi) {
+                o_hi[u] = o_hi[u] * a + v_hi * b;
+            }
+        }
+    }
+
+    // 2. Speculative tree tokens [0, T)
+    if (split_id == 0u) {
+        uint masks[4];
+        #pragma unroll
+        for (uint u = 0; u < 4; ++u) {
+            masks[u] = (u < u_cnt) ? tree_mask[node_base + u] : 0u;
+        }
+        uint union_mask = masks[0] | masks[1] | masks[2] | masks[3];
+
+        for (uint j = 0; j < T; ++j) {
+            uint bit = 1u << j;
+            if ((union_mask & bit) == 0u) continue;
+
+            uint slot = (write_pos + j) % max_seq_len;
+            device const uchar2 *k_ptr = k_base + slot * half_hd;
+            device const uchar2 *v_ptr = v_base + slot * half_hd;
+            device const half *k_sc = k_scale_base + slot * num_groups;
+            device const half *v_sc = v_scale_base + slot * num_groups;
+
+            half ks_lo = k_sc[0];
+            half ks_hi = (num_groups > 1u) ? k_sc[1] : ks_lo;
+            half vs_lo = v_sc[0];
+            half vs_hi = (num_groups > 1u) ? v_sc[1] : vs_lo;
+
+            uchar2 raw_k_lo = has_lo ? k_ptr[lane_id] : uchar2(0);
+            uchar2 raw_k_hi = has_hi ? k_ptr[lane_id + 32u] : uchar2(0);
+            uchar2 raw_v_lo = has_lo ? v_ptr[lane_id] : uchar2(0);
+            uchar2 raw_v_hi = has_hi ? v_ptr[lane_id + 32u] : uchar2(0);
+
+            float2 k_lo = has_lo ? float2(decode_fp8_e4m3fn(raw_k_lo.x) * ks_lo, decode_fp8_e4m3fn(raw_k_lo.y) * ks_lo) : float2(0.0f);
+            float2 k_hi = has_hi ? float2(decode_fp8_e4m3fn(raw_k_hi.x) * ks_hi, decode_fp8_e4m3fn(raw_k_hi.y) * ks_hi) : float2(0.0f);
+            float2 v_lo = has_lo ? float2(decode_fp8_e4m3fn(raw_v_lo.x) * vs_lo, decode_fp8_e4m3fn(raw_v_lo.y) * vs_lo) : float2(0.0f);
+            float2 v_hi = has_hi ? float2(decode_fp8_e4m3fn(raw_v_hi.x) * vs_hi, decode_fp8_e4m3fn(raw_v_hi.y) * vs_hi) : float2(0.0f);
+
+            for (uint u = 0; u < u_cnt; ++u) {
+                if ((masks[u] & bit) != 0u) {
+                    float p = fma(float(q_lo[u].x), k_lo.x, float(q_lo[u].y) * k_lo.y);
+                    if (has_hi) {
+                        p += fma(float(q_hi[u].x), k_hi.x, float(q_hi[u].y) * k_hi.y);
+                    }
+                    float score = simd_sum(p) * scale;
+                    float m_new = max(m_arr[u], score);
+                    float a = fast::exp(m_arr[u] - m_new);
+                    float b = fast::exp(score - m_new);
+                    l_arr[u] = fma(l_arr[u], a, b);
+                    m_arr[u] = m_new;
+                    o_lo[u] = o_lo[u] * a + v_lo * b;
+                    if (has_hi) {
+                        o_hi[u] = o_hi[u] * a + v_hi * b;
+                    }
+                }
+            }
+        }
+    }
+
+    if (num_splits == 1u) {
+        for (uint u = 0; u < u_cnt; ++u) {
+            uint node_idx = node_base + u;
+            device half2 *out_ptr = (device half2 *)(out + node_idx * q_stride + qh * head_dim);
+            float inv_l = (l_arr[u] > 0.0f) ? (1.0f / l_arr[u]) : 0.0f;
+            if (has_lo) out_ptr[lane_id] = half2(o_lo[u] * inv_l);
+            if (has_hi) out_ptr[lane_id + 32u] = half2(o_hi[u] * inv_l);
+        }
+    } else {
+        for (uint u = 0; u < u_cnt; ++u) {
+            uint node_idx = node_base + u;
+            uint p_base = (node_idx * n_head + qh) * (num_splits * half_hd) + split_id * half_hd;
+            if (has_lo) partial_O[p_base + lane_id] = half2(o_lo[u]);
+            if (has_hi) partial_O[p_base + lane_id + 32u] = half2(o_hi[u]);
+            if (lane_id == 0u) {
+                uint ml_idx = (node_idx * n_head + qh) * num_splits + split_id;
+                partial_m[ml_idx] = m_arr[u];
+                partial_l[ml_idx] = l_arr[u];
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 7D-INT4. SpecInfer Topology-Aware Tree Attention Split-KV Kernel (T <= 32, INT4 KV Cache)
+// ----------------------------------------------------------------------------
+kernel void gqa_tree_verify_split_kv_int4_kernel(
+    device const half *q [[buffer(0)]],
+    device const uchar *k_cache [[buffer(1)]],
+    device const uchar *v_cache [[buffer(2)]],
+    device half *out [[buffer(3)]],
+    device half2 *partial_O [[buffer(4)]],
+    device float *partial_m [[buffer(5)]],
+    device float *partial_l [[buffer(6)]],
+    device const half *k_scales [[buffer(7)]],
+    device const half *v_scales [[buffer(8)]],
+    constant const uint *tree_mask [[buffer(9)]],
+    constant uint &max_seq_len [[buffer(10)]],
+    constant uint &prefix_len [[buffer(11)]],
+    constant uint &write_pos [[buffer(12)]],
+    constant uint &T [[buffer(13)]],
+    constant uint &num_splits [[buffer(14)]],
+    constant float &scale [[buffer(15)]],
+    constant uint &n_head [[buffer(16)]],
+    constant uint &n_kv_head [[buffer(17)]],
+    constant uint &head_dim [[buffer(18)]],
+    constant uint &q_stride [[buffer(19)]],
+    uint3 tgpig [[threadgroup_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]])
+{
+    uint qh = tgpig.x;
+    uint node_base = tgpig.y * 4u;
+    uint split_id = tgpig.z;
+    uint lane_id = simd_lane_id;
+
+    if (qh >= n_head || node_base >= T) return;
+    uint u_cnt = min(T - node_base, 4u);
+    uint n_rep = n_head / n_kv_head;
+    uint kv_h = qh / n_rep;
+    uint half_hd = head_dim >> 1;
+
+    bool has_lo = (lane_id < half_hd);
+    bool has_hi = ((lane_id + 32u) < half_hd);
+
+    half2 q_lo[4];
+    half2 q_hi[4];
+    float m_arr[4];
+    float l_arr[4];
+    float2 o_lo[4];
+    float2 o_hi[4];
+
+    #pragma unroll
+    for (uint u = 0; u < 4; ++u) {
+        m_arr[u] = -1e38f;
+        l_arr[u] = 0.0f;
+        o_lo[u] = float2(0.0f);
+        o_hi[u] = float2(0.0f);
+        if (u < u_cnt) {
+            device const half2 *q_ptr = (device const half2 *)(q + (node_base + u) * q_stride + qh * head_dim);
+            q_lo[u] = has_lo ? q_ptr[lane_id] : half2(0.0h);
+            q_hi[u] = has_hi ? q_ptr[lane_id + 32u] : half2(0.0h);
+        } else {
+            q_lo[u] = half2(0.0h);
+            q_hi[u] = half2(0.0h);
+        }
+    }
+
+    uint num_groups = max(1u, half_hd / 32u);
+    uint kv_scale_stride = max_seq_len * num_groups;
+    device const half *k_scale_base = k_scales + kv_h * kv_scale_stride;
+    device const half *v_scale_base = v_scales + kv_h * kv_scale_stride;
+    device const uchar *k_base = k_cache + kv_h * max_seq_len * half_hd;
+    device const uchar *v_base = v_cache + kv_h * max_seq_len * half_hd;
+
+    // 1. Committed prefix tokens [t_start, t_end)
+    uint tokens_per_split = (prefix_len > 0u) ? ((prefix_len + num_splits - 1u) / num_splits) : 0u;
+    uint t_start = min(split_id * tokens_per_split, prefix_len);
+    uint t_end = min(t_start + tokens_per_split, prefix_len);
+
+    for (uint t = t_start; t < t_end; ++t) {
+        device const uchar *k_ptr = k_base + t * half_hd;
+        device const uchar *v_ptr = v_base + t * half_hd;
+        device const half *k_sc = k_scale_base + t * num_groups;
+        device const half *v_sc = v_scale_base + t * num_groups;
+
+        half ks_lo = k_sc[0];
+        half ks_hi = (num_groups > 1u) ? k_sc[1] : ks_lo;
+        half vs_lo = v_sc[0];
+        half vs_hi = (num_groups > 1u) ? v_sc[1] : vs_lo;
+
+        uchar raw_k_lo = has_lo ? k_ptr[lane_id] : uchar(0);
+        uchar raw_k_hi = has_hi ? k_ptr[lane_id + 32u] : uchar(0);
+        uchar raw_v_lo = has_lo ? v_ptr[lane_id] : uchar(0);
+        uchar raw_v_hi = has_hi ? v_ptr[lane_id + 32u] : uchar(0);
+
+        half2 dec_k_lo = has_lo ? dequant_int4_packed(raw_k_lo, ks_lo) : half2(0.0h);
+        half2 dec_k_hi = has_hi ? dequant_int4_packed(raw_k_hi, ks_hi) : half2(0.0h);
+        half2 dec_v_lo = has_lo ? dequant_int4_packed(raw_v_lo, vs_lo) : half2(0.0h);
+        half2 dec_v_hi = has_hi ? dequant_int4_packed(raw_v_hi, vs_hi) : half2(0.0h);
+
+        float2 k_lo = float2(dec_k_lo);
+        float2 k_hi = float2(dec_k_hi);
+        float2 v_lo = float2(dec_v_lo);
+        float2 v_hi = float2(dec_v_hi);
+
+        for (uint u = 0; u < u_cnt; ++u) {
+            float p = fma(float(q_lo[u].x), k_lo.x, float(q_lo[u].y) * k_lo.y);
+            if (has_hi) {
+                p += fma(float(q_hi[u].x), k_hi.x, float(q_hi[u].y) * k_hi.y);
+            }
+            float score = simd_sum(p) * scale;
+            float m_new = max(m_arr[u], score);
+            float a = fast::exp(m_arr[u] - m_new);
+            float b = fast::exp(score - m_new);
+            l_arr[u] = fma(l_arr[u], a, b);
+            m_arr[u] = m_new;
+            o_lo[u] = o_lo[u] * a + v_lo * b;
+            if (has_hi) {
+                o_hi[u] = o_hi[u] * a + v_hi * b;
+            }
+        }
+    }
+
+    // 2. Speculative tree tokens [0, T)
+    if (split_id == 0u) {
+        uint masks[4];
+        #pragma unroll
+        for (uint u = 0; u < 4; ++u) {
+            masks[u] = (u < u_cnt) ? tree_mask[node_base + u] : 0u;
+        }
+        uint union_mask = masks[0] | masks[1] | masks[2] | masks[3];
+
+        for (uint j = 0; j < T; ++j) {
+            uint bit = 1u << j;
+            if ((union_mask & bit) == 0u) continue;
+
+            uint slot = (write_pos + j) % max_seq_len;
+            device const uchar *k_ptr = k_base + slot * half_hd;
+            device const uchar *v_ptr = v_base + slot * half_hd;
+            device const half *k_sc = k_scale_base + slot * num_groups;
+            device const half *v_sc = v_scale_base + slot * num_groups;
+
+            half ks_lo = k_sc[0];
+            half ks_hi = (num_groups > 1u) ? k_sc[1] : ks_lo;
+            half vs_lo = v_sc[0];
+            half vs_hi = (num_groups > 1u) ? v_sc[1] : vs_lo;
+
+            uchar raw_k_lo = has_lo ? k_ptr[lane_id] : uchar(0);
+            uchar raw_k_hi = has_hi ? k_ptr[lane_id + 32u] : uchar(0);
+            uchar raw_v_lo = has_lo ? v_ptr[lane_id] : uchar(0);
+            uchar raw_v_hi = has_hi ? v_ptr[lane_id + 32u] : uchar(0);
+
+            half2 dec_k_lo = has_lo ? dequant_int4_packed(raw_k_lo, ks_lo) : half2(0.0h);
+            half2 dec_k_hi = has_hi ? dequant_int4_packed(raw_k_hi, ks_hi) : half2(0.0h);
+            half2 dec_v_lo = has_lo ? dequant_int4_packed(raw_v_lo, vs_lo) : half2(0.0h);
+            half2 dec_v_hi = has_hi ? dequant_int4_packed(raw_v_hi, vs_hi) : half2(0.0h);
+
+            float2 k_lo = float2(dec_k_lo);
+            float2 k_hi = float2(dec_k_hi);
+            float2 v_lo = float2(dec_v_lo);
+            float2 v_hi = float2(dec_v_hi);
+
+            for (uint u = 0; u < u_cnt; ++u) {
+                if ((masks[u] & bit) != 0u) {
+                    float p = fma(float(q_lo[u].x), k_lo.x, float(q_lo[u].y) * k_lo.y);
+                    if (has_hi) {
+                        p += fma(float(q_hi[u].x), k_hi.x, float(q_hi[u].y) * k_hi.y);
+                    }
+                    float score = simd_sum(p) * scale;
+                    float m_new = max(m_arr[u], score);
+                    float a = fast::exp(m_arr[u] - m_new);
+                    float b = fast::exp(score - m_new);
+                    l_arr[u] = fma(l_arr[u], a, b);
+                    m_arr[u] = m_new;
+                    o_lo[u] = o_lo[u] * a + v_lo * b;
+                    if (has_hi) {
+                        o_hi[u] = o_hi[u] * a + v_hi * b;
+                    }
+                }
+            }
+        }
+    }
+
+    if (num_splits == 1u) {
+        for (uint u = 0; u < u_cnt; ++u) {
+            uint node_idx = node_base + u;
+            device half2 *out_ptr = (device half2 *)(out + node_idx * q_stride + qh * head_dim);
+            float inv_l = (l_arr[u] > 0.0f) ? (1.0f / l_arr[u]) : 0.0f;
+            if (has_lo) out_ptr[lane_id] = half2(o_lo[u] * inv_l);
+            if (has_hi) out_ptr[lane_id + 32u] = half2(o_hi[u] * inv_l);
+        }
+    } else {
+        for (uint u = 0; u < u_cnt; ++u) {
+            uint node_idx = node_base + u;
+            uint p_base = (node_idx * n_head + qh) * (num_splits * half_hd) + split_id * half_hd;
+            if (has_lo) partial_O[p_base + lane_id] = half2(o_lo[u]);
+            if (has_hi) partial_O[p_base + lane_id + 32u] = half2(o_hi[u]);
+            if (lane_id == 0u) {
+                uint ml_idx = (node_idx * n_head + qh) * num_splits + split_id;
+                partial_m[ml_idx] = m_arr[u];
+                partial_l[ml_idx] = l_arr[u];
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 7F-FP8. In-Place Topological KV-Cache Compaction Kernel (FP8)
+// ----------------------------------------------------------------------------
+kernel void compact_tree_kv_fp8_kernel(
+    device uchar2 *cache_ptr [[buffer(0)]],
+    device half *scales_ptr [[buffer(1)]],
+    constant const int *accepted_indices [[buffer(2)]],
+    constant uint &n_layer [[buffer(3)]],
+    constant uint &max_batch_size [[buffer(4)]],
+    constant uint &n_kv_head [[buffer(5)]],
+    constant uint &max_seq_len [[buffer(6)]],
+    constant uint &half_head_dim [[buffer(7)]],
+    constant uint &write_pos [[buffer(8)]],
+    constant uint &num_accepted [[buffer(9)]],
+    uint tid [[thread_position_in_grid]])
+{
+    uint total_streams = n_layer * 2u * n_kv_head * half_head_dim;
+    if (tid >= total_streams || num_accepted == 0u) return;
+
+    uint d_pair = tid % half_head_dim;
+    uint rem = tid / half_head_dim;
+    uint kv_h = rem % n_kv_head;
+    rem /= n_kv_head;
+    uint kv_type = rem & 1u;
+    uint layer = rem >> 1;
+
+    uint num_groups = max(1u, half_head_dim / 32u);
+    uint base_idx = (((layer * 2u + kv_type) * max_batch_size) * n_kv_head + kv_h) * max_seq_len * half_head_dim;
+    uint scale_base_idx = (((layer * 2u + kv_type) * max_batch_size) * n_kv_head + kv_h) * max_seq_len * num_groups;
+
+    uchar2 vals[32];
+    uint cnt = min(num_accepted, 32u);
+    for (uint m = 0; m < cnt; ++m) {
+        uint src_slot = (write_pos + uint(accepted_indices[m])) % max_seq_len;
+        vals[m] = cache_ptr[base_idx + src_slot * half_head_dim + d_pair];
+    }
+    for (uint m = 0; m < cnt; ++m) {
+        uint dst_slot = (write_pos + m) % max_seq_len;
+        cache_ptr[base_idx + dst_slot * half_head_dim + d_pair] = vals[m];
+    }
+
+    if (d_pair < num_groups && scales_ptr != nullptr) {
+        half s_vals[32];
+        for (uint m = 0; m < cnt; ++m) {
+            uint src_slot = (write_pos + uint(accepted_indices[m])) % max_seq_len;
+            s_vals[m] = scales_ptr[scale_base_idx + src_slot * num_groups + d_pair];
+        }
+        for (uint m = 0; m < cnt; ++m) {
+            uint dst_slot = (write_pos + m) % max_seq_len;
+            scales_ptr[scale_base_idx + dst_slot * num_groups + d_pair] = s_vals[m];
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 7F-INT4. In-Place Topological KV-Cache Compaction Kernel (INT4)
+// ----------------------------------------------------------------------------
+kernel void compact_tree_kv_int4_kernel(
+    device uchar *cache_ptr [[buffer(0)]],
+    device half *scales_ptr [[buffer(1)]],
+    constant const int *accepted_indices [[buffer(2)]],
+    constant uint &n_layer [[buffer(3)]],
+    constant uint &max_batch_size [[buffer(4)]],
+    constant uint &n_kv_head [[buffer(5)]],
+    constant uint &max_seq_len [[buffer(6)]],
+    constant uint &half_head_dim [[buffer(7)]],
+    constant uint &write_pos [[buffer(8)]],
+    constant uint &num_accepted [[buffer(9)]],
+    uint tid [[thread_position_in_grid]])
+{
+    uint total_streams = n_layer * 2u * n_kv_head * half_head_dim;
+    if (tid >= total_streams || num_accepted == 0u) return;
+
+    uint d_pair = tid % half_head_dim;
+    uint rem = tid / half_head_dim;
+    uint kv_h = rem % n_kv_head;
+    rem /= n_kv_head;
+    uint kv_type = rem & 1u;
+    uint layer = rem >> 1;
+
+    uint num_groups = max(1u, half_head_dim / 32u);
+    uint base_idx = (((layer * 2u + kv_type) * max_batch_size) * n_kv_head + kv_h) * max_seq_len * half_head_dim;
+    uint scale_base_idx = (((layer * 2u + kv_type) * max_batch_size) * n_kv_head + kv_h) * max_seq_len * num_groups;
+
+    uchar vals[32];
+    uint cnt = min(num_accepted, 32u);
+    for (uint m = 0; m < cnt; ++m) {
+        uint src_slot = (write_pos + uint(accepted_indices[m])) % max_seq_len;
+        vals[m] = cache_ptr[base_idx + src_slot * half_head_dim + d_pair];
+    }
+    for (uint m = 0; m < cnt; ++m) {
+        uint dst_slot = (write_pos + m) % max_seq_len;
+        cache_ptr[base_idx + dst_slot * half_head_dim + d_pair] = vals[m];
+    }
+
+    if (d_pair < num_groups && scales_ptr != nullptr) {
+        half s_vals[32];
+        for (uint m = 0; m < cnt; ++m) {
+            uint src_slot = (write_pos + uint(accepted_indices[m])) % max_seq_len;
+            s_vals[m] = scales_ptr[scale_base_idx + src_slot * num_groups + d_pair];
+        }
+        for (uint m = 0; m < cnt; ++m) {
+            uint dst_slot = (write_pos + m) % max_seq_len;
+            scales_ptr[scale_base_idx + dst_slot * num_groups + d_pair] = s_vals[m];
+        }
     }
 }

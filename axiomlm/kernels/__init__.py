@@ -23,6 +23,7 @@ from .ops import (
     fused_sdpa,
     fused_swiglu,
     gqa_flash_decode_mps,
+    gqa_tree_verify_mps,
 )
 from .quant import (
     compute_quantization_metrics,
@@ -95,6 +96,7 @@ __all__ = [
     "fused_sdpa",
     "fused_swiglu",
     "gqa_flash_decode_mps",
+    "gqa_tree_verify_mps",
     "is_mps_available",
     "pack_linear_q4_g64",
     "pack_linear_q4_marlin",

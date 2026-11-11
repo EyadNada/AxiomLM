@@ -1,0 +1,212 @@
+{
+  "architecture": "AxiomLM Split-KV Flash-Decode",
+  "phase": "Phase 3 Task 3.2",
+  "device": "Apple Silicon GPU (MPS)",
+  "gqa_config": "9:3",
+  "head_dim": 64,
+  "benchmarks": [
+    {
+      "context_length": 512,
+      "latency_us": {
+        "fp16": 176.49,
+        "unfused_fp8": 220.11,
+        "fused_fp8": 81.14,
+        "unfused_int4": 98.6,
+        "fused_int4": 61.45
+      },
+      "speedup_vs_unfused": {
+        "fp8": 2.71,
+        "int4": 1.6
+      },
+      "speedup_vs_fp16": {
+        "fp8": 2.18,
+        "int4": 2.87
+      },
+      "effective_read_bandwidth_gbps": {
+        "fp16": 2.23,
+        "fused_fp8": 2.5,
+        "fused_int4": 1.7
+      },
+      "dynamic_allocations_bytes": {
+        "unfused_fp8": 393216,
+        "unfused_int4": 393216,
+        "fused_fp8": 0,
+        "fused_int4": 0
+      }
+    },
+    {
+      "context_length": 1024,
+      "latency_us": {
+        "fp16": 91.56,
+        "unfused_fp8": 169.97,
+        "fused_fp8": 146.9,
+        "unfused_int4": 154.45,
+        "fused_int4": 109.69
+      },
+      "speedup_vs_unfused": {
+        "fp8": 1.16,
+        "int4": 1.41
+      },
+      "speedup_vs_fp16": {
+        "fp8": 0.62,
+        "int4": 0.83
+      },
+      "effective_read_bandwidth_gbps": {
+        "fp16": 8.59,
+        "fused_fp8": 2.76,
+        "fused_int4": 1.9
+      },
+      "dynamic_allocations_bytes": {
+        "unfused_fp8": 786432,
+        "unfused_int4": 786432,
+        "fused_fp8": 0,
+        "fused_int4": 0
+      }
+    },
+    {
+      "context_length": 2048,
+      "latency_us": {
+        "fp16": 170.67,
+        "unfused_fp8": 281.93,
+        "fused_fp8": 276.8,
+        "unfused_int4": 260.76,
+        "fused_int4": 203.52
+      },
+      "speedup_vs_unfused": {
+        "fp8": 1.02,
+        "int4": 1.28
+      },
+      "speedup_vs_fp16": {
+        "fp8": 0.62,
+        "int4": 0.84
+      },
+      "effective_read_bandwidth_gbps": {
+        "fp16": 9.22,
+        "fused_fp8": 2.93,
+        "fused_int4": 2.05
+      },
+      "dynamic_allocations_bytes": {
+        "unfused_fp8": 1572864,
+        "unfused_int4": 1572864,
+        "fused_fp8": 0,
+        "fused_int4": 0
+      }
+    },
+    {
+      "context_length": 4096,
+      "latency_us": {
+        "fp16": 325.78,
+        "unfused_fp8": 525.48,
+        "fused_fp8": 538.82,
+        "unfused_int4": 479.66,
+        "fused_int4": 389.29
+      },
+      "speedup_vs_unfused": {
+        "fp8": 0.98,
+        "int4": 1.23
+      },
+      "speedup_vs_fp16": {
+        "fp8": 0.6,
+        "int4": 0.84
+      },
+      "effective_read_bandwidth_gbps": {
+        "fp16": 9.66,
+        "fused_fp8": 3.01,
+        "fused_int4": 2.15
+      },
+      "dynamic_allocations_bytes": {
+        "unfused_fp8": 3145728,
+        "unfused_int4": 3145728,
+        "fused_fp8": 0,
+        "fused_int4": 0
+      }
+    },
+    {
+      "context_length": 8192,
+      "latency_us": {
+        "fp16": 724.43,
+        "unfused_fp8": 1068.35,
+        "fused_fp8": 1061.38,
+        "unfused_int4": 975.31,
+        "fused_int4": 767.36
+      },
+      "speedup_vs_unfused": {
+        "fp8": 1.01,
+        "int4": 1.27
+      },
+      "speedup_vs_fp16": {
+        "fp8": 0.68,
+        "int4": 0.94
+      },
+      "effective_read_bandwidth_gbps": {
+        "fp16": 8.68,
+        "fused_fp8": 3.06,
+        "fused_int4": 2.18
+      },
+      "dynamic_allocations_bytes": {
+        "unfused_fp8": 6291456,
+        "unfused_int4": 6291456,
+        "fused_fp8": 0,
+        "fused_int4": 0
+      }
+    },
+    {
+      "context_length": 16384,
+      "latency_us": {
+        "fp16": 1576.23,
+        "unfused_fp8": 2263.22,
+        "fused_fp8": 2493.21,
+        "unfused_int4": 2083.61,
+        "fused_int4": 1518.68
+      },
+      "speedup_vs_unfused": {
+        "fp8": 0.91,
+        "int4": 1.37
+      },
+      "speedup_vs_fp16": {
+        "fp8": 0.63,
+        "int4": 1.04
+      },
+      "effective_read_bandwidth_gbps": {
+        "fp16": 7.98,
+        "fused_fp8": 2.6,
+        "fused_int4": 2.2
+      },
+      "dynamic_allocations_bytes": {
+        "unfused_fp8": 12582912,
+        "unfused_int4": 12582912,
+        "fused_fp8": 0,
+        "fused_int4": 0
+      }
+    },
+    {
+      "context_length": 32768,
+      "latency_us": {
+        "fp16": 3120.37,
+        "unfused_fp8": 4490.21,
+        "fused_fp8": 5338.91,
+        "unfused_int4": 4157.66,
+        "fused_int4": 3282.25
+      },
+      "speedup_vs_unfused": {
+        "fp8": 0.84,
+        "int4": 1.27
+      },
+      "speedup_vs_fp16": {
+        "fp8": 0.58,
+        "int4": 0.95
+      },
+      "effective_read_bandwidth_gbps": {
+        "fp16": 8.07,
+        "fused_fp8": 2.43,
+        "fused_int4": 2.04
+      },
+      "dynamic_allocations_bytes": {
+        "unfused_fp8": 25165824,
+        "unfused_int4": 25165824,
+        "fused_fp8": 0,
+        "fused_int4": 0
+      }
+    }
+  ]
+}
