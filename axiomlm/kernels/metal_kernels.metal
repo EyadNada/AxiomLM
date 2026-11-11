@@ -3970,3 +3970,359 @@ kernel void compact_tree_kv_int4_kernel(
         }
     }
 }
+
+// ============================================================================
+// Phase 3 Task 3.3: BitNet 1.58-bit Ternary & Q2_K Sub-4-Bit GEMV/GEMM Kernels
+// ============================================================================
+
+// ----------------------------------------------------------------------------
+// 8A. BitNet 1.58-bit Matrix-Vector Multiply (M=1)
+// Weights W in {-1, 0, +1} packed 4 ternary elements per byte (0.25 B/weight).
+// 16 lanes per sub-warp process 1 group of 64 weights. 4 SIMDgroups = 16 rows/TG.
+// Multiplications are replaced with branchless sign selection & accumulation.
+// ----------------------------------------------------------------------------
+kernel void qmv_ternary_half_kernel(
+    device const half *x [[buffer(0)]],
+    device const uchar *w_packed [[buffer(1)]],
+    device const half *scales [[buffer(2)]],
+    device half *y [[buffer(3)]],
+    constant uint &K [[buffer(4)]],
+    constant uint &N [[buffer(5)]],
+    device const half *bias [[buffer(6)]],
+    constant uint &has_bias [[buffer(7)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]])
+{
+    uint sg_row_base = tgpig.x * 16u + (simd_group_id << 2);
+    if (sg_row_base >= N) return;
+
+    uint sub_id = (simd_group_id << 1) | (simd_lane_id >> 4);
+    uint lane16 = simd_lane_id & 15u;
+    uint row_base = tgpig.x * 16u + (sub_id << 1);
+
+    uint K_packed = K >> 2;       // K / 4 bytes per row
+    uint K_groups = K >> 6;       // K / 64 groups per row
+
+    bool valid0 = (row_base < N);
+    bool valid1 = (row_base + 1u < N);
+    float acc0 = 0.0f, acc1 = 0.0f;
+
+    device const uchar *w0 = w_packed + row_base * K_packed;
+    device const uchar *w1 = w0 + K_packed;
+    device const half *s0 = scales + row_base * K_groups;
+    device const half *s1 = s0 + K_groups;
+
+    for (uint g = 0; g < K_groups; ++g) {
+        uint idx = (g << 4) + lane16;
+        half4 x_vec = *(device const half4 *)(x + (idx << 2));
+        float4 fx = float4(x_vec);
+
+        if (valid0) {
+            uchar b0 = w0[idx];
+            float w_0 = float(int(b0 & 1u) - int((b0 >> 1) & 1u));
+            float w_1 = float(int((b0 >> 2) & 1u) - int((b0 >> 3) & 1u));
+            float w_2 = float(int((b0 >> 4) & 1u) - int((b0 >> 5) & 1u));
+            float w_3 = float(int((b0 >> 6) & 1u) - int((b0 >> 7) & 1u));
+            float p0 = fma(fx.x, w_0, fma(fx.y, w_1, fma(fx.z, w_2, fx.w * w_3)));
+            acc0 = fma(p0, float(s0[g]), acc0);
+        }
+        if (valid1) {
+            uchar b1 = w1[idx];
+            float w_0 = float(int(b1 & 1u) - int((b1 >> 1) & 1u));
+            float w_1 = float(int((b1 >> 2) & 1u) - int((b1 >> 3) & 1u));
+            float w_2 = float(int((b1 >> 4) & 1u) - int((b1 >> 5) & 1u));
+            float w_3 = float(int((b1 >> 6) & 1u) - int((b1 >> 7) & 1u));
+            float p1 = fma(fx.x, w_0, fma(fx.y, w_1, fma(fx.z, w_2, fx.w * w_3)));
+            acc1 = fma(p1, float(s1[g]), acc1);
+        }
+    }
+
+    acc0 += simd_shuffle_xor(acc0, 8u);
+    acc0 += simd_shuffle_xor(acc0, 4u);
+    acc0 += simd_shuffle_xor(acc0, 2u);
+    acc0 += simd_shuffle_xor(acc0, 1u);
+
+    acc1 += simd_shuffle_xor(acc1, 8u);
+    acc1 += simd_shuffle_xor(acc1, 4u);
+    acc1 += simd_shuffle_xor(acc1, 2u);
+    acc1 += simd_shuffle_xor(acc1, 1u);
+
+    if (lane16 == 0u) {
+        if (valid0) {
+            float b_val = (has_bias != 0u && bias != nullptr) ? float(bias[row_base]) : 0.0f;
+            y[row_base] = half(acc0 + b_val);
+        }
+        if (valid1) {
+            float b_val = (has_bias != 0u && bias != nullptr) ? float(bias[row_base + 1u]) : 0.0f;
+            y[row_base + 1u] = half(acc1 + b_val);
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 8B. BitNet 1.58-bit Batched Matrix-Vector Multiply (Tall-and-Skinny GEMM)
+// Evaluates M tokens (tiled by 8) against BitNet 1.58-bit ternary weights.
+// Cooperative SRAM x-tiling + multiplication-free ternary accumulation.
+// ----------------------------------------------------------------------------
+kernel void qmm_ternary_half_kernel(
+    device const half *x [[buffer(0)]],
+    device const uchar *w_packed [[buffer(1)]],
+    device const half *scales [[buffer(2)]],
+    device half *y [[buffer(3)]],
+    constant uint &M [[buffer(4)]],
+    constant uint &K [[buffer(5)]],
+    constant uint &N [[buffer(6)]],
+    device const half *bias [[buffer(7)]],
+    constant uint &has_bias [[buffer(8)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]])
+{
+    uint tg_row_base = tgpig.x * 32u;
+    uint m_base = tgpig.y * 8u;
+    if (tg_row_base >= N || m_base >= M) return;
+
+    uint tid = (simd_group_id << 5) | simd_lane_id; // 0..127
+    uint m_ld = tid >> 4;                           // 0..7
+    uint c_ld = tid & 15u;                          // 0..15
+
+    uint sub_id = (simd_group_id << 1) | (simd_lane_id >> 4); // 0..7
+    uint lane16 = simd_lane_id & 15u;                         // 0..15
+    uint row_base = tg_row_base + (sub_id << 2);
+
+    uint K_packed = K >> 2;
+    uint K_groups = K >> 6;
+    uint actual_M = min(M - m_base, 8u);
+
+    threadgroup float4 s_x[8][16];
+
+    float acc[8][4] = {{0.0f}};
+
+    for (uint g = 0; g < K_groups; ++g) {
+        if (m_ld < actual_M) {
+            uint in_k = (g << 6) + (c_ld << 2);
+            device const half4 *x_ptr = (device const half4 *)(x + (m_base + m_ld) * K + in_k);
+            s_x[m_ld][c_ld] = float4(*x_ptr);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        uint idx = (g << 4) + lane16;
+        for (uint r = 0; r < 4; ++r) {
+            uint row = row_base + r;
+            if (row < N) {
+                uchar b = w_packed[row * K_packed + idx];
+                float w_0 = float(int(b & 1u) - int((b >> 1) & 1u));
+                float w_1 = float(int((b >> 2) & 1u) - int((b >> 3) & 1u));
+                float w_2 = float(int((b >> 4) & 1u) - int((b >> 5) & 1u));
+                float w_3 = float(int((b >> 6) & 1u) - int((b >> 7) & 1u));
+
+                float sc = float(scales[row * K_groups + g]);
+                for (uint m = 0; m < actual_M; ++m) {
+                    float4 fx = s_x[m][lane16];
+                    float p = fma(fx.x, w_0, fma(fx.y, w_1, fma(fx.z, w_2, fx.w * w_3)));
+                    acc[m][r] = fma(p, sc, acc[m][r]);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    #pragma unroll
+    for (uint m = 0; m < 8; ++m) {
+        if (m < actual_M) {
+            for (uint r = 0; r < 4; ++r) {
+                acc[m][r] += simd_shuffle_xor(acc[m][r], 8u);
+                acc[m][r] += simd_shuffle_xor(acc[m][r], 4u);
+                acc[m][r] += simd_shuffle_xor(acc[m][r], 2u);
+                acc[m][r] += simd_shuffle_xor(acc[m][r], 1u);
+            }
+        }
+    }
+
+    if (lane16 == 0u) {
+        for (uint m = 0; m < actual_M; ++m) {
+            for (uint r = 0; r < 4; ++r) {
+                uint row = row_base + r;
+                if (row < N) {
+                    float b_val = (has_bias != 0u && bias != nullptr) ? float(bias[row]) : 0.0f;
+                    y[(m_base + m) * N + row] = half(acc[m][r] + b_val);
+                }
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 8C. Q2_K 2-Bit Quantized Matrix-Vector Multiply (M=1)
+// 2 bits per weight: values in {0, 1, 2, 3} mapped to scale * q + bias.
+// 4 weights packed per byte (0.25 B/weight). Group size G=64.
+// ----------------------------------------------------------------------------
+kernel void qmv_q2_k_half_kernel(
+    device const half *x [[buffer(0)]],
+    device const uchar *w_packed [[buffer(1)]],
+    device const half2 *scales_biases [[buffer(2)]],
+    device half *y [[buffer(3)]],
+    constant uint &K [[buffer(4)]],
+    constant uint &N [[buffer(5)]],
+    device const half *bias [[buffer(6)]],
+    constant uint &has_bias [[buffer(7)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]])
+{
+    uint sg_row_base = tgpig.x * 16u + (simd_group_id << 2);
+    if (sg_row_base >= N) return;
+
+    uint sub_id = (simd_group_id << 1) | (simd_lane_id >> 4);
+    uint lane16 = simd_lane_id & 15u;
+    uint row_base = tgpig.x * 16u + (sub_id << 1);
+
+    uint K_packed = K >> 2;       // K / 4 bytes per row
+    uint K_groups = K >> 6;       // K / 64 groups per row
+
+    bool valid0 = (row_base < N);
+    bool valid1 = (row_base + 1u < N);
+    float acc0 = 0.0f, acc1 = 0.0f;
+
+    device const uchar *w0 = w_packed + row_base * K_packed;
+    device const uchar *w1 = w0 + K_packed;
+    device const half2 *sb0 = scales_biases + row_base * K_groups;
+    device const half2 *sb1 = sb0 + K_groups;
+
+    for (uint g = 0; g < K_groups; ++g) {
+        uint idx = (g << 4) + lane16;
+        half4 x_vec = *(device const half4 *)(x + (idx << 2));
+        float4 fx = float4(x_vec);
+        float x_sum = (fx.x + fx.y) + (fx.z + fx.w);
+
+        if (valid0) {
+            uchar b0 = w0[idx];
+            float4 q0 = float4(float(b0 & 3u), float((b0 >> 2) & 3u), float((b0 >> 4) & 3u), float((b0 >> 6) & 3u));
+            half2 s0 = sb0[g];
+            acc0 = fma(dot(fx, q0), float(s0.x), fma(float(s0.y), x_sum, acc0));
+        }
+        if (valid1) {
+            uchar b1 = w1[idx];
+            float4 q1 = float4(float(b1 & 3u), float((b1 >> 2) & 3u), float((b1 >> 4) & 3u), float((b1 >> 6) & 3u));
+            half2 s1 = sb1[g];
+            acc1 = fma(dot(fx, q1), float(s1.x), fma(float(s1.y), x_sum, acc1));
+        }
+    }
+
+    acc0 += simd_shuffle_xor(acc0, 8u);
+    acc0 += simd_shuffle_xor(acc0, 4u);
+    acc0 += simd_shuffle_xor(acc0, 2u);
+    acc0 += simd_shuffle_xor(acc0, 1u);
+
+    acc1 += simd_shuffle_xor(acc1, 8u);
+    acc1 += simd_shuffle_xor(acc1, 4u);
+    acc1 += simd_shuffle_xor(acc1, 2u);
+    acc1 += simd_shuffle_xor(acc1, 1u);
+
+    if (lane16 == 0u) {
+        if (valid0) {
+            float b_val = (has_bias != 0u && bias != nullptr) ? float(bias[row_base]) : 0.0f;
+            y[row_base] = half(acc0 + b_val);
+        }
+        if (valid1) {
+            float b_val = (has_bias != 0u && bias != nullptr) ? float(bias[row_base + 1u]) : 0.0f;
+            y[row_base + 1u] = half(acc1 + b_val);
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 8D. Q2_K 2-Bit Batched Matrix-Vector Multiply (Tall-and-Skinny GEMM)
+// Evaluates M tokens (tiled by 8) against Q2_K affine 2-bit weights.
+// Cooperative SRAM x-tiling + fused scale/bias evaluation.
+// ----------------------------------------------------------------------------
+kernel void qmm_q2_k_half_kernel(
+    device const half *x [[buffer(0)]],
+    device const uchar *w_packed [[buffer(1)]],
+    device const half2 *scales_biases [[buffer(2)]],
+    device half *y [[buffer(3)]],
+    constant uint &M [[buffer(4)]],
+    constant uint &K [[buffer(5)]],
+    constant uint &N [[buffer(6)]],
+    device const half *bias [[buffer(7)]],
+    constant uint &has_bias [[buffer(8)]],
+    uint2 tgpig [[threadgroup_position_in_grid]],
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]])
+{
+    uint tg_row_base = tgpig.x * 32u;
+    uint m_base = tgpig.y * 8u;
+    if (tg_row_base >= N || m_base >= M) return;
+
+    uint tid = (simd_group_id << 5) | simd_lane_id; // 0..127
+    uint m_ld = tid >> 4;                           // 0..7
+    uint c_ld = tid & 15u;                          // 0..15
+
+    uint sub_id = (simd_group_id << 1) | (simd_lane_id >> 4); // 0..7
+    uint lane16 = simd_lane_id & 15u;                         // 0..15
+    uint row_base = tg_row_base + (sub_id << 2);
+
+    uint K_packed = K >> 2;
+    uint K_groups = K >> 6;
+    uint actual_M = min(M - m_base, 8u);
+
+    threadgroup float4 s_x[8][16];
+    threadgroup float s_xsum[8][16];
+
+    float acc[8][4] = {{0.0f}};
+
+    for (uint g = 0; g < K_groups; ++g) {
+        if (m_ld < actual_M) {
+            uint in_k = (g << 6) + (c_ld << 2);
+            device const half4 *x_ptr = (device const half4 *)(x + (m_base + m_ld) * K + in_k);
+            float4 fx = float4(*x_ptr);
+            s_x[m_ld][c_ld] = fx;
+            s_xsum[m_ld][c_ld] = (fx.x + fx.y) + (fx.z + fx.w);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        uint idx = (g << 4) + lane16;
+        for (uint r = 0; r < 4; ++r) {
+            uint row = row_base + r;
+            if (row < N) {
+                uchar b = w_packed[row * K_packed + idx];
+                float4 q = float4(float(b & 3u), float((b >> 2) & 3u), float((b >> 4) & 3u), float((b >> 6) & 3u));
+                half2 sb = scales_biases[row * K_groups + g];
+                float sc = float(sb.x);
+                float bi = float(sb.y);
+
+                for (uint m = 0; m < actual_M; ++m) {
+                    float4 fx = s_x[m][lane16];
+                    float x_sum = s_xsum[m][lane16];
+                    acc[m][r] = fma(dot(fx, q), sc, fma(bi, x_sum, acc[m][r]));
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    #pragma unroll
+    for (uint m = 0; m < 8; ++m) {
+        if (m < actual_M) {
+            for (uint r = 0; r < 4; ++r) {
+                acc[m][r] += simd_shuffle_xor(acc[m][r], 8u);
+                acc[m][r] += simd_shuffle_xor(acc[m][r], 4u);
+                acc[m][r] += simd_shuffle_xor(acc[m][r], 2u);
+                acc[m][r] += simd_shuffle_xor(acc[m][r], 1u);
+            }
+        }
+    }
+
+    if (lane16 == 0u) {
+        for (uint m = 0; m < actual_M; ++m) {
+            for (uint r = 0; r < 4; ++r) {
+                uint row = row_base + r;
+                if (row < N) {
+                    float b_val = (has_bias != 0u && bias != nullptr) ? float(bias[row]) : 0.0f;
+                    y[(m_base + m) * N + row] = half(acc[m][r] + b_val);
+                }
+            }
+        }
+    }
+}

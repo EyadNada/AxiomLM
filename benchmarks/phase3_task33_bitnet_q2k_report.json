@@ -1,0 +1,288 @@
+{
+  "benchmark_metadata": {
+    "device": "Apple Silicon MPS (Metal Performance Shaders)",
+    "hardware": "Apple M3 Pro",
+    "nominal_dram_bandwidth_gb_s": 150.0,
+    "timestamp": "2026-11-11T20:13:44Z"
+  },
+  "gemv_single_token_layer_benchmarks": [
+    {
+      "layer_name": "SmolLM2 Attn Proj",
+      "N": 576,
+      "K": 576,
+      "latency_us": {
+        "fp16": 26.57,
+        "q8": 20.54,
+        "q4_marlin": 15.04,
+        "q2_k": 24.41,
+        "bitnet_1_58b": 18.75
+      },
+      "bandwidth_gb_s": {
+        "fp16": 24.98,
+        "q8": 17.17,
+        "q4_marlin": 12.41,
+        "q2_k": 4.25,
+        "bitnet_1_58b": 4.98
+      },
+      "bandwidth_utilization_pct": 3.3,
+      "speedup_vs_fp16": 1.42,
+      "speedup_vs_q8": 1.1,
+      "speedup_vs_q4": 0.8,
+      "memory_footprint_mb": {
+        "fp16": 0.633,
+        "q8": 0.336,
+        "q4_marlin": 0.178,
+        "q2_k": 0.099,
+        "bitnet_1_58b": 0.089
+      }
+    },
+    {
+      "layer_name": "SmolLM2 MLP Gate/Up",
+      "N": 1536,
+      "K": 576,
+      "latency_us": {
+        "fp16": 21.28,
+        "q8": 9.87,
+        "q4_marlin": 9.32,
+        "q2_k": 14.77,
+        "bitnet_1_58b": 12.05
+      },
+      "bandwidth_gb_s": {
+        "fp16": 83.16,
+        "q8": 95.27,
+        "q4_marlin": 53.41,
+        "q2_k": 18.72,
+        "bitnet_1_58b": 20.65
+      },
+      "bandwidth_utilization_pct": 13.8,
+      "speedup_vs_fp16": 1.77,
+      "speedup_vs_q8": 0.82,
+      "speedup_vs_q4": 0.77,
+      "memory_footprint_mb": {
+        "fp16": 1.688,
+        "q8": 0.896,
+        "q4_marlin": 0.475,
+        "q2_k": 0.264,
+        "bitnet_1_58b": 0.237
+      }
+    },
+    {
+      "layer_name": "SmolLM2 MLP Down",
+      "N": 576,
+      "K": 1536,
+      "latency_us": {
+        "fp16": 20.38,
+        "q8": 17.62,
+        "q4_marlin": 9.26,
+        "q2_k": 14.37,
+        "bitnet_1_58b": 14.13
+      },
+      "bandwidth_gb_s": {
+        "fp16": 86.85,
+        "q8": 53.34,
+        "q4_marlin": 53.77,
+        "q2_k": 19.24,
+        "bitnet_1_58b": 17.61
+      },
+      "bandwidth_utilization_pct": 11.7,
+      "speedup_vs_fp16": 1.44,
+      "speedup_vs_q8": 1.25,
+      "speedup_vs_q4": 0.66,
+      "memory_footprint_mb": {
+        "fp16": 1.688,
+        "q8": 0.896,
+        "q4_marlin": 0.475,
+        "q2_k": 0.264,
+        "bitnet_1_58b": 0.237
+      }
+    },
+    {
+      "layer_name": "Llama-3.2-1B Attn Proj",
+      "N": 2048,
+      "K": 2048,
+      "latency_us": {
+        "fp16": 66.13,
+        "q8": 25.91,
+        "q4_marlin": 20.93,
+        "q2_k": 22.29,
+        "bitnet_1_58b": 26.76
+      },
+      "bandwidth_gb_s": {
+        "fp16": 126.84,
+        "q8": 172.01,
+        "q4_marlin": 112.72,
+        "q2_k": 58.82,
+        "bitnet_1_58b": 44.08
+      },
+      "bandwidth_utilization_pct": 29.4,
+      "speedup_vs_fp16": 2.47,
+      "speedup_vs_q8": 0.97,
+      "speedup_vs_q4": 0.78,
+      "memory_footprint_mb": {
+        "fp16": 8.0,
+        "q8": 4.25,
+        "q4_marlin": 2.25,
+        "q2_k": 1.25,
+        "bitnet_1_58b": 1.125
+      }
+    },
+    {
+      "layer_name": "Llama-3.2-1B MLP Gate/Up",
+      "N": 8192,
+      "K": 2048,
+      "latency_us": {
+        "fp16": 249.64,
+        "q8": 155.02,
+        "q4_marlin": 76.95,
+        "q2_k": 58.84,
+        "bitnet_1_58b": 73.65
+      },
+      "bandwidth_gb_s": {
+        "fp16": 134.41,
+        "q8": 114.99,
+        "q4_marlin": 122.64,
+        "q2_k": 89.11,
+        "bitnet_1_58b": 64.07
+      },
+      "bandwidth_utilization_pct": 42.7,
+      "speedup_vs_fp16": 3.39,
+      "speedup_vs_q8": 2.1,
+      "speedup_vs_q4": 1.04,
+      "memory_footprint_mb": {
+        "fp16": 32.0,
+        "q8": 17.0,
+        "q4_marlin": 9.0,
+        "q2_k": 5.0,
+        "bitnet_1_58b": 4.5
+      }
+    },
+    {
+      "layer_name": "Llama-3.2-1B MLP Down",
+      "N": 2048,
+      "K": 8192,
+      "latency_us": {
+        "fp16": 269.68,
+        "q8": 162.91,
+        "q4_marlin": 67.49,
+        "q2_k": 71.48,
+        "bitnet_1_58b": 91.95
+      },
+      "bandwidth_gb_s": {
+        "fp16": 124.42,
+        "q8": 109.42,
+        "q4_marlin": 139.83,
+        "q2_k": 73.35,
+        "bitnet_1_58b": 51.31
+      },
+      "bandwidth_utilization_pct": 34.2,
+      "speedup_vs_fp16": 2.93,
+      "speedup_vs_q8": 1.77,
+      "speedup_vs_q4": 0.73,
+      "memory_footprint_mb": {
+        "fp16": 32.0,
+        "q8": 17.0,
+        "q4_marlin": 9.0,
+        "q2_k": 5.0,
+        "bitnet_1_58b": 4.5
+      }
+    }
+  ],
+  "gemm_batched_scaling_benchmarks": [
+    {
+      "batch_size_M": 1,
+      "latency_us": {
+        "fp16": 67.74,
+        "q4_marlin": 20.39,
+        "q2_k": 19.98,
+        "bitnet_1_58b": 28.52
+      },
+      "speedup_vs_fp16": 2.38,
+      "speedup_vs_q4": 0.71,
+      "throughput_gflops": 294.13
+    },
+    {
+      "batch_size_M": 2,
+      "latency_us": {
+        "fp16": 62.64,
+        "q4_marlin": 39.33,
+        "q2_k": 57.76,
+        "bitnet_1_58b": 61.54
+      },
+      "speedup_vs_fp16": 1.02,
+      "speedup_vs_q4": 0.64,
+      "throughput_gflops": 272.64
+    },
+    {
+      "batch_size_M": 4,
+      "latency_us": {
+        "fp16": 61.58,
+        "q4_marlin": 41.4,
+        "q2_k": 83.12,
+        "bitnet_1_58b": 94.9
+      },
+      "speedup_vs_fp16": 0.65,
+      "speedup_vs_q4": 0.44,
+      "throughput_gflops": 353.57
+    },
+    {
+      "batch_size_M": 8,
+      "latency_us": {
+        "fp16": 60.31,
+        "q4_marlin": 38.0,
+        "q2_k": 136.63,
+        "bitnet_1_58b": 150.18
+      },
+      "speedup_vs_fp16": 0.4,
+      "speedup_vs_q4": 0.25,
+      "throughput_gflops": 446.84
+    },
+    {
+      "batch_size_M": 16,
+      "latency_us": {
+        "fp16": 76.14,
+        "q4_marlin": 56.13,
+        "q2_k": 227.59,
+        "bitnet_1_58b": 284.01
+      },
+      "speedup_vs_fp16": 0.27,
+      "speedup_vs_q4": 0.2,
+      "throughput_gflops": 472.58
+    },
+    {
+      "batch_size_M": 32,
+      "latency_us": {
+        "fp16": 109.35,
+        "q4_marlin": 91.28,
+        "q2_k": 380.81,
+        "bitnet_1_58b": 472.86
+      },
+      "speedup_vs_fp16": 0.23,
+      "speedup_vs_q4": 0.19,
+      "throughput_gflops": 567.68
+    }
+  ],
+  "full_model_theoretical_limits_llama_3_2_1b": {
+    "parameters": 1235814400,
+    "model_size_gb": {
+      "fp16": 2.302,
+      "q8": 1.223,
+      "q4_marlin": 0.647,
+      "q2_k": 0.36,
+      "bitnet_1_58b": 0.324
+    },
+    "physical_dram_tok_s_limit": {
+      "fp16": 65.2,
+      "q8": 122.7,
+      "q4_marlin": 231.7,
+      "q2_k": 417.0,
+      "bitnet_1_58b": 463.4
+    },
+    "compression_factors_vs_fp16": {
+      "fp16": 1.0,
+      "q8": 1.88,
+      "q4_marlin": 3.56,
+      "q2_k": 6.4,
+      "bitnet_1_58b": 7.11
+    }
+  }
+}

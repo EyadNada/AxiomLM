@@ -87,6 +87,10 @@ static id<MTLComputePipelineState> gqa_tree_verify_split_kv_fp8_pso = nil;
 static id<MTLComputePipelineState> gqa_tree_verify_split_kv_int4_pso = nil;
 static id<MTLComputePipelineState> compact_tree_kv_fp8_pso = nil;
 static id<MTLComputePipelineState> compact_tree_kv_int4_pso = nil;
+static id<MTLComputePipelineState> qmv_ternary_half_pso = nil;
+static id<MTLComputePipelineState> qmm_ternary_half_pso = nil;
+static id<MTLComputePipelineState> qmv_q2_k_half_pso = nil;
+static id<MTLComputePipelineState> qmm_q2_k_half_pso = nil;
 static bool is_initialized = false;
 
 void init_mps(std::string metal_path) {
@@ -144,6 +148,10 @@ void init_mps(std::string metal_path) {
             gqa_tree_verify_split_kv_int4_pso = get_pipeline(mtl_device, mtl_library, @"gqa_tree_verify_split_kv_int4_kernel");
             compact_tree_kv_fp8_pso = get_pipeline(mtl_device, mtl_library, @"compact_tree_kv_fp8_kernel");
             compact_tree_kv_int4_pso = get_pipeline(mtl_device, mtl_library, @"compact_tree_kv_int4_kernel");
+            qmv_ternary_half_pso = get_pipeline(mtl_device, mtl_library, @"qmv_ternary_half_kernel");
+            qmm_ternary_half_pso = get_pipeline(mtl_device, mtl_library, @"qmm_ternary_half_kernel");
+            qmv_q2_k_half_pso = get_pipeline(mtl_device, mtl_library, @"qmv_q2_k_half_kernel");
+            qmm_q2_k_half_pso = get_pipeline(mtl_device, mtl_library, @"qmm_q2_k_half_kernel");
         }
         is_initialized = true;
     }
@@ -2159,6 +2167,138 @@ static inline void dispatch_qmm_q8_g64_into(
     [encoder dispatchThreadgroups:MTLSizeMake(num_tg, m_tiles, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
 }
 
+static inline void dispatch_qmv_ternary_into(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& x,
+    const torch::Tensor& w_packed,
+    const torch::Tensor& scales,
+    torch::Tensor& y,
+    const torch::Tensor& bias = torch::Tensor()) {
+    uint32_t K = x.size(-1);
+    uint32_t N = w_packed.size(0);
+    uint32_t has_bias = bias.defined() ? 1u : 0u;
+
+    [encoder setComputePipelineState:qmv_ternary_half_pso];
+    [encoder setBuffer:getMTLBufferStorage(x) offset:x.storage_offset() * x.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(w_packed) offset:w_packed.storage_offset() * w_packed.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(scales) offset:scales.storage_offset() * scales.element_size() atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(y) offset:y.storage_offset() * y.element_size() atIndex:3];
+    [encoder setBytes:&K length:sizeof(uint32_t) atIndex:4];
+    [encoder setBytes:&N length:sizeof(uint32_t) atIndex:5];
+    if (has_bias) {
+        [encoder setBuffer:getMTLBufferStorage(bias) offset:bias.storage_offset() * bias.element_size() atIndex:6];
+    } else {
+        [encoder setBuffer:getMTLBufferStorage(y) offset:y.storage_offset() * y.element_size() atIndex:6];
+    }
+    [encoder setBytes:&has_bias length:sizeof(uint32_t) atIndex:7];
+
+    uint32_t num_tg = (N + 15) / 16;
+    [encoder dispatchThreadgroups:MTLSizeMake(num_tg, 1, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+}
+
+static inline void dispatch_qmm_ternary_into(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& x,
+    const torch::Tensor& w_packed,
+    const torch::Tensor& scales,
+    torch::Tensor& y,
+    const torch::Tensor& bias = torch::Tensor()) {
+    uint32_t K = x.size(-1);
+    uint32_t M = x.numel() / K;
+    uint32_t N = w_packed.size(0);
+    uint32_t has_bias = bias.defined() ? 1u : 0u;
+
+    if (M == 1) {
+        dispatch_qmv_ternary_into(encoder, x, w_packed, scales, y, bias);
+        return;
+    }
+
+    [encoder setComputePipelineState:qmm_ternary_half_pso];
+    [encoder setBuffer:getMTLBufferStorage(x) offset:x.storage_offset() * x.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(w_packed) offset:w_packed.storage_offset() * w_packed.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(scales) offset:scales.storage_offset() * scales.element_size() atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(y) offset:y.storage_offset() * y.element_size() atIndex:3];
+    [encoder setBytes:&M length:sizeof(uint32_t) atIndex:4];
+    [encoder setBytes:&K length:sizeof(uint32_t) atIndex:5];
+    [encoder setBytes:&N length:sizeof(uint32_t) atIndex:6];
+    if (has_bias) {
+        [encoder setBuffer:getMTLBufferStorage(bias) offset:bias.storage_offset() * bias.element_size() atIndex:7];
+    } else {
+        [encoder setBuffer:getMTLBufferStorage(y) offset:y.storage_offset() * y.element_size() atIndex:7];
+    }
+    [encoder setBytes:&has_bias length:sizeof(uint32_t) atIndex:8];
+
+    uint32_t num_tg = (N + 31) / 32;
+    uint32_t m_tiles = (M + 7) / 8;
+    [encoder dispatchThreadgroups:MTLSizeMake(num_tg, m_tiles, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+}
+
+static inline void dispatch_qmv_q2_k_into(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& x,
+    const torch::Tensor& w_packed,
+    const torch::Tensor& scales_biases,
+    torch::Tensor& y,
+    const torch::Tensor& bias = torch::Tensor()) {
+    uint32_t K = x.size(-1);
+    uint32_t N = w_packed.size(0);
+    uint32_t has_bias = bias.defined() ? 1u : 0u;
+
+    [encoder setComputePipelineState:qmv_q2_k_half_pso];
+    [encoder setBuffer:getMTLBufferStorage(x) offset:x.storage_offset() * x.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(w_packed) offset:w_packed.storage_offset() * w_packed.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(scales_biases) offset:scales_biases.storage_offset() * scales_biases.element_size() atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(y) offset:y.storage_offset() * y.element_size() atIndex:3];
+    [encoder setBytes:&K length:sizeof(uint32_t) atIndex:4];
+    [encoder setBytes:&N length:sizeof(uint32_t) atIndex:5];
+    if (has_bias) {
+        [encoder setBuffer:getMTLBufferStorage(bias) offset:bias.storage_offset() * bias.element_size() atIndex:6];
+    } else {
+        [encoder setBuffer:getMTLBufferStorage(y) offset:y.storage_offset() * y.element_size() atIndex:6];
+    }
+    [encoder setBytes:&has_bias length:sizeof(uint32_t) atIndex:7];
+
+    uint32_t num_tg = (N + 15) / 16;
+    [encoder dispatchThreadgroups:MTLSizeMake(num_tg, 1, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+}
+
+static inline void dispatch_qmm_q2_k_into(
+    id<MTLComputeCommandEncoder> encoder,
+    const torch::Tensor& x,
+    const torch::Tensor& w_packed,
+    const torch::Tensor& scales_biases,
+    torch::Tensor& y,
+    const torch::Tensor& bias = torch::Tensor()) {
+    uint32_t K = x.size(-1);
+    uint32_t M = x.numel() / K;
+    uint32_t N = w_packed.size(0);
+    uint32_t has_bias = bias.defined() ? 1u : 0u;
+
+    if (M == 1) {
+        dispatch_qmv_q2_k_into(encoder, x, w_packed, scales_biases, y, bias);
+        return;
+    }
+
+    [encoder setComputePipelineState:qmm_q2_k_half_pso];
+    [encoder setBuffer:getMTLBufferStorage(x) offset:x.storage_offset() * x.element_size() atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(w_packed) offset:w_packed.storage_offset() * w_packed.element_size() atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(scales_biases) offset:scales_biases.storage_offset() * scales_biases.element_size() atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(y) offset:y.storage_offset() * y.element_size() atIndex:3];
+    [encoder setBytes:&M length:sizeof(uint32_t) atIndex:4];
+    [encoder setBytes:&K length:sizeof(uint32_t) atIndex:5];
+    [encoder setBytes:&N length:sizeof(uint32_t) atIndex:6];
+    if (has_bias) {
+        [encoder setBuffer:getMTLBufferStorage(bias) offset:bias.storage_offset() * bias.element_size() atIndex:7];
+    } else {
+        [encoder setBuffer:getMTLBufferStorage(y) offset:y.storage_offset() * y.element_size() atIndex:7];
+    }
+    [encoder setBytes:&has_bias length:sizeof(uint32_t) atIndex:8];
+
+    uint32_t num_tg = (N + 31) / 32;
+    uint32_t m_tiles = (M + 7) / 8;
+    [encoder dispatchThreadgroups:MTLSizeMake(num_tg, m_tiles, 1) threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+}
+
 struct DecodeGraphState {
     torch::Tensor wte_weight;
     torch::Tensor lm_head_weight;
@@ -3738,6 +3878,50 @@ torch::Tensor qmm_q8_g64_mps(torch::Tensor x, torch::Tensor w_packed, torch::Ten
     return y;
 }
 
+torch::Tensor qmv_ternary_mps(torch::Tensor x, torch::Tensor w_packed, torch::Tensor scales, c10::optional<torch::Tensor> bias = c10::nullopt) {
+    int64_t N = w_packed.size(0);
+    auto sizes = x.sizes().vec();
+    sizes.back() = N;
+    auto y = torch::empty(sizes, x.options());
+    auto stream = at::mps::getCurrentMPSStream();
+    torch::Tensor b_ten = (bias.has_value() && bias->defined()) ? *bias : torch::Tensor();
+    dispatch_qmv_ternary_into(stream->commandEncoder(), x, w_packed, scales, y, b_ten);
+    return y;
+}
+
+torch::Tensor qmm_ternary_mps(torch::Tensor x, torch::Tensor w_packed, torch::Tensor scales, c10::optional<torch::Tensor> bias = c10::nullopt) {
+    int64_t N = w_packed.size(0);
+    auto sizes = x.sizes().vec();
+    sizes.back() = N;
+    auto y = torch::empty(sizes, x.options());
+    auto stream = at::mps::getCurrentMPSStream();
+    torch::Tensor b_ten = (bias.has_value() && bias->defined()) ? *bias : torch::Tensor();
+    dispatch_qmm_ternary_into(stream->commandEncoder(), x, w_packed, scales, y, b_ten);
+    return y;
+}
+
+torch::Tensor qmv_q2_k_mps(torch::Tensor x, torch::Tensor w_packed, torch::Tensor scales_biases, c10::optional<torch::Tensor> bias = c10::nullopt) {
+    int64_t N = w_packed.size(0);
+    auto sizes = x.sizes().vec();
+    sizes.back() = N;
+    auto y = torch::empty(sizes, x.options());
+    auto stream = at::mps::getCurrentMPSStream();
+    torch::Tensor b_ten = (bias.has_value() && bias->defined()) ? *bias : torch::Tensor();
+    dispatch_qmv_q2_k_into(stream->commandEncoder(), x, w_packed, scales_biases, y, b_ten);
+    return y;
+}
+
+torch::Tensor qmm_q2_k_mps(torch::Tensor x, torch::Tensor w_packed, torch::Tensor scales_biases, c10::optional<torch::Tensor> bias = c10::nullopt) {
+    int64_t N = w_packed.size(0);
+    auto sizes = x.sizes().vec();
+    sizes.back() = N;
+    auto y = torch::empty(sizes, x.options());
+    auto stream = at::mps::getCurrentMPSStream();
+    torch::Tensor b_ten = (bias.has_value() && bias->defined()) ? *bias : torch::Tensor();
+    dispatch_qmm_q2_k_into(stream->commandEncoder(), x, w_packed, scales_biases, y, b_ten);
+    return y;
+}
+
 torch::Tensor qmv_q4_marlin_mps(
     torch::Tensor x,
     torch::Tensor w_marlin,
@@ -4426,4 +4610,28 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         pybind11::arg("write_pos"),
         pybind11::arg("accepted_indices"),
         pybind11::arg("cache_dtype") = "fp8");
+  m.def("qmv_ternary_mps", &qmv_ternary_mps,
+        "MPS BitNet 1.58-bit Ternary GEMV",
+        pybind11::arg("x"),
+        pybind11::arg("w_packed"),
+        pybind11::arg("scales"),
+        pybind11::arg("bias") = pybind11::none());
+  m.def("qmm_ternary_mps", &qmm_ternary_mps,
+        "MPS BitNet 1.58-bit Ternary Batched GEMM",
+        pybind11::arg("x"),
+        pybind11::arg("w_packed"),
+        pybind11::arg("scales"),
+        pybind11::arg("bias") = pybind11::none());
+  m.def("qmv_q2_k_mps", &qmv_q2_k_mps,
+        "MPS Q2_K 2-bit Quantized GEMV",
+        pybind11::arg("x"),
+        pybind11::arg("w_packed"),
+        pybind11::arg("scales_biases"),
+        pybind11::arg("bias") = pybind11::none());
+  m.def("qmm_q2_k_mps", &qmm_q2_k_mps,
+        "MPS Q2_K 2-bit Quantized Batched GEMM",
+        pybind11::arg("x"),
+        pybind11::arg("w_packed"),
+        pybind11::arg("scales_biases"),
+        pybind11::arg("bias") = pybind11::none());
 }

@@ -233,6 +233,217 @@ def qmm_q8_g64(
     return F.linear(x, w_dq)
 
 
+def pack_linear_ternary(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Packs a 2D weight matrix (N, K) where K is a multiple of 64 into:
+      w_packed: (N, K // 4) of dtype torch.uint8 (4 ternary weights per byte)
+      scales: (N, K // 64) of dtype torch.float16 (1 scale per group of 64)
+
+    Ternary encoding per 2 bits:
+      0b00 (0) -> 0
+      0b01 (1) -> +1
+      0b10 (2) -> -1
+    Reconstruction:
+      w = q * scale, where q in {-1, 0, +1}
+    Memory footprint: 0.28125 Bytes/weight (7.11x reduction vs FP16).
+    """
+    assert weight.ndim == 2, f"Expected 2D weight matrix, got shape {weight.shape}"
+    N, K = weight.shape
+    assert K % 64 == 0, f"K ({K}) must be an exact multiple of group size 64"
+
+    w_groups = weight.view(N, K // 64, 64)
+    # Absmean scale per group (BitNet 1.58b formulation)
+    scale = w_groups.abs().mean(dim=-1, keepdim=True).clamp(min=1e-5).to(torch.float16)
+    # Quantize to {-1, 0, +1}
+    q = torch.clamp(
+        torch.round(w_groups.float() / scale.float().clamp(min=1e-5)),
+        -1.0,
+        1.0,
+    ).to(torch.int8)
+
+    # Map: 0 -> 0, +1 -> 1, -1 -> 2
+    code = torch.where(q == 1, 1, torch.where(q == -1, 2, 0)).to(torch.uint8)
+
+    # Pack 4 ternary weights per byte
+    q_sub = code.view(N, K // 4, 4)
+    packed = (
+        (q_sub[..., 0])
+        | (q_sub[..., 1] << 2)
+        | (q_sub[..., 2] << 4)
+        | (q_sub[..., 3] << 6)
+    )
+
+    return packed.contiguous(), scale.squeeze(-1).contiguous()
+
+
+def dequantize_ternary(
+    w_packed: torch.Tensor, scales: torch.Tensor, K: int | None = None
+) -> torch.Tensor:
+    """Dequantizes BitNet 1.58b packed ternary representation back into FP16 (N, K) tensor."""
+    N = w_packed.shape[0]
+    if K is None:
+        K = w_packed.shape[1] * 4
+
+    b_int = w_packed.unsqueeze(-1).to(torch.int32)
+    w0 = (b_int & 1) - ((b_int >> 1) & 1)
+    w1 = ((b_int >> 2) & 1) - ((b_int >> 3) & 1)
+    w2 = ((b_int >> 4) & 1) - ((b_int >> 5) & 1)
+    w3 = ((b_int >> 6) & 1) - ((b_int >> 7) & 1)
+
+    q = torch.cat([w0, w1, w2, w3], dim=-1).view(N, K // 64, 64).to(dtype=scales.dtype)
+    w_recon = (q * scales.unsqueeze(-1)).view(N, K)
+    return w_recon.to(torch.float16)
+
+
+def qmv_ternary(
+    x: torch.Tensor,
+    w_packed: torch.Tensor,
+    scales: torch.Tensor,
+    bias: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Fast matrix-vector multiply y = x @ W^T (+ bias) with BitNet 1.58-bit ternary weights.
+    Dispatches to in-register multiplication-free Metal kernel on Apple Silicon GPU.
+    Automatically uses batched QMM kernel if M > 1 tokens are provided.
+    """
+    if x.device.type == "mps" and _METAL_MOD is not None:
+        K = x.size(-1)
+        M = x.numel() // K
+        if M > 1:
+            return _METAL_MOD.qmm_ternary_mps(x, w_packed, scales, bias)
+        return _METAL_MOD.qmv_ternary_mps(x, w_packed, scales, bias)
+
+    K = x.size(-1)
+    w_dq = dequantize_ternary(w_packed, scales, K).to(x.device)
+    return F.linear(x, w_dq, bias)
+
+
+def qmm_ternary(
+    x: torch.Tensor,
+    w_packed: torch.Tensor,
+    scales: torch.Tensor,
+    bias: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Batched matrix multiplication y = x @ W^T (+ bias) with BitNet 1.58-bit ternary weights.
+    Dispatches to cooperative threadgroup SRAM-tiled Metal kernel on Apple Silicon GPU.
+    """
+    if x.device.type == "mps" and _METAL_MOD is not None:
+        return _METAL_MOD.qmm_ternary_mps(x, w_packed, scales, bias)
+
+    K = x.size(-1)
+    w_dq = dequantize_ternary(w_packed, scales, K).to(x.device)
+    return F.linear(x, w_dq, bias)
+
+
+def pack_linear_q2_k(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Packs a 2D weight matrix (N, K) where K is a multiple of 64 into:
+      w_packed: (N, K // 4) of dtype torch.uint8 (4 2-bit weights per byte)
+      scales_biases: (N, K // 64, 2) of dtype torch.float16 (1 scale and 1 bias per group of 64)
+
+    Affine 2-bit quantization formula:
+      w ~= q * scale + bias, q in [0, 3]
+    Memory footprint: 0.3125 Bytes/weight (6.4x reduction vs FP16).
+    """
+    assert weight.ndim == 2, f"Expected 2D weight matrix, got shape {weight.shape}"
+    N, K = weight.shape
+    assert K % 64 == 0, f"K ({K}) must be an exact multiple of group size 64"
+
+    w_groups = weight.view(N, K // 64, 64)
+    w_min = w_groups.amin(dim=-1, keepdim=True)
+    w_max = w_groups.amax(dim=-1, keepdim=True)
+
+    denom = torch.clamp(w_max - w_min, min=1e-8)
+    scale = (denom / 3.0).to(torch.float16)
+    bias = w_min.to(torch.float16)
+
+    q = torch.clamp(
+        torch.round(
+            (w_groups.float() - bias.float()) / torch.clamp(scale.float(), min=1e-8)
+        ),
+        0.0,
+        3.0,
+    ).to(torch.uint8)
+
+    q_sub = q.view(N, K // 4, 4)
+    packed = (
+        (q_sub[..., 0] & 3)
+        | ((q_sub[..., 1] & 3) << 2)
+        | ((q_sub[..., 2] & 3) << 4)
+        | ((q_sub[..., 3] & 3) << 6)
+    )
+
+    scales_biases = torch.stack([scale.squeeze(-1), bias.squeeze(-1)], dim=-1)
+    return packed.contiguous(), scales_biases.contiguous()
+
+
+def dequantize_q2_k(
+    w_packed: torch.Tensor, scales_biases: torch.Tensor, K: int | None = None
+) -> torch.Tensor:
+    """Dequantizes Q2_K affine 2-bit packed representation back into FP16 (N, K) tensor."""
+    N = w_packed.shape[0]
+    if K is None:
+        K = w_packed.shape[1] * 4
+
+    b = w_packed.unsqueeze(-1).to(torch.int32)
+    q0 = b & 3
+    q1 = (b >> 2) & 3
+    q2 = (b >> 4) & 3
+    q3 = (b >> 6) & 3
+
+    q = (
+        torch.cat([q0, q1, q2, q3], dim=-1)
+        .view(N, K // 64, 64)
+        .to(dtype=scales_biases.dtype)
+    )
+    sc = scales_biases[..., 0:1]
+    bi = scales_biases[..., 1:2]
+    w_recon = (q * sc + bi).view(N, K)
+    return w_recon.to(torch.float16)
+
+
+def qmv_q2_k(
+    x: torch.Tensor,
+    w_packed: torch.Tensor,
+    scales_biases: torch.Tensor,
+    bias: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Fast matrix-vector multiply y = x @ W^T (+ bias) with Q2_K 2-bit weights.
+    Dispatches to in-register fused affine Metal kernel on Apple Silicon GPU.
+    Automatically uses batched QMM kernel if M > 1 tokens are provided.
+    """
+    if x.device.type == "mps" and _METAL_MOD is not None:
+        K = x.size(-1)
+        M = x.numel() // K
+        if M > 1:
+            return _METAL_MOD.qmm_q2_k_mps(x, w_packed, scales_biases, bias)
+        return _METAL_MOD.qmv_q2_k_mps(x, w_packed, scales_biases, bias)
+
+    K = x.size(-1)
+    w_dq = dequantize_q2_k(w_packed, scales_biases, K).to(x.device)
+    return F.linear(x, w_dq, bias)
+
+
+def qmm_q2_k(
+    x: torch.Tensor,
+    w_packed: torch.Tensor,
+    scales_biases: torch.Tensor,
+    bias: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Batched matrix multiplication y = x @ W^T (+ bias) with Q2_K 2-bit weights.
+    Dispatches to cooperative threadgroup SRAM-tiled Metal kernel on Apple Silicon GPU.
+    """
+    if x.device.type == "mps" and _METAL_MOD is not None:
+        return _METAL_MOD.qmm_q2_k_mps(x, w_packed, scales_biases, bias)
+
+    K = x.size(-1)
+    w_dq = dequantize_q2_k(w_packed, scales_biases, K).to(x.device)
+    return F.linear(x, w_dq, bias)
+
+
 def pack_linear_q4_marlin(
     weight: torch.Tensor,
     clip_search: bool = True,

@@ -306,9 +306,11 @@ class Transformer(nn.Module):
             "q4_rtn",
             "q4_legacy",
             "q8",
+            "q2_k",
+            "ternary",
         ], (
             f"Invalid quant mode: {mode}. Choose 'q4', 'q4_k_m', 'q4_rtn', "
-            f"'q4_legacy', 'q8', or None."
+            f"'q4_legacy', 'q8', 'q2_k', 'ternary', or None."
         )
         self._quant_mode = mode
         self._lm_head_q8 = lm_head_q8
@@ -821,9 +823,11 @@ class Transformer(nn.Module):
             return self._quant_weights_cache
 
         from ..kernels.quant import (
+            pack_linear_q2_k,
             pack_linear_q4_g64,
             pack_linear_q4_marlin,
             pack_linear_q8_g64,
+            pack_linear_ternary,
         )
 
         mode = self._quant_mode
@@ -843,6 +847,12 @@ class Transformer(nn.Module):
         ) -> tuple[torch.Tensor, torch.Tensor]:
             if force_q8 or mode == "q8":
                 p_t, s_t = pack_linear_q8_g64(w_ten.detach())
+                return p_t.to(device).clone(), s_t.to(device).clone()
+            if mode == "ternary":
+                p_t, s_t = pack_linear_ternary(w_ten.detach())
+                return p_t.to(device).clone(), s_t.to(device).clone()
+            if mode == "q2_k":
+                p_t, s_t = pack_linear_q2_k(w_ten.detach())
                 return p_t.to(device).clone(), s_t.to(device).clone()
             if mode == "q4_legacy":
                 p_t, s_t = pack_linear_q4_g64(w_ten.detach().cpu())
