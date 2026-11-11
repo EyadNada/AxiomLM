@@ -75,6 +75,12 @@ static id<MTLComputePipelineState> gqa_tree_verify_split_kv_pso = nil;
 static id<MTLComputePipelineState> gqa_tree_verify_reduce_pso = nil;
 static id<MTLComputePipelineState> compact_tree_kv_half_pso = nil;
 static id<MTLComputePipelineState> embed_q8_g64_gather_half_pso = nil;
+static id<MTLComputePipelineState> rope_kv_write_fp8_pso = nil;
+static id<MTLComputePipelineState> rope_kv_write_int4_pso = nil;
+static id<MTLComputePipelineState> rope_tree_kv_write_fp8_pso = nil;
+static id<MTLComputePipelineState> rope_tree_kv_write_int4_pso = nil;
+static id<MTLComputePipelineState> dequantize_kv_fp8_pso = nil;
+static id<MTLComputePipelineState> dequantize_kv_int4_pso = nil;
 static bool is_initialized = false;
 
 void init_mps(std::string metal_path) {
@@ -120,6 +126,12 @@ void init_mps(std::string metal_path) {
             gqa_tree_verify_reduce_pso = get_pipeline(mtl_device, mtl_library, @"gqa_tree_verify_reduce_half_kernel");
             compact_tree_kv_half_pso = get_pipeline(mtl_device, mtl_library, @"compact_tree_kv_half_kernel");
             embed_q8_g64_gather_half_pso = get_pipeline(mtl_device, mtl_library, @"embed_q8_g64_gather_half_kernel");
+            rope_kv_write_fp8_pso = get_pipeline(mtl_device, mtl_library, @"rope_kv_cache_write_fp8_kernel");
+            rope_kv_write_int4_pso = get_pipeline(mtl_device, mtl_library, @"rope_kv_cache_write_int4_kernel");
+            rope_tree_kv_write_fp8_pso = get_pipeline(mtl_device, mtl_library, @"rope_tree_kv_cache_write_fp8_kernel");
+            rope_tree_kv_write_int4_pso = get_pipeline(mtl_device, mtl_library, @"rope_tree_kv_cache_write_int4_kernel");
+            dequantize_kv_fp8_pso = get_pipeline(mtl_device, mtl_library, @"dequantize_kv_cache_fp8_kernel");
+            dequantize_kv_int4_pso = get_pipeline(mtl_device, mtl_library, @"dequantize_kv_cache_int4_kernel");
         }
         is_initialized = true;
     }
@@ -780,6 +792,328 @@ void rope_kv_cache_write_mps(
         max_seq_len,
         start_pos,
         (uint32_t)write_pos);
+}
+
+void rope_kv_cache_write_fp8_mps(
+    torch::Tensor qkv,
+    torch::Tensor freqs_cis,
+    torch::Tensor k_cache_fp8,
+    torch::Tensor v_cache_fp8,
+    torch::Tensor k_scales,
+    torch::Tensor v_scales,
+    int64_t q_dim,
+    int64_t kv_dim,
+    int64_t head_dim,
+    int64_t start_pos,
+    int64_t write_pos,
+    c10::optional<torch::Tensor> qkv_bias = c10::nullopt) {
+    uint32_t q_pairs = q_dim / 2;
+    uint32_t kv_pairs = kv_dim / 2;
+    uint32_t half_head_dim = head_dim / 2;
+    uint32_t max_seq_len = (k_cache_fp8.dim() == 4) ? (uint32_t)k_cache_fp8.size(2) : (uint32_t)k_cache_fp8.size(1);
+    uint32_t total_pairs = q_pairs + (kv_pairs << 1);
+
+    auto stream = at::mps::getCurrentMPSStream();
+    id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+    [encoder setComputePipelineState:rope_kv_write_fp8_pso];
+
+    NSUInteger qkv_offset = qkv.storage_offset() * qkv.element_size();
+    NSUInteger freqs_offset = (freqs_cis.storage_offset() + start_pos * half_head_dim * 2) * freqs_cis.element_size();
+    NSUInteger k_offset = k_cache_fp8.storage_offset() * k_cache_fp8.element_size();
+    NSUInteger v_offset = v_cache_fp8.storage_offset() * v_cache_fp8.element_size();
+    NSUInteger ks_offset = k_scales.storage_offset() * k_scales.element_size();
+    NSUInteger vs_offset = v_scales.storage_offset() * v_scales.element_size();
+
+    [encoder setBuffer:getMTLBufferStorage(qkv) offset:qkv_offset atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(freqs_cis) offset:freqs_offset atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(k_cache_fp8) offset:k_offset atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(v_cache_fp8) offset:v_offset atIndex:3];
+    [encoder setBuffer:getMTLBufferStorage(k_scales) offset:ks_offset atIndex:4];
+    [encoder setBuffer:getMTLBufferStorage(v_scales) offset:vs_offset atIndex:5];
+    [encoder setBytes:&q_pairs length:sizeof(uint32_t) atIndex:6];
+    [encoder setBytes:&kv_pairs length:sizeof(uint32_t) atIndex:7];
+    [encoder setBytes:&half_head_dim length:sizeof(uint32_t) atIndex:8];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:9];
+    uint32_t w_pos = (uint32_t)write_pos;
+    [encoder setBytes:&w_pos length:sizeof(uint32_t) atIndex:10];
+
+    torch::Tensor bias_t = qkv_bias.has_value() ? qkv_bias.value() : torch::Tensor();
+    uint32_t has_bias = bias_t.defined() ? 1u : 0u;
+    if (has_bias) {
+        [encoder setBuffer:getMTLBufferStorage(bias_t) offset:bias_t.storage_offset() * bias_t.element_size() atIndex:11];
+    } else {
+        [encoder setBuffer:getMTLBufferStorage(qkv) offset:qkv_offset atIndex:11];
+    }
+    [encoder setBytes:&has_bias length:sizeof(uint32_t) atIndex:12];
+
+    NSUInteger threadGroupSize = 256;
+    [encoder dispatchThreadgroups:MTLSizeMake((total_pairs + threadGroupSize - 1) / threadGroupSize, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(threadGroupSize, 1, 1)];
+}
+
+void rope_kv_cache_write_int4_mps(
+    torch::Tensor qkv,
+    torch::Tensor freqs_cis,
+    torch::Tensor k_cache_int4,
+    torch::Tensor v_cache_int4,
+    torch::Tensor k_scales,
+    torch::Tensor v_scales,
+    int64_t q_dim,
+    int64_t kv_dim,
+    int64_t head_dim,
+    int64_t start_pos,
+    int64_t write_pos,
+    c10::optional<torch::Tensor> qkv_bias = c10::nullopt) {
+    uint32_t q_pairs = q_dim / 2;
+    uint32_t kv_pairs = kv_dim / 2;
+    uint32_t half_head_dim = head_dim / 2;
+    uint32_t max_seq_len = (k_cache_int4.dim() == 4) ? (uint32_t)k_cache_int4.size(2) : (uint32_t)k_cache_int4.size(1);
+    uint32_t total_pairs = q_pairs + (kv_pairs << 1);
+
+    auto stream = at::mps::getCurrentMPSStream();
+    id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+    [encoder setComputePipelineState:rope_kv_write_int4_pso];
+
+    NSUInteger qkv_offset = qkv.storage_offset() * qkv.element_size();
+    NSUInteger freqs_offset = (freqs_cis.storage_offset() + start_pos * half_head_dim * 2) * freqs_cis.element_size();
+    NSUInteger k_offset = k_cache_int4.storage_offset() * k_cache_int4.element_size();
+    NSUInteger v_offset = v_cache_int4.storage_offset() * v_cache_int4.element_size();
+    NSUInteger ks_offset = k_scales.storage_offset() * k_scales.element_size();
+    NSUInteger vs_offset = v_scales.storage_offset() * v_scales.element_size();
+
+    [encoder setBuffer:getMTLBufferStorage(qkv) offset:qkv_offset atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(freqs_cis) offset:freqs_offset atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(k_cache_int4) offset:k_offset atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(v_cache_int4) offset:v_offset atIndex:3];
+    [encoder setBuffer:getMTLBufferStorage(k_scales) offset:ks_offset atIndex:4];
+    [encoder setBuffer:getMTLBufferStorage(v_scales) offset:vs_offset atIndex:5];
+    [encoder setBytes:&q_pairs length:sizeof(uint32_t) atIndex:6];
+    [encoder setBytes:&kv_pairs length:sizeof(uint32_t) atIndex:7];
+    [encoder setBytes:&half_head_dim length:sizeof(uint32_t) atIndex:8];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:9];
+    uint32_t w_pos = (uint32_t)write_pos;
+    [encoder setBytes:&w_pos length:sizeof(uint32_t) atIndex:10];
+
+    torch::Tensor bias_t = qkv_bias.has_value() ? qkv_bias.value() : torch::Tensor();
+    uint32_t has_bias = bias_t.defined() ? 1u : 0u;
+    if (has_bias) {
+        [encoder setBuffer:getMTLBufferStorage(bias_t) offset:bias_t.storage_offset() * bias_t.element_size() atIndex:11];
+    } else {
+        [encoder setBuffer:getMTLBufferStorage(qkv) offset:qkv_offset atIndex:11];
+    }
+    [encoder setBytes:&has_bias length:sizeof(uint32_t) atIndex:12];
+
+    NSUInteger threadGroupSize = 256;
+    [encoder dispatchThreadgroups:MTLSizeMake((total_pairs + threadGroupSize - 1) / threadGroupSize, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(threadGroupSize, 1, 1)];
+}
+
+torch::Tensor dequantize_kv_cache_fp8_mps(
+    torch::Tensor cache_fp8,
+    torch::Tensor scales,
+    int64_t n_kv_head,
+    int64_t seq_len,
+    int64_t head_dim) {
+    uint32_t half_head_dim = head_dim / 2;
+    bool is_4d = (cache_fp8.dim() == 4);
+    int64_t B = is_4d ? cache_fp8.size(0) : 1;
+    uint32_t total_elements = (uint32_t)(B * n_kv_head * seq_len * half_head_dim);
+    auto out = is_4d
+        ? torch::empty({B, n_kv_head, seq_len, head_dim}, torch::TensorOptions().dtype(torch::kHalf).device(cache_fp8.device()))
+        : torch::empty({n_kv_head, seq_len, head_dim}, torch::TensorOptions().dtype(torch::kHalf).device(cache_fp8.device()));
+
+    auto stream = at::mps::getCurrentMPSStream();
+    id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+    [encoder setComputePipelineState:dequantize_kv_fp8_pso];
+
+    NSUInteger c_offset = cache_fp8.storage_offset() * cache_fp8.element_size();
+    NSUInteger s_offset = scales.storage_offset() * scales.element_size();
+    NSUInteger out_offset = out.storage_offset() * out.element_size();
+
+    [encoder setBuffer:getMTLBufferStorage(cache_fp8) offset:c_offset atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(scales) offset:s_offset atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(out) offset:out_offset atIndex:2];
+    [encoder setBytes:&half_head_dim length:sizeof(uint32_t) atIndex:3];
+    uint32_t slen = (uint32_t)seq_len;
+    [encoder setBytes:&slen length:sizeof(uint32_t) atIndex:4];
+    [encoder setBytes:&total_elements length:sizeof(uint32_t) atIndex:5];
+
+    NSUInteger threadGroupSize = 256;
+    [encoder dispatchThreadgroups:MTLSizeMake((total_elements + threadGroupSize - 1) / threadGroupSize, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(threadGroupSize, 1, 1)];
+
+    return out;
+}
+
+torch::Tensor dequantize_kv_cache_int4_mps(
+    torch::Tensor cache_int4,
+    torch::Tensor scales,
+    int64_t n_kv_head,
+    int64_t seq_len,
+    int64_t head_dim) {
+    uint32_t half_head_dim = head_dim / 2;
+    bool is_4d = (cache_int4.dim() == 4);
+    int64_t B = is_4d ? cache_int4.size(0) : 1;
+    uint32_t total_elements = (uint32_t)(B * n_kv_head * seq_len * half_head_dim);
+    auto out = is_4d
+        ? torch::empty({B, n_kv_head, seq_len, head_dim}, torch::TensorOptions().dtype(torch::kHalf).device(cache_int4.device()))
+        : torch::empty({n_kv_head, seq_len, head_dim}, torch::TensorOptions().dtype(torch::kHalf).device(cache_int4.device()));
+
+    auto stream = at::mps::getCurrentMPSStream();
+    id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+    [encoder setComputePipelineState:dequantize_kv_int4_pso];
+
+    NSUInteger c_offset = cache_int4.storage_offset() * cache_int4.element_size();
+    NSUInteger s_offset = scales.storage_offset() * scales.element_size();
+    NSUInteger out_offset = out.storage_offset() * out.element_size();
+
+    [encoder setBuffer:getMTLBufferStorage(cache_int4) offset:c_offset atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(scales) offset:s_offset atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(out) offset:out_offset atIndex:2];
+    [encoder setBytes:&half_head_dim length:sizeof(uint32_t) atIndex:3];
+    uint32_t slen = (uint32_t)seq_len;
+    [encoder setBytes:&slen length:sizeof(uint32_t) atIndex:4];
+    [encoder setBytes:&total_elements length:sizeof(uint32_t) atIndex:5];
+
+    NSUInteger threadGroupSize = 256;
+    [encoder dispatchThreadgroups:MTLSizeMake((total_elements + threadGroupSize - 1) / threadGroupSize, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(threadGroupSize, 1, 1)];
+
+    return out;
+}
+
+void rope_tree_kv_write_fp8_mps(
+    torch::Tensor qkv,
+    torch::Tensor freqs_cis,
+    torch::Tensor k_cache_fp8,
+    torch::Tensor v_cache_fp8,
+    torch::Tensor k_scales,
+    torch::Tensor v_scales,
+    torch::Tensor tree_depths,
+    int64_t q_dim,
+    int64_t kv_dim,
+    int64_t head_dim,
+    int64_t start_pos,
+    int64_t write_pos,
+    int64_t T,
+    c10::optional<torch::Tensor> qkv_bias = c10::nullopt) {
+    uint32_t q_pairs = q_dim / 2;
+    uint32_t kv_pairs = kv_dim / 2;
+    uint32_t half_head_dim = head_dim / 2;
+    uint32_t max_seq_len = k_cache_fp8.size(2);
+    uint32_t total_pairs = q_pairs + (kv_pairs << 1);
+    uint32_t max_rope_len = (uint32_t)freqs_cis.size(0);
+
+    auto stream = at::mps::getCurrentMPSStream();
+    id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+    [encoder setComputePipelineState:rope_tree_kv_write_fp8_pso];
+
+    NSUInteger qkv_offset = qkv.storage_offset() * qkv.element_size();
+    NSUInteger freqs_offset = freqs_cis.storage_offset() * freqs_cis.element_size();
+    NSUInteger k_offset = k_cache_fp8.storage_offset() * k_cache_fp8.element_size();
+    NSUInteger v_offset = v_cache_fp8.storage_offset() * v_cache_fp8.element_size();
+    NSUInteger ks_offset = k_scales.storage_offset() * k_scales.element_size();
+    NSUInteger vs_offset = v_scales.storage_offset() * v_scales.element_size();
+    NSUInteger depths_offset = tree_depths.storage_offset() * tree_depths.element_size();
+
+    [encoder setBuffer:getMTLBufferStorage(qkv) offset:qkv_offset atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(freqs_cis) offset:freqs_offset atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(k_cache_fp8) offset:k_offset atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(v_cache_fp8) offset:v_offset atIndex:3];
+    [encoder setBuffer:getMTLBufferStorage(k_scales) offset:ks_offset atIndex:4];
+    [encoder setBuffer:getMTLBufferStorage(v_scales) offset:vs_offset atIndex:5];
+    [encoder setBuffer:getMTLBufferStorage(tree_depths) offset:depths_offset atIndex:6];
+    [encoder setBytes:&q_pairs length:sizeof(uint32_t) atIndex:7];
+    [encoder setBytes:&kv_pairs length:sizeof(uint32_t) atIndex:8];
+    [encoder setBytes:&half_head_dim length:sizeof(uint32_t) atIndex:9];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:10];
+    [encoder setBytes:&max_rope_len length:sizeof(uint32_t) atIndex:11];
+    uint32_t s_pos = (uint32_t)start_pos;
+    uint32_t w_pos = (uint32_t)write_pos;
+    uint32_t t_cnt = (uint32_t)T;
+    [encoder setBytes:&s_pos length:sizeof(uint32_t) atIndex:12];
+    [encoder setBytes:&w_pos length:sizeof(uint32_t) atIndex:13];
+    [encoder setBytes:&t_cnt length:sizeof(uint32_t) atIndex:14];
+
+    torch::Tensor bias_t = qkv_bias.has_value() ? qkv_bias.value() : torch::Tensor();
+    uint32_t has_bias = bias_t.defined() ? 1u : 0u;
+    if (has_bias) {
+        [encoder setBuffer:getMTLBufferStorage(bias_t) offset:bias_t.storage_offset() * bias_t.element_size() atIndex:15];
+    } else {
+        [encoder setBuffer:getMTLBufferStorage(qkv) offset:qkv_offset atIndex:15];
+    }
+    [encoder setBytes:&has_bias length:sizeof(uint32_t) atIndex:16];
+
+    NSUInteger threadGroupSize = 256;
+    [encoder dispatchThreadgroups:MTLSizeMake((total_pairs + threadGroupSize - 1) / threadGroupSize, T, 1)
+            threadsPerThreadgroup:MTLSizeMake(threadGroupSize, 1, 1)];
+}
+
+void rope_tree_kv_write_int4_mps(
+    torch::Tensor qkv,
+    torch::Tensor freqs_cis,
+    torch::Tensor k_cache_int4,
+    torch::Tensor v_cache_int4,
+    torch::Tensor k_scales,
+    torch::Tensor v_scales,
+    torch::Tensor tree_depths,
+    int64_t q_dim,
+    int64_t kv_dim,
+    int64_t head_dim,
+    int64_t start_pos,
+    int64_t write_pos,
+    int64_t T,
+    c10::optional<torch::Tensor> qkv_bias = c10::nullopt) {
+    uint32_t q_pairs = q_dim / 2;
+    uint32_t kv_pairs = kv_dim / 2;
+    uint32_t half_head_dim = head_dim / 2;
+    uint32_t max_seq_len = k_cache_int4.size(2);
+    uint32_t total_pairs = q_pairs + (kv_pairs << 1);
+    uint32_t max_rope_len = (uint32_t)freqs_cis.size(0);
+
+    auto stream = at::mps::getCurrentMPSStream();
+    id<MTLComputeCommandEncoder> encoder = stream->commandEncoder();
+    [encoder setComputePipelineState:rope_tree_kv_write_int4_pso];
+
+    NSUInteger qkv_offset = qkv.storage_offset() * qkv.element_size();
+    NSUInteger freqs_offset = freqs_cis.storage_offset() * freqs_cis.element_size();
+    NSUInteger k_offset = k_cache_int4.storage_offset() * k_cache_int4.element_size();
+    NSUInteger v_offset = v_cache_int4.storage_offset() * v_cache_int4.element_size();
+    NSUInteger ks_offset = k_scales.storage_offset() * k_scales.element_size();
+    NSUInteger vs_offset = v_scales.storage_offset() * v_scales.element_size();
+    NSUInteger depths_offset = tree_depths.storage_offset() * tree_depths.element_size();
+
+    [encoder setBuffer:getMTLBufferStorage(qkv) offset:qkv_offset atIndex:0];
+    [encoder setBuffer:getMTLBufferStorage(freqs_cis) offset:freqs_offset atIndex:1];
+    [encoder setBuffer:getMTLBufferStorage(k_cache_int4) offset:k_offset atIndex:2];
+    [encoder setBuffer:getMTLBufferStorage(v_cache_int4) offset:v_offset atIndex:3];
+    [encoder setBuffer:getMTLBufferStorage(k_scales) offset:ks_offset atIndex:4];
+    [encoder setBuffer:getMTLBufferStorage(v_scales) offset:vs_offset atIndex:5];
+    [encoder setBuffer:getMTLBufferStorage(tree_depths) offset:depths_offset atIndex:6];
+    [encoder setBytes:&q_pairs length:sizeof(uint32_t) atIndex:7];
+    [encoder setBytes:&kv_pairs length:sizeof(uint32_t) atIndex:8];
+    [encoder setBytes:&half_head_dim length:sizeof(uint32_t) atIndex:9];
+    [encoder setBytes:&max_seq_len length:sizeof(uint32_t) atIndex:10];
+    [encoder setBytes:&max_rope_len length:sizeof(uint32_t) atIndex:11];
+    uint32_t s_pos = (uint32_t)start_pos;
+    uint32_t w_pos = (uint32_t)write_pos;
+    uint32_t t_cnt = (uint32_t)T;
+    [encoder setBytes:&s_pos length:sizeof(uint32_t) atIndex:12];
+    [encoder setBytes:&w_pos length:sizeof(uint32_t) atIndex:13];
+    [encoder setBytes:&t_cnt length:sizeof(uint32_t) atIndex:14];
+
+    torch::Tensor bias_t = qkv_bias.has_value() ? qkv_bias.value() : torch::Tensor();
+    uint32_t has_bias = bias_t.defined() ? 1u : 0u;
+    if (has_bias) {
+        [encoder setBuffer:getMTLBufferStorage(bias_t) offset:bias_t.storage_offset() * bias_t.element_size() atIndex:15];
+    } else {
+        [encoder setBuffer:getMTLBufferStorage(qkv) offset:qkv_offset atIndex:15];
+    }
+    [encoder setBytes:&has_bias length:sizeof(uint32_t) atIndex:16];
+
+    NSUInteger threadGroupSize = 256;
+    [encoder dispatchThreadgroups:MTLSizeMake((total_pairs + threadGroupSize - 1) / threadGroupSize, T, 1)
+            threadsPerThreadgroup:MTLSizeMake(threadGroupSize, 1, 1)];
 }
 
 torch::Tensor transformer_decode_step_mps(
@@ -3312,4 +3646,78 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         pybind11::arg("num_splits") = 0);
   m.def("compact_tree_kv_mps", &compact_tree_kv_mps,
         "MPS In-Place Topological KV-Cache Compaction");
+  m.def("rope_kv_cache_write_fp8_mps", &rope_kv_cache_write_fp8_mps,
+        "MPS In-Flight FP8 KV Cache Direct Write",
+        pybind11::arg("qkv"),
+        pybind11::arg("freqs_cis"),
+        pybind11::arg("k_cache_fp8"),
+        pybind11::arg("v_cache_fp8"),
+        pybind11::arg("k_scales"),
+        pybind11::arg("v_scales"),
+        pybind11::arg("q_dim"),
+        pybind11::arg("kv_dim"),
+        pybind11::arg("head_dim"),
+        pybind11::arg("start_pos"),
+        pybind11::arg("write_pos"),
+        pybind11::arg("qkv_bias") = pybind11::none());
+  m.def("rope_kv_cache_write_int4_mps", &rope_kv_cache_write_int4_mps,
+        "MPS In-Flight INT4 KV Cache Direct Write",
+        pybind11::arg("qkv"),
+        pybind11::arg("freqs_cis"),
+        pybind11::arg("k_cache_int4"),
+        pybind11::arg("v_cache_int4"),
+        pybind11::arg("k_scales"),
+        pybind11::arg("v_scales"),
+        pybind11::arg("q_dim"),
+        pybind11::arg("kv_dim"),
+        pybind11::arg("head_dim"),
+        pybind11::arg("start_pos"),
+        pybind11::arg("write_pos"),
+        pybind11::arg("qkv_bias") = pybind11::none());
+  m.def("dequantize_kv_cache_fp8_mps", &dequantize_kv_cache_fp8_mps,
+        "MPS FP8 KV Cache Dequantization",
+        pybind11::arg("cache_fp8"),
+        pybind11::arg("scales"),
+        pybind11::arg("n_kv_head"),
+        pybind11::arg("seq_len"),
+        pybind11::arg("head_dim"));
+  m.def("dequantize_kv_cache_int4_mps", &dequantize_kv_cache_int4_mps,
+        "MPS INT4 KV Cache Dequantization",
+        pybind11::arg("cache_int4"),
+        pybind11::arg("scales"),
+        pybind11::arg("n_kv_head"),
+        pybind11::arg("seq_len"),
+        pybind11::arg("head_dim"));
+  m.def("rope_tree_kv_write_fp8_mps", &rope_tree_kv_write_fp8_mps,
+        "MPS In-Flight FP8 Tree Speculative KV Cache Write",
+        pybind11::arg("qkv"),
+        pybind11::arg("freqs_cis"),
+        pybind11::arg("k_cache_fp8"),
+        pybind11::arg("v_cache_fp8"),
+        pybind11::arg("k_scales"),
+        pybind11::arg("v_scales"),
+        pybind11::arg("tree_depths"),
+        pybind11::arg("q_dim"),
+        pybind11::arg("kv_dim"),
+        pybind11::arg("head_dim"),
+        pybind11::arg("start_pos"),
+        pybind11::arg("write_pos"),
+        pybind11::arg("T"),
+        pybind11::arg("qkv_bias") = pybind11::none());
+  m.def("rope_tree_kv_write_int4_mps", &rope_tree_kv_write_int4_mps,
+        "MPS In-Flight INT4 Tree Speculative KV Cache Write",
+        pybind11::arg("qkv"),
+        pybind11::arg("freqs_cis"),
+        pybind11::arg("k_cache_int4"),
+        pybind11::arg("v_cache_int4"),
+        pybind11::arg("k_scales"),
+        pybind11::arg("v_scales"),
+        pybind11::arg("tree_depths"),
+        pybind11::arg("q_dim"),
+        pybind11::arg("kv_dim"),
+        pybind11::arg("head_dim"),
+        pybind11::arg("start_pos"),
+        pybind11::arg("write_pos"),
+        pybind11::arg("T"),
+        pybind11::arg("qkv_bias") = pybind11::none());
 }

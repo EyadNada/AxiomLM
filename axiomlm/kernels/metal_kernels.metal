@@ -1030,6 +1030,496 @@ kernel void rope_kv_cache_write_half_kernel(
 }
 
 // ----------------------------------------------------------------------------
+// Phase 3 Task 3.1: In-Flight FP8 & INT4 KV-Cache Quantization
+// ----------------------------------------------------------------------------
+
+// Converts float to 8-bit float (OCP FP8 E4M3FN: 1 sign, 4 exp, 3 mantissa, max finite 448.0)
+inline uchar float_to_fp8_e4m3fn(float val) {
+    uint u = as_type<uint>(val);
+    uint sign = (u >> 24) & 0x80u;
+    uint abs_u = u & 0x7FFFFFFFu;
+    float abs_val = as_type<float>(abs_u);
+
+    if (abs_val >= 448.0f) {
+        return (uchar)(sign | 0x7Eu);
+    }
+    if (abs_val < 0.0009765625f) {
+        return (uchar)(sign);
+    }
+    if (abs_val < 0.015625f) {
+        uint mant = (uint)(abs_val * 512.0f + 0.5f);
+        return (uchar)(sign | min(mant, 7u));
+    }
+    int exp = ((int)(abs_u >> 23)) - 120; // 127 - 7
+    if (exp > 15) {
+        return (uchar)(sign | 0x7Eu);
+    }
+    uint mant = (abs_u >> 20) & 7u;
+    uint round_bit = (abs_u >> 19) & 1u;
+    uint sticky = abs_u & 0x7FFFFu;
+    if (round_bit && (sticky || (mant & 1u))) {
+        mant++;
+        if (mant == 8u) {
+            mant = 0u;
+            exp++;
+            if (exp > 15) return (uchar)(sign | 0x7Eu);
+        }
+    }
+    if (exp == 15 && mant > 6u) {
+        mant = 6u;
+    }
+    return (uchar)(sign | ((uint)exp << 3) | mant);
+}
+
+// Converts 8-bit float (OCP FP8 E4M3FN) to half float
+inline half decode_fp8_e4m3fn(uchar b) {
+    half sign = (b & 0x80u) ? -1.0h : 1.0h;
+    uint exp = (b >> 3) & 0x0Fu;
+    uint mant = b & 0x07u;
+    if (exp == 0u) {
+        return sign * (half(mant) * (1.0h / 8.0h)) * 0.015625h; // 2^-6
+    } else if (exp == 15u && mant == 7u) {
+        return 0.0h;
+    } else {
+        float fval = (1.0f + float(mant) * 0.125f) * ldexp(1.0f, int(exp) - 7);
+        return sign * half(fval);
+    }
+}
+
+// Packs a pair of half values into a single unsigned char with symmetric signed 4-bit [-8, 7]
+inline uchar quant_pack_int4_pair(half2 val, half inv_scale) {
+    float v0 = float(val.x) * float(inv_scale);
+    float v1 = float(val.y) * float(inv_scale);
+    int q0 = clamp(int(round(v0)), -8, 7);
+    int q1 = clamp(int(round(v1)), -8, 7);
+    return (uchar)((q0 & 0x0Fu) | ((q1 & 0x0Fu) << 4));
+}
+
+// Unpacks an unsigned char containing 2 signed 4-bit values back to half2
+inline half2 dequant_int4_packed(uchar packed, half scale) {
+    int q0 = int((packed & 0x0Fu) ^ 0x08u) - 8;
+    int q1 = int(((packed >> 4) & 0x0Fu) ^ 0x08u) - 8;
+    return half2(half(q0) * scale, half(q1) * scale);
+}
+
+// In-Flight FP8 KV-Cache Direct Write Kernel (single token decode)
+kernel void rope_kv_cache_write_fp8_kernel(
+    device half2 *qkv [[buffer(0)]],
+    device const float2 *freqs_cis [[buffer(1)]],
+    device uchar2 *k_cache [[buffer(2)]],
+    device uchar2 *v_cache [[buffer(3)]],
+    device half *k_scales [[buffer(4)]],
+    device half *v_scales [[buffer(5)]],
+    constant uint &q_pairs [[buffer(6)]],
+    constant uint &kv_pairs [[buffer(7)]],
+    constant uint &half_head_dim [[buffer(8)]],
+    constant uint &max_seq_len [[buffer(9)]],
+    constant uint &write_pos [[buffer(10)]],
+    device const half2 *qkv_bias [[buffer(11)]],
+    constant uint &has_bias [[buffer(12)]],
+    uint tid [[thread_position_in_grid]]) {
+    uint total_pairs = q_pairs + (kv_pairs << 1);
+    if (tid >= total_pairs) return;
+
+    half2 raw_val = qkv[tid];
+    if (has_bias != 0u) {
+        raw_val += qkv_bias[tid];
+    }
+
+    uint hd_idx = tid % half_head_dim;
+    if (tid < q_pairs) {
+        float2 x_val = float2(raw_val);
+        float2 f_val = freqs_cis[hd_idx];
+        float2 res;
+        res.x = fma(x_val.x, f_val.x, -x_val.y * f_val.y);
+        res.y = fma(x_val.x, f_val.y, x_val.y * f_val.x);
+        qkv[tid] = half2(res);
+    } else if (tid < q_pairs + kv_pairs) {
+        uint k_tid = tid - q_pairs;
+        uint kv_head = k_tid / half_head_dim;
+        float2 x_val = float2(raw_val);
+        float2 f_val = freqs_cis[hd_idx];
+        float2 res;
+        res.x = fma(x_val.x, f_val.x, -x_val.y * f_val.y);
+        res.y = fma(x_val.x, f_val.y, x_val.y * f_val.x);
+        half2 res_h = half2(res);
+
+        uint num_groups = max(1u, half_head_dim / 32u);
+        uint group_idx = min(hd_idx / 32u, num_groups - 1u);
+        uint lane_id = tid % 32u;
+        float local_max = max(abs(float(res_h.x)), abs(float(res_h.y)));
+        float group_max = simd_max(local_max);
+        half scale = half(group_max / 448.0f);
+        if (scale < 1e-8h) scale = 1.0h;
+        half inv_scale = 1.0h / scale;
+
+        uint scale_idx = (kv_head * max_seq_len + write_pos) * num_groups + group_idx;
+        if (lane_id == 0u) {
+            k_scales[scale_idx] = scale;
+        }
+
+        uchar2 packed = uchar2(
+            float_to_fp8_e4m3fn(float(res_h.x) * float(inv_scale)),
+            float_to_fp8_e4m3fn(float(res_h.y) * float(inv_scale))
+        );
+        uint dst_idx = (kv_head * max_seq_len + write_pos) * half_head_dim + hd_idx;
+        k_cache[dst_idx] = packed;
+    } else {
+        uint v_tid = tid - (q_pairs + kv_pairs);
+        uint kv_head = v_tid / half_head_dim;
+
+        uint num_groups = max(1u, half_head_dim / 32u);
+        uint group_idx = min(hd_idx / 32u, num_groups - 1u);
+        uint lane_id = tid % 32u;
+        float local_max = max(abs(float(raw_val.x)), abs(float(raw_val.y)));
+        float group_max = simd_max(local_max);
+        half scale = half(group_max / 448.0f);
+        if (scale < 1e-8h) scale = 1.0h;
+        half inv_scale = 1.0h / scale;
+
+        uint scale_idx = (kv_head * max_seq_len + write_pos) * num_groups + group_idx;
+        if (lane_id == 0u) {
+            v_scales[scale_idx] = scale;
+        }
+
+        uchar2 packed = uchar2(
+            float_to_fp8_e4m3fn(float(raw_val.x) * float(inv_scale)),
+            float_to_fp8_e4m3fn(float(raw_val.y) * float(inv_scale))
+        );
+        uint dst_idx = (kv_head * max_seq_len + write_pos) * half_head_dim + hd_idx;
+        v_cache[dst_idx] = packed;
+    }
+}
+
+// In-Flight INT4 KV-Cache Direct Write Kernel (single token decode)
+kernel void rope_kv_cache_write_int4_kernel(
+    device half2 *qkv [[buffer(0)]],
+    device const float2 *freqs_cis [[buffer(1)]],
+    device uchar *k_cache [[buffer(2)]],
+    device uchar *v_cache [[buffer(3)]],
+    device half *k_scales [[buffer(4)]],
+    device half *v_scales [[buffer(5)]],
+    constant uint &q_pairs [[buffer(6)]],
+    constant uint &kv_pairs [[buffer(7)]],
+    constant uint &half_head_dim [[buffer(8)]],
+    constant uint &max_seq_len [[buffer(9)]],
+    constant uint &write_pos [[buffer(10)]],
+    device const half2 *qkv_bias [[buffer(11)]],
+    constant uint &has_bias [[buffer(12)]],
+    uint tid [[thread_position_in_grid]]) {
+    uint total_pairs = q_pairs + (kv_pairs << 1);
+    if (tid >= total_pairs) return;
+
+    half2 raw_val = qkv[tid];
+    if (has_bias != 0u) {
+        raw_val += qkv_bias[tid];
+    }
+
+    uint hd_idx = tid % half_head_dim;
+    if (tid < q_pairs) {
+        float2 x_val = float2(raw_val);
+        float2 f_val = freqs_cis[hd_idx];
+        float2 res;
+        res.x = fma(x_val.x, f_val.x, -x_val.y * f_val.y);
+        res.y = fma(x_val.x, f_val.y, x_val.y * f_val.x);
+        qkv[tid] = half2(res);
+    } else if (tid < q_pairs + kv_pairs) {
+        uint k_tid = tid - q_pairs;
+        uint kv_head = k_tid / half_head_dim;
+        float2 x_val = float2(raw_val);
+        float2 f_val = freqs_cis[hd_idx];
+        float2 res;
+        res.x = fma(x_val.x, f_val.x, -x_val.y * f_val.y);
+        res.y = fma(x_val.x, f_val.y, x_val.y * f_val.x);
+        half2 res_h = half2(res);
+
+        uint num_groups = max(1u, half_head_dim / 32u);
+        uint group_idx = min(hd_idx / 32u, num_groups - 1u);
+        uint lane_id = tid % 32u;
+        float local_max = max(abs(float(res_h.x)), abs(float(res_h.y)));
+        float group_max = simd_max(local_max);
+        half scale = half(group_max / 7.0f);
+        if (scale < 1e-8h) scale = 1.0h;
+        half inv_scale = 1.0h / scale;
+
+        uint scale_idx = (kv_head * max_seq_len + write_pos) * num_groups + group_idx;
+        if (lane_id == 0u) {
+            k_scales[scale_idx] = scale;
+        }
+
+        uchar packed = quant_pack_int4_pair(res_h, inv_scale);
+        uint dst_idx = (kv_head * max_seq_len + write_pos) * half_head_dim + hd_idx;
+        k_cache[dst_idx] = packed;
+    } else {
+        uint v_tid = tid - (q_pairs + kv_pairs);
+        uint kv_head = v_tid / half_head_dim;
+
+        uint num_groups = max(1u, half_head_dim / 32u);
+        uint group_idx = min(hd_idx / 32u, num_groups - 1u);
+        uint lane_id = tid % 32u;
+        float local_max = max(abs(float(raw_val.x)), abs(float(raw_val.y)));
+        float group_max = simd_max(local_max);
+        half scale = half(group_max / 7.0f);
+        if (scale < 1e-8h) scale = 1.0h;
+        half inv_scale = 1.0h / scale;
+
+        uint scale_idx = (kv_head * max_seq_len + write_pos) * num_groups + group_idx;
+        if (lane_id == 0u) {
+            v_scales[scale_idx] = scale;
+        }
+
+        uchar packed = quant_pack_int4_pair(raw_val, inv_scale);
+        uint dst_idx = (kv_head * max_seq_len + write_pos) * half_head_dim + hd_idx;
+        v_cache[dst_idx] = packed;
+    }
+}
+
+// In-Flight FP8 KV-Cache Direct Write Kernel (batched tree speculative verification)
+kernel void rope_tree_kv_cache_write_fp8_kernel(
+    device half2 *qkv [[buffer(0)]],
+    device const float2 *freqs_cis [[buffer(1)]],
+    device uchar2 *k_cache [[buffer(2)]],
+    device uchar2 *v_cache [[buffer(3)]],
+    device half *k_scales [[buffer(4)]],
+    device half *v_scales [[buffer(5)]],
+    constant const int *tree_depths [[buffer(6)]],
+    constant uint &q_pairs [[buffer(7)]],
+    constant uint &kv_pairs [[buffer(8)]],
+    constant uint &half_head_dim [[buffer(9)]],
+    constant uint &max_seq_len [[buffer(10)]],
+    constant uint &max_rope_len [[buffer(11)]],
+    constant uint &start_pos [[buffer(12)]],
+    constant uint &write_pos [[buffer(13)]],
+    constant uint &T [[buffer(14)]],
+    device const half2 *qkv_bias [[buffer(15)]],
+    constant uint &has_bias [[buffer(16)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint tid = gid.x;
+    uint node_idx = gid.y;
+    uint total_pairs = q_pairs + (kv_pairs << 1);
+    if (tid >= total_pairs || node_idx >= T) return;
+
+    device half2 *qkv_node = qkv + node_idx * total_pairs;
+    half2 raw_val = qkv_node[tid];
+    if (has_bias != 0u) {
+        raw_val += qkv_bias[tid];
+    }
+
+    uint rope_pos = (start_pos + uint(tree_depths[node_idx])) % max_rope_len;
+    uint slot = (write_pos + node_idx) % max_seq_len;
+    uint hd_idx = tid % half_head_dim;
+
+    if (tid < q_pairs) {
+        float2 x_val = float2(raw_val);
+        float2 f_val = freqs_cis[rope_pos * half_head_dim + hd_idx];
+        float2 res;
+        res.x = fma(x_val.x, f_val.x, -x_val.y * f_val.y);
+        res.y = fma(x_val.x, f_val.y, x_val.y * f_val.x);
+        qkv_node[tid] = half2(res);
+    } else if (tid < q_pairs + kv_pairs) {
+        uint k_tid = tid - q_pairs;
+        uint kv_head = k_tid / half_head_dim;
+        float2 x_val = float2(raw_val);
+        float2 f_val = freqs_cis[rope_pos * half_head_dim + hd_idx];
+        float2 res;
+        res.x = fma(x_val.x, f_val.x, -x_val.y * f_val.y);
+        res.y = fma(x_val.x, f_val.y, x_val.y * f_val.x);
+        half2 res_h = half2(res);
+
+        uint num_groups = max(1u, half_head_dim / 32u);
+        uint group_idx = min(hd_idx / 32u, num_groups - 1u);
+        uint lane_id = tid % 32u;
+        float local_max = max(abs(float(res_h.x)), abs(float(res_h.y)));
+        float group_max = simd_max(local_max);
+        half scale = half(group_max / 448.0f);
+        if (scale < 1e-8h) scale = 1.0h;
+        half inv_scale = 1.0h / scale;
+
+        uint scale_idx = (kv_head * max_seq_len + slot) * num_groups + group_idx;
+        if (lane_id == 0u) {
+            k_scales[scale_idx] = scale;
+        }
+
+        uchar2 packed = uchar2(
+            float_to_fp8_e4m3fn(float(res_h.x) * float(inv_scale)),
+            float_to_fp8_e4m3fn(float(res_h.y) * float(inv_scale))
+        );
+        uint dst_idx = (kv_head * max_seq_len + slot) * half_head_dim + hd_idx;
+        k_cache[dst_idx] = packed;
+    } else {
+        uint v_tid = tid - (q_pairs + kv_pairs);
+        uint kv_head = v_tid / half_head_dim;
+
+        uint num_groups = max(1u, half_head_dim / 32u);
+        uint group_idx = min(hd_idx / 32u, num_groups - 1u);
+        uint lane_id = tid % 32u;
+        float local_max = max(abs(float(raw_val.x)), abs(float(raw_val.y)));
+        float group_max = simd_max(local_max);
+        half scale = half(group_max / 448.0f);
+        if (scale < 1e-8h) scale = 1.0h;
+        half inv_scale = 1.0h / scale;
+
+        uint scale_idx = (kv_head * max_seq_len + slot) * num_groups + group_idx;
+        if (lane_id == 0u) {
+            v_scales[scale_idx] = scale;
+        }
+
+        uchar2 packed = uchar2(
+            float_to_fp8_e4m3fn(float(raw_val.x) * float(inv_scale)),
+            float_to_fp8_e4m3fn(float(raw_val.y) * float(inv_scale))
+        );
+        uint dst_idx = (kv_head * max_seq_len + slot) * half_head_dim + hd_idx;
+        v_cache[dst_idx] = packed;
+    }
+}
+
+// In-Flight INT4 KV-Cache Direct Write Kernel (batched tree speculative verification)
+kernel void rope_tree_kv_cache_write_int4_kernel(
+    device half2 *qkv [[buffer(0)]],
+    device const float2 *freqs_cis [[buffer(1)]],
+    device uchar *k_cache [[buffer(2)]],
+    device uchar *v_cache [[buffer(3)]],
+    device half *k_scales [[buffer(4)]],
+    device half *v_scales [[buffer(5)]],
+    constant const int *tree_depths [[buffer(6)]],
+    constant uint &q_pairs [[buffer(7)]],
+    constant uint &kv_pairs [[buffer(8)]],
+    constant uint &half_head_dim [[buffer(9)]],
+    constant uint &max_seq_len [[buffer(10)]],
+    constant uint &max_rope_len [[buffer(11)]],
+    constant uint &start_pos [[buffer(12)]],
+    constant uint &write_pos [[buffer(13)]],
+    constant uint &T [[buffer(14)]],
+    device const half2 *qkv_bias [[buffer(15)]],
+    constant uint &has_bias [[buffer(16)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint tid = gid.x;
+    uint node_idx = gid.y;
+    uint total_pairs = q_pairs + (kv_pairs << 1);
+    if (tid >= total_pairs || node_idx >= T) return;
+
+    device half2 *qkv_node = qkv + node_idx * total_pairs;
+    half2 raw_val = qkv_node[tid];
+    if (has_bias != 0u) {
+        raw_val += qkv_bias[tid];
+    }
+
+    uint rope_pos = (start_pos + uint(tree_depths[node_idx])) % max_rope_len;
+    uint slot = (write_pos + node_idx) % max_seq_len;
+    uint hd_idx = tid % half_head_dim;
+
+    if (tid < q_pairs) {
+        float2 x_val = float2(raw_val);
+        float2 f_val = freqs_cis[rope_pos * half_head_dim + hd_idx];
+        float2 res;
+        res.x = fma(x_val.x, f_val.x, -x_val.y * f_val.y);
+        res.y = fma(x_val.x, f_val.y, x_val.y * f_val.x);
+        qkv_node[tid] = half2(res);
+    } else if (tid < q_pairs + kv_pairs) {
+        uint k_tid = tid - q_pairs;
+        uint kv_head = k_tid / half_head_dim;
+        float2 x_val = float2(raw_val);
+        float2 f_val = freqs_cis[rope_pos * half_head_dim + hd_idx];
+        float2 res;
+        res.x = fma(x_val.x, f_val.x, -x_val.y * f_val.y);
+        res.y = fma(x_val.x, f_val.y, x_val.y * f_val.x);
+        half2 res_h = half2(res);
+
+        uint num_groups = max(1u, half_head_dim / 32u);
+        uint group_idx = min(hd_idx / 32u, num_groups - 1u);
+        uint lane_id = tid % 32u;
+        float local_max = max(abs(float(res_h.x)), abs(float(res_h.y)));
+        float group_max = simd_max(local_max);
+        half scale = half(group_max / 7.0f);
+        if (scale < 1e-8h) scale = 1.0h;
+        half inv_scale = 1.0h / scale;
+
+        uint scale_idx = (kv_head * max_seq_len + slot) * num_groups + group_idx;
+        if (lane_id == 0u) {
+            k_scales[scale_idx] = scale;
+        }
+
+        uchar packed = quant_pack_int4_pair(res_h, inv_scale);
+        uint dst_idx = (kv_head * max_seq_len + slot) * half_head_dim + hd_idx;
+        k_cache[dst_idx] = packed;
+    } else {
+        uint v_tid = tid - (q_pairs + kv_pairs);
+        uint kv_head = v_tid / half_head_dim;
+
+        uint num_groups = max(1u, half_head_dim / 32u);
+        uint group_idx = min(hd_idx / 32u, num_groups - 1u);
+        uint lane_id = tid % 32u;
+        float local_max = max(abs(float(raw_val.x)), abs(float(raw_val.y)));
+        float group_max = simd_max(local_max);
+        half scale = half(group_max / 7.0f);
+        if (scale < 1e-8h) scale = 1.0h;
+        half inv_scale = 1.0h / scale;
+
+        uint scale_idx = (kv_head * max_seq_len + slot) * num_groups + group_idx;
+        if (lane_id == 0u) {
+            v_scales[scale_idx] = scale;
+        }
+
+        uchar packed = quant_pack_int4_pair(raw_val, inv_scale);
+        uint dst_idx = (kv_head * max_seq_len + slot) * half_head_dim + hd_idx;
+        v_cache[dst_idx] = packed;
+    }
+}
+
+// Fast FP8 KV Cache Dequantization Kernel
+kernel void dequantize_kv_cache_fp8_kernel(
+    device const uchar2 *cache_fp8 [[buffer(0)]],
+    device const half *scales [[buffer(1)]],
+    device half2 *out_fp16 [[buffer(2)]],
+    constant uint &half_head_dim [[buffer(3)]],
+    constant uint &seq_len [[buffer(4)]],
+    constant uint &total_elements [[buffer(5)]],
+    uint tid [[thread_position_in_grid]]) {
+    if (tid >= total_elements) return;
+
+    uint hd_idx = tid % half_head_dim;
+    uint t_idx = (tid / half_head_dim) % seq_len;
+    uint kv_head = tid / (half_head_dim * seq_len);
+
+    uint num_groups = max(1u, half_head_dim / 32u);
+    uint group_idx = min(hd_idx / 32u, num_groups - 1u);
+    uint scale_idx = (kv_head * seq_len + t_idx) * num_groups + group_idx;
+    half scale = scales[scale_idx];
+
+    uchar2 packed = cache_fp8[tid];
+    out_fp16[tid] = half2(
+        decode_fp8_e4m3fn(packed.x) * scale,
+        decode_fp8_e4m3fn(packed.y) * scale
+    );
+}
+
+// Fast INT4 KV Cache Dequantization Kernel
+kernel void dequantize_kv_cache_int4_kernel(
+    device const uchar *cache_int4 [[buffer(0)]],
+    device const half *scales [[buffer(1)]],
+    device half2 *out_fp16 [[buffer(2)]],
+    constant uint &half_head_dim [[buffer(3)]],
+    constant uint &seq_len [[buffer(4)]],
+    constant uint &total_elements [[buffer(5)]],
+    uint tid [[thread_position_in_grid]]) {
+    if (tid >= total_elements) return;
+
+    uint hd_idx = tid % half_head_dim;
+    uint t_idx = (tid / half_head_dim) % seq_len;
+    uint kv_head = tid / (half_head_dim * seq_len);
+
+    uint num_groups = max(1u, half_head_dim / 32u);
+    uint group_idx = min(hd_idx / 32u, num_groups - 1u);
+    uint scale_idx = (kv_head * seq_len + t_idx) * num_groups + group_idx;
+    half scale = scales[scale_idx];
+
+    uchar packed = cache_int4[tid];
+    out_fp16[tid] = dequant_int4_packed(packed, scale);
+}
+
+// ----------------------------------------------------------------------------
 // 6. Fused Cross Entropy (with simd_max and simd_sum)
 // ----------------------------------------------------------------------------
 kernel void cross_entropy_forward_kernel(

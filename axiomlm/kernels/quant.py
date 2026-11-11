@@ -471,3 +471,327 @@ def qmm_q4_marlin(
     )
     b_dq = bias.to(device=x.device, dtype=x.dtype) if bias is not None else None
     return F.linear(x, w_dq, b_dq)
+
+
+# ============================================================================
+# Phase 3 Task 3.1: In-Flight FP8 and INT4 KV-Cache Quantization
+# ============================================================================
+
+
+def quantize_kv_fp8(
+    k: torch.Tensor, v: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Quantizes Key and Value tensors to OCP FP8 E4M3FN (8-bit float, 1 sign, 4 exp, 3 mantissa)
+    with SIMD-group register scale factor (group size G=64).
+
+    Input:
+      k: (..., head_dim) of dtype torch.float16 or torch.float32
+      v: (..., head_dim) of dtype torch.float16 or torch.float32
+    Returns:
+      (k_fp8, k_scales, v_fp8, v_scales)
+      k_fp8, v_fp8: (..., head_dim) of dtype torch.uint8 (FP8 E4M3 container)
+      k_scales, v_scales: (..., num_groups) of dtype torch.float16
+    """
+    head_dim = k.size(-1)
+    num_groups = max(1, head_dim // 64)
+
+    def _quant_single(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        orig_shape = x.shape
+        x_g = x.view(*orig_shape[:-1], num_groups, 64)
+        scales = torch.clamp(x_g.abs().amax(dim=-1, keepdim=True) / 448.0, min=1e-8).to(
+            torch.float16
+        )
+        x_scaled = (x_g / scales).float()
+        # Convert to float8_e4m3fn on CPU (or byte-view)
+        x_scaled_cpu = x_scaled.cpu() if x_scaled.is_mps else x_scaled
+        u8 = x_scaled_cpu.to(torch.float8_e4m3fn).view(torch.uint8).to(x.device)
+        return u8.view(orig_shape), scales.squeeze(-1)
+
+    k_fp8, k_scales = _quant_single(k)
+    v_fp8, v_scales = _quant_single(v)
+    return k_fp8, k_scales, v_fp8, v_scales
+
+
+def dequantize_kv_fp8(
+    cache_fp8: torch.Tensor,
+    scales: torch.Tensor,
+    head_dim: int | None = None,
+) -> torch.Tensor:
+    """
+    Dequantizes OCP FP8 E4M3FN KV cache bytes back into high-fidelity FP16.
+    Uses bare-metal Metal kernel on Apple GPU, and vectorized lookup on CPU.
+    """
+    if head_dim is None:
+        head_dim = cache_fp8.size(-1)
+
+    if cache_fp8.dim() == 2:
+        return dequantize_kv_fp8(
+            cache_fp8.unsqueeze(0), scales.unsqueeze(0), head_dim
+        ).squeeze(0)
+
+    if (
+        cache_fp8.device.type == "mps"
+        and _METAL_MOD is not None
+        and hasattr(_METAL_MOD, "dequantize_kv_cache_fp8_mps")
+    ):
+        is_4d = cache_fp8.dim() == 4
+        n_kv_head = cache_fp8.size(1) if is_4d else cache_fp8.size(0)
+        seq_len = cache_fp8.size(2) if is_4d else cache_fp8.size(1)
+        return _METAL_MOD.dequantize_kv_cache_fp8_mps(
+            cache_fp8.contiguous(),
+            scales.contiguous(),
+            n_kv_head,
+            seq_len,
+            head_dim,
+        )
+
+    # Vectorized CPU reference fallback
+    orig_shape = cache_fp8.shape
+    num_groups = scales.size(-1)
+    c_g = cache_fp8.view(*orig_shape[:-1], num_groups, 64)
+    s_g = scales.unsqueeze(-1)
+    c_cpu = c_g.cpu() if c_g.is_mps else c_g
+    dq = c_cpu.view(torch.float8_e4m3fn).to(torch.float16)
+    dq = (dq.to(cache_fp8.device) * s_g).view(orig_shape[:-1] + (head_dim,))
+    return dq
+
+
+def quantize_kv_int4(
+    k: torch.Tensor, v: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Quantizes Key and Value tensors to symmetric signed INT4 [-8, 7] with
+    SIMD-group register scale factor (group size G=64), packing 2 nibbles per byte.
+
+    Input:
+      k: (..., head_dim) of dtype torch.float16
+      v: (..., head_dim) of dtype torch.float16
+    Returns:
+      (k_int4, k_scales, v_int4, v_scales)
+      k_int4, v_int4: (..., head_dim // 2) of dtype torch.uint8 (packed nibbles)
+      k_scales, v_scales: (..., num_groups) of dtype torch.float16
+    """
+    head_dim = k.size(-1)
+    num_groups = max(1, head_dim // 64)
+
+    def _quant_single(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        orig_shape = x.shape
+        x_g = x.view(*orig_shape[:-1], num_groups, 64)
+        scales = torch.clamp(x_g.abs().amax(dim=-1, keepdim=True) / 7.0, min=1e-8).to(
+            torch.float16
+        )
+        x_scaled = (x_g / scales).float()
+        q = torch.clamp(torch.round(x_scaled), -8, 7).to(torch.int8)
+
+        q_pairs = q.view(*orig_shape[:-1], num_groups, 32, 2)
+        packed = ((q_pairs[..., 0] & 0x0F) | ((q_pairs[..., 1] & 0x0F) << 4)).to(
+            torch.uint8
+        )
+        packed = packed.view(*orig_shape[:-1], head_dim // 2)
+        return packed, scales.squeeze(-1)
+
+    k_int4, k_scales = _quant_single(k)
+    v_int4, v_scales = _quant_single(v)
+    return k_int4, k_scales, v_int4, v_scales
+
+
+def dequantize_kv_int4(
+    cache_int4: torch.Tensor,
+    scales: torch.Tensor,
+    head_dim: int | None = None,
+) -> torch.Tensor:
+    """
+    Dequantizes packed INT4 nibbles back into high-fidelity FP16.
+    Uses bare-metal Metal kernel on Apple GPU, and vectorized unpack on CPU.
+    """
+    if head_dim is None:
+        head_dim = cache_int4.size(-1) * 2
+
+    if cache_int4.dim() == 2:
+        return dequantize_kv_int4(
+            cache_int4.unsqueeze(0), scales.unsqueeze(0), head_dim
+        ).squeeze(0)
+
+    if (
+        cache_int4.device.type == "mps"
+        and _METAL_MOD is not None
+        and hasattr(_METAL_MOD, "dequantize_kv_cache_int4_mps")
+    ):
+        is_4d = cache_int4.dim() == 4
+        n_kv_head = cache_int4.size(1) if is_4d else cache_int4.size(0)
+        seq_len = cache_int4.size(2) if is_4d else cache_int4.size(1)
+        return _METAL_MOD.dequantize_kv_cache_int4_mps(
+            cache_int4.contiguous(),
+            scales.contiguous(),
+            n_kv_head,
+            seq_len,
+            head_dim,
+        )
+
+    # Vectorized CPU reference fallback
+    orig_shape = cache_int4.shape
+    num_groups = scales.size(-1)
+    c_pairs = cache_int4.view(*orig_shape[:-1], num_groups, 32).to(torch.int32)
+    q0 = ((c_pairs & 0x0F) ^ 0x08) - 8
+    q1 = (((c_pairs >> 4) & 0x0F) ^ 0x08) - 8
+    dq_pairs = torch.stack([q0, q1], dim=-1).to(torch.float16) * scales.unsqueeze(
+        -1
+    ).unsqueeze(-1)
+    return dq_pairs.view(*orig_shape[:-1], head_dim)
+
+
+def compute_quantization_metrics(
+    orig: torch.Tensor, dequant: torch.Tensor, quant_bytes: int | None = None
+) -> dict[str, float]:
+    """
+    Computes rigorous numerical metrics for MLSys evaluation:
+      - SQNR (Signal-to-Quantization-Noise Ratio) in dB: 10 * log10( ||x||^2 / ||x - x_hat||^2 )
+      - Cosine Similarity: <x, x_hat> / (||x|| * ||x_hat||)
+      - MSE: Mean Squared Error
+      - L_inf: Maximum Absolute Error
+      - Compression Ratio: bytes(FP16) / bytes(Quantized)
+    """
+    orig_f = orig.flatten().float()
+    dq_f = dequant.flatten().float()
+
+    noise = orig_f - dq_f
+    signal_pow = orig_f.pow(2).sum()
+    noise_pow = noise.pow(2).sum().clamp(min=1e-12)
+
+    sqnr_db = float(10.0 * torch.log10(signal_pow / noise_pow))
+    cos_sim = float(torch.cosine_similarity(orig_f, dq_f, dim=0))
+    mse = float(noise.pow(2).mean())
+    max_err = float(noise.abs().max())
+
+    orig_bytes = orig.numel() * orig.element_size()
+    comp_ratio = (
+        float(orig_bytes) / float(quant_bytes)
+        if (quant_bytes is not None and quant_bytes > 0)
+        else 1.0
+    )
+
+    return {
+        "sqnr_db": sqnr_db,
+        "cosine_similarity": cos_sim,
+        "mse": mse,
+        "max_abs_error": max_err,
+        "orig_bytes": orig_bytes,
+        "quant_bytes": quant_bytes or orig_bytes,
+        "compression_ratio": comp_ratio,
+    }
+
+
+def rope_kv_cache_write_quantized(
+    qkv: torch.Tensor,
+    freqs_cis: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    k_scales: torch.Tensor | None,
+    v_scales: torch.Tensor | None,
+    q_dim: int,
+    kv_dim: int,
+    head_dim: int,
+    start_pos: int,
+    write_pos: int,
+    kv_dtype: str = "fp16",
+    qkv_bias: torch.Tensor | None = None,
+) -> None:
+    """
+    In-flight fused RoPE + KV cache write kernel supporting FP16, FP8, and INT4.
+    Quantizes K and V directly in GPU registers during cache write, eliminating
+    the double-reconstruction memory wall trap.
+    """
+    if (
+        qkv.device.type == "mps"
+        and _METAL_MOD is not None
+        and qkv.dtype == torch.float16
+    ):
+        if kv_dtype == "fp8":
+            assert k_scales is not None and v_scales is not None
+            _METAL_MOD.rope_kv_cache_write_fp8_mps(
+                qkv,
+                freqs_cis,
+                k_cache,
+                v_cache,
+                k_scales,
+                v_scales,
+                q_dim,
+                kv_dim,
+                head_dim,
+                start_pos,
+                write_pos,
+                qkv_bias,
+            )
+            return
+        elif kv_dtype == "int4":
+            assert k_scales is not None and v_scales is not None
+            _METAL_MOD.rope_kv_cache_write_int4_mps(
+                qkv,
+                freqs_cis,
+                k_cache,
+                v_cache,
+                k_scales,
+                v_scales,
+                q_dim,
+                kv_dim,
+                head_dim,
+                start_pos,
+                write_pos,
+                qkv_bias,
+            )
+            return
+        elif kv_dtype == "fp16":
+            _METAL_MOD.rope_kv_cache_write_mps(
+                qkv,
+                freqs_cis,
+                k_cache,
+                v_cache,
+                q_dim,
+                kv_dim,
+                head_dim,
+                start_pos,
+                write_pos,
+            )
+            return
+
+    # PyTorch CPU fallback
+    if qkv_bias is not None:
+        qkv.add_(qkv_bias)
+    half_hd = head_dim // 2
+    f_val = freqs_cis[start_pos]
+    if f_val.is_complex():
+        f_val = torch.view_as_real(f_val)
+
+    # RoPE on Q
+    q_part = qkv[:, :, :q_dim].view(-1, half_hd, 2)
+    q_rot = torch.empty_like(q_part)
+    q_rot[:, :, 0] = q_part[:, :, 0] * f_val[:, 0] - q_part[:, :, 1] * f_val[:, 1]
+    q_rot[:, :, 1] = q_part[:, :, 0] * f_val[:, 1] + q_part[:, :, 1] * f_val[:, 0]
+    qkv[:, :, :q_dim] = q_rot.view(1, 1, q_dim)
+
+    # RoPE on K
+    k_part = qkv[:, :, q_dim : q_dim + kv_dim].view(-1, half_hd, 2)
+    k_rot = torch.empty_like(k_part)
+    k_rot[:, :, 0] = k_part[:, :, 0] * f_val[:, 0] - k_part[:, :, 1] * f_val[:, 1]
+    k_rot[:, :, 1] = k_part[:, :, 0] * f_val[:, 1] + k_part[:, :, 1] * f_val[:, 0]
+    k_vec = k_rot.view(1, -1, 1, head_dim)
+    v_vec = qkv[:, :, q_dim + kv_dim :].view(1, -1, 1, head_dim)
+
+    if kv_dtype == "fp8":
+        k_fp8, ks, v_fp8, vs = quantize_kv_fp8(k_vec, v_vec)
+        k_cache[:, :, write_pos : write_pos + 1, :] = k_fp8
+        v_cache[:, :, write_pos : write_pos + 1, :] = v_fp8
+        if k_scales is not None and v_scales is not None:
+            k_scales[:, :, write_pos : write_pos + 1, :] = ks
+            v_scales[:, :, write_pos : write_pos + 1, :] = vs
+    elif kv_dtype == "int4":
+        k_int4, ks, v_int4, vs = quantize_kv_int4(k_vec, v_vec)
+        k_cache[:, :, write_pos : write_pos + 1, :] = k_int4
+        v_cache[:, :, write_pos : write_pos + 1, :] = v_int4
+        if k_scales is not None and v_scales is not None:
+            k_scales[:, :, write_pos : write_pos + 1, :] = ks
+            v_scales[:, :, write_pos : write_pos + 1, :] = vs
+    else:
+        k_cache[:, :, write_pos : write_pos + 1, :] = k_vec
+        v_cache[:, :, write_pos : write_pos + 1, :] = v_vec

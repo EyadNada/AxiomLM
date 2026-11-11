@@ -15,7 +15,7 @@ class PagedKVCache:
         n_kv_head: int,
         head_dim: int,
         dtype: torch.dtype = torch.float32,
-        device: torch.device = torch.device("cpu"),
+        device: torch.device | str = "cpu",
     ):
         self.block_size = block_size
         self.num_blocks = num_blocks
@@ -130,6 +130,7 @@ class StaticKVCache:
         dtype: torch.dtype = torch.float16,
         device: torch.device | str | None = None,
         ring_buffer: bool = False,
+        cache_dtype: str = "fp16",
     ):
         if device is None:
             from axiomlm.kernels import is_mps_available
@@ -144,17 +145,59 @@ class StaticKVCache:
         self.n_kv_head = n_kv_head
         self.head_dim = head_dim
         self.ring_buffer = ring_buffer
+        self.cache_dtype = cache_dtype.lower()
+        self.num_groups = max(1, head_dim // 64)
 
-        # Shape: [n_layer, 2 (K, V), max_batch_size, n_kv_head, max_seq_len, head_dim]
-        self.cache = torch.empty(
-            (n_layer, 2, max_batch_size, n_kv_head, max_seq_len, head_dim),
-            dtype=dtype,
-            device=device,
-        )
+        if self.cache_dtype == "fp8":
+            # FP8 E4M3 (1 byte per element) + scale (half per 64-element group)
+            self.cache = torch.zeros(
+                (n_layer, 2, max_batch_size, n_kv_head, max_seq_len, head_dim),
+                dtype=torch.uint8,
+                device=device,
+            )
+            self.scales = torch.zeros(
+                (n_layer, 2, max_batch_size, n_kv_head, max_seq_len, self.num_groups),
+                dtype=torch.float16,
+                device=device,
+            )
+            self.k_scales = [self.scales[i, 0] for i in range(n_layer)]
+            self.v_scales = [self.scales[i, 1] for i in range(n_layer)]
+        elif self.cache_dtype == "int4":
+            # Symmetric INT4 (0.5 bytes per element, packed 2 nibbles/byte) + scale
+            self.cache = torch.zeros(
+                (n_layer, 2, max_batch_size, n_kv_head, max_seq_len, head_dim // 2),
+                dtype=torch.uint8,
+                device=device,
+            )
+            self.scales = torch.zeros(
+                (n_layer, 2, max_batch_size, n_kv_head, max_seq_len, self.num_groups),
+                dtype=torch.float16,
+                device=device,
+            )
+            self.k_scales = [self.scales[i, 0] for i in range(n_layer)]
+            self.v_scales = [self.scales[i, 1] for i in range(n_layer)]
+        else:
+            # Native FP16 (2 bytes per element)
+            self.cache = torch.empty(
+                (n_layer, 2, max_batch_size, n_kv_head, max_seq_len, head_dim),
+                dtype=dtype,
+                device=device,
+            )
+            self.scales = None
+            self.k_scales = None
+            self.v_scales = None
+
         self.k_caches = [self.cache[i, 0] for i in range(n_layer)]
         self.v_caches = [self.cache[i, 1] for i in range(n_layer)]
         self.layer_seq_lens = [0] * n_layer
         self.total_seen_tokens = [0] * n_layer
+
+    def get_memory_bytes(self) -> int:
+        """Returns exact physical memory footprint allocated by this cache in bytes."""
+        total = self.cache.numel() * self.cache.element_size()
+        if self.scales is not None:
+            total += self.scales.numel() * self.scales.element_size()
+        return total
 
     @property
     def seq_len(self) -> int:
@@ -170,53 +213,142 @@ class StaticKVCache:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         In-place update of K, V of shape [B, n_kv_head, T, head_dim].
-        Returns zero-copy views of active K, V of shape [B, n_kv_head, active_len, head_dim].
+        Returns active views of K, V. For quantized caches, returns high-precision
+        dequantized views for downstream SDPA evaluation.
         """
+        from axiomlm.kernels.quant import (
+            dequantize_kv_fp8,
+            dequantize_kv_int4,
+            quantize_kv_fp8,
+            quantize_kv_int4,
+        )
+
         B, _, T, _ = k.shape
         seen = self.total_seen_tokens[layer_idx]
         k_buf = self.k_caches[layer_idx]
         v_buf = self.v_caches[layer_idx]
 
+        if self.cache_dtype == "fp8":
+            k_q, ks, v_q, vs = quantize_kv_fp8(k, v)
+            k_s_buf = self.k_scales[layer_idx]
+            v_s_buf = self.v_scales[layer_idx]
+        elif self.cache_dtype == "int4":
+            k_q, ks, v_q, vs = quantize_kv_int4(k, v)
+            k_s_buf = self.k_scales[layer_idx]
+            v_s_buf = self.v_scales[layer_idx]
+        else:
+            k_q, v_q = k, v
+            k_s_buf, v_s_buf = None, None
+
         if not self.ring_buffer and seen + T <= self.max_seq_len:
             end_pos = seen + T
-            if B == self.max_batch_size:
-                k_buf[:, :, seen:end_pos, :] = k
-                v_buf[:, :, seen:end_pos, :] = v
-                self.layer_seq_lens[layer_idx] = end_pos
-                self.total_seen_tokens[layer_idx] = end_pos
-                return k_buf[:, :, :end_pos, :], v_buf[:, :, :end_pos, :]
-            k_buf[:B, :, seen:end_pos, :] = k
-            v_buf[:B, :, seen:end_pos, :] = v
+            k_buf[:B, :, seen:end_pos, :] = k_q
+            v_buf[:B, :, seen:end_pos, :] = v_q
+            if k_s_buf is not None and v_s_buf is not None:
+                k_s_buf[:B, :, seen:end_pos, :] = ks
+                v_s_buf[:B, :, seen:end_pos, :] = vs
             self.layer_seq_lens[layer_idx] = end_pos
             self.total_seen_tokens[layer_idx] = end_pos
+
+            if self.cache_dtype == "fp8":
+                return (
+                    dequantize_kv_fp8(
+                        k_buf[:B, :, :end_pos, :],
+                        k_s_buf[:B, :, :end_pos, :],
+                        self.head_dim,
+                    ),
+                    dequantize_kv_fp8(
+                        v_buf[:B, :, :end_pos, :],
+                        v_s_buf[:B, :, :end_pos, :],
+                        self.head_dim,
+                    ),
+                )
+            elif self.cache_dtype == "int4":
+                return (
+                    dequantize_kv_int4(
+                        k_buf[:B, :, :end_pos, :],
+                        k_s_buf[:B, :, :end_pos, :],
+                        self.head_dim,
+                    ),
+                    dequantize_kv_int4(
+                        v_buf[:B, :, :end_pos, :],
+                        v_s_buf[:B, :, :end_pos, :],
+                        self.head_dim,
+                    ),
+                )
+            if B == self.max_batch_size:
+                return k_buf[:, :, :end_pos, :], v_buf[:, :, :end_pos, :]
             return k_buf[:B, :, :end_pos, :], v_buf[:B, :, :end_pos, :]
         else:
             # Ring-buffer wrap-around mode (O(1) bounded memory)
             if T >= self.max_seq_len:
-                k_buf[:B, :, :, :] = k[:, :, -self.max_seq_len :, :]
-                v_buf[:B, :, :, :] = v[:, :, -self.max_seq_len :, :]
+                k_buf[:B, :, :, :] = k_q[:, :, -self.max_seq_len :, :]
+                v_buf[:B, :, :, :] = v_q[:, :, -self.max_seq_len :, :]
+                if k_s_buf is not None and v_s_buf is not None:
+                    k_s_buf[:B, :, :, :] = ks[:, :, -self.max_seq_len :, :]
+                    v_s_buf[:B, :, :, :] = vs[:, :, -self.max_seq_len :, :]
             elif T == 1 and B == self.max_batch_size:
                 write_pos = seen % self.max_seq_len
-                k_buf[:, :, write_pos : write_pos + 1, :] = k
-                v_buf[:, :, write_pos : write_pos + 1, :] = v
+                k_buf[:, :, write_pos : write_pos + 1, :] = k_q
+                v_buf[:, :, write_pos : write_pos + 1, :] = v_q
+                if k_s_buf is not None and v_s_buf is not None:
+                    k_s_buf[:, :, write_pos : write_pos + 1, :] = ks
+                    v_s_buf[:, :, write_pos : write_pos + 1, :] = vs
             else:
                 write_pos = seen % self.max_seq_len
                 first_chunk = min(T, self.max_seq_len - write_pos)
-                k_buf[:B, :, write_pos : write_pos + first_chunk, :] = k[
+                k_buf[:B, :, write_pos : write_pos + first_chunk, :] = k_q[
                     :, :, :first_chunk, :
                 ]
-                v_buf[:B, :, write_pos : write_pos + first_chunk, :] = v[
+                v_buf[:B, :, write_pos : write_pos + first_chunk, :] = v_q[
                     :, :, :first_chunk, :
                 ]
+                if k_s_buf is not None and v_s_buf is not None:
+                    k_s_buf[:B, :, write_pos : write_pos + first_chunk, :] = ks[
+                        :, :, :first_chunk, :
+                    ]
+                    v_s_buf[:B, :, write_pos : write_pos + first_chunk, :] = vs[
+                        :, :, :first_chunk, :
+                    ]
                 rem = T - first_chunk
                 if rem > 0:
-                    k_buf[:B, :, :rem, :] = k[:, :, first_chunk:, :]
-                    v_buf[:B, :, :rem, :] = v[:, :, first_chunk:, :]
+                    k_buf[:B, :, :rem, :] = k_q[:, :, first_chunk:, :]
+                    v_buf[:B, :, :rem, :] = v_q[:, :, first_chunk:, :]
+                    if k_s_buf is not None and v_s_buf is not None:
+                        k_s_buf[:B, :, :rem, :] = ks[:, :, first_chunk:, :]
+                        v_s_buf[:B, :, :rem, :] = vs[:, :, first_chunk:, :]
 
             new_seen = seen + T
             active_len = min(new_seen, self.max_seq_len)
             self.layer_seq_lens[layer_idx] = active_len
             self.total_seen_tokens[layer_idx] = new_seen
+
+            if self.cache_dtype == "fp8":
+                return (
+                    dequantize_kv_fp8(
+                        k_buf[:B, :, :active_len, :],
+                        k_s_buf[:B, :, :active_len, :],
+                        self.head_dim,
+                    ),
+                    dequantize_kv_fp8(
+                        v_buf[:B, :, :active_len, :],
+                        v_s_buf[:B, :, :active_len, :],
+                        self.head_dim,
+                    ),
+                )
+            elif self.cache_dtype == "int4":
+                return (
+                    dequantize_kv_int4(
+                        k_buf[:B, :, :active_len, :],
+                        k_s_buf[:B, :, :active_len, :],
+                        self.head_dim,
+                    ),
+                    dequantize_kv_int4(
+                        v_buf[:B, :, :active_len, :],
+                        v_s_buf[:B, :, :active_len, :],
+                        self.head_dim,
+                    ),
+                )
             if B == self.max_batch_size:
                 return k_buf[:, :, :active_len, :], v_buf[:, :, :active_len, :]
             return k_buf[:B, :, :active_len, :], v_buf[:B, :, :active_len, :]
@@ -265,6 +397,9 @@ class StaticKVCache:
                     )
                     staged = self.cache.index_select(4, src_t).clone()
                     self.cache.index_copy_(4, dst_t, staged)
+                    if self.scales is not None:
+                        staged_s = self.scales.index_select(4, src_t).clone()
+                        self.scales.index_copy_(4, dst_t, staged_s)
 
         if new_total_seen is not None:
             active = min(new_total_seen, self.max_seq_len)

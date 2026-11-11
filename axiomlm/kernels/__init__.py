@@ -25,6 +25,9 @@ from .ops import (
     gqa_flash_decode_mps,
 )
 from .quant import (
+    compute_quantization_metrics,
+    dequantize_kv_fp8,
+    dequantize_kv_int4,
     dequantize_q4_g64,
     dequantize_q4_marlin,
     dequantize_q8_g64,
@@ -37,6 +40,9 @@ from .quant import (
     qmv_q4_g64,
     qmv_q4_marlin,
     qmv_q8_g64,
+    quantize_kv_fp8,
+    quantize_kv_int4,
+    rope_kv_cache_write_quantized,
 )
 
 _IS_MPS_FUNCTIONAL = None
@@ -60,7 +66,7 @@ def is_mps_available() -> bool:
         del t
         _IS_MPS_FUNCTIONAL = True
         return True
-    except (RuntimeError, Exception):
+    except (RuntimeError, Exception):  # noqa: BLE001
         _IS_MPS_FUNCTIONAL = False
         return False
 
@@ -76,6 +82,9 @@ __all__ = [
     "FusedSDPAFunction",
     "FusedSwiGLUFunction",
     "FusedSwiGLUMLP",
+    "compute_quantization_metrics",
+    "dequantize_kv_fp8",
+    "dequantize_kv_int4",
     "dequantize_q4_g64",
     "dequantize_q4_marlin",
     "dequantize_q8_g64",
@@ -96,4 +105,7 @@ __all__ = [
     "qmv_q4_g64",
     "qmv_q4_marlin",
     "qmv_q8_g64",
+    "quantize_kv_fp8",
+    "quantize_kv_int4",
+    "rope_kv_cache_write_quantized",
 ]
